@@ -1,0 +1,2451 @@
+import { useEffect, useState, useRef } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "../lib/supabase";
+import { mockPaymentProvider } from "../lib/payment-provider";
+import type { UserRole } from "../lib/database.types";
+import {
+  Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
+  BarChart2, Users, Settings, Bell, ChevronDown, ChevronRight, ChevronLeft,
+  Check, X, Menu, Mic, MicOff, Phone, PhoneOff, Monitor, MessageSquare,
+  Upload, Download, Plus, Filter, MapPin, Globe, Clock, DollarSign,
+  Heart, Award, BookOpen, Zap, Lock, TrendingUp, ArrowUpRight, ArrowDownRight,
+  AlertCircle, CheckCircle, User, LogOut, Home, Activity, Clipboard,
+  Camera, Send, Paperclip, MoreHorizontal, Edit3, Trash2, RefreshCw,
+  ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon
+} from "lucide-react";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+
+type Screen =
+  | "landing" | "directory" | "profile" | "patient-dashboard"
+  | "pro-dashboard" | "calendar" | "ehr" | "ai-assistant"
+  | "video" | "pricing" | "checkout" | "financial" | "admin" | "login";
+
+type AppUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+};
+
+type AuthenticatedScreenProps = {
+  onNavigate: (s: Screen) => void;
+  currentUser: AppUser;
+  onSignOut: () => void;
+};
+
+type DirectoryProfessional = {
+  id?: string;
+  name: string;
+  role: string;
+  crp?: string;
+  crm?: string;
+  img: string;
+  rating: number;
+  reviews: number;
+  price: number;
+  modalities: string[];
+  specialties: string[];
+  city: string;
+  wait: string;
+  approaches: string[];
+};
+
+const SCREENS: { id: Screen; label: string; group: string }[] = [
+  { id: "landing", label: "Landing Page", group: "Public" },
+  { id: "directory", label: "Professional Directory", group: "Public" },
+  { id: "profile", label: "Professional Profile", group: "Public" },
+  { id: "login", label: "Login / Register", group: "Auth" },
+  { id: "patient-dashboard", label: "Patient Dashboard", group: "Patient" },
+  { id: "pro-dashboard", label: "Professional Dashboard", group: "Professional" },
+  { id: "calendar", label: "Calendar & Scheduling", group: "Professional" },
+  { id: "ehr", label: "Electronic Health Record", group: "Professional" },
+  { id: "ai-assistant", label: "AI Session Assistant", group: "Professional" },
+  { id: "video", label: "Video Consultation", group: "Professional" },
+  { id: "pricing", label: "Pricing for Professionals", group: "Professional" },
+  { id: "checkout", label: "Secure Checkout", group: "Payments" },
+  { id: "financial", label: "Financial Dashboard", group: "Payments" },
+  { id: "admin", label: "Admin Panel", group: "Admin" },
+];
+
+// ─── Shared Components ────────────────────────────────────────────────────────
+
+function Badge({ children, variant = "default", className = "" }: { children: React.ReactNode; variant?: "default" | "success" | "accent" | "warning" | "danger" | "outline"; className?: string }) {
+  const styles = {
+    default: "bg-secondary text-primary border border-border",
+    success: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+    accent: "bg-blue-50 text-blue-700 border border-blue-200",
+    warning: "bg-amber-50 text-amber-700 border border-amber-200",
+    danger: "bg-red-50 text-red-700 border border-red-200",
+    outline: "bg-white text-muted-foreground border border-border",
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${styles[variant]} ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+function Btn({ children, variant = "primary", size = "md", className = "", onClick, disabled }: {
+  children: React.ReactNode; variant?: "primary" | "secondary" | "outline" | "ghost" | "danger";
+  size?: "sm" | "md" | "lg"; className?: string; onClick?: () => void; disabled?: boolean;
+}) {
+  const base = "inline-flex items-center gap-2 font-medium rounded-xl transition-all duration-150 cursor-pointer select-none";
+  const sizes = { sm: "px-3 py-1.5 text-sm", md: "px-4 py-2 text-sm", lg: "px-6 py-3 text-base" };
+  const variants = {
+    primary: "bg-primary text-primary-foreground hover:bg-[#156038] shadow-sm",
+    secondary: "bg-secondary text-secondary-foreground hover:bg-[#d4eddf] border border-border",
+    outline: "bg-white text-foreground border border-border hover:bg-muted",
+    ghost: "bg-transparent text-muted-foreground hover:bg-muted",
+    danger: "bg-destructive text-destructive-foreground hover:opacity-90",
+  };
+  return (
+    <button className={`${base} ${sizes[size]} ${variants[variant]} ${disabled ? "opacity-50 pointer-events-none" : ""} ${className}`} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+function Card({ children, className = "", onClick }: { children: React.ReactNode; className?: string; onClick?: () => void }) {
+  return (
+    <div
+      className={`bg-card rounded-2xl border border-border shadow-sm ${onClick ? "cursor-pointer hover:shadow-md transition-shadow" : ""} ${className}`}
+      onClick={onClick}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Avatar({ name, src, size = "md", online }: { name: string; src?: string; size?: "sm" | "md" | "lg" | "xl"; online?: boolean }) {
+  const sizes = { sm: "w-8 h-8 text-xs", md: "w-10 h-10 text-sm", lg: "w-14 h-14 text-base", xl: "w-20 h-20 text-xl" };
+  const initials = name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
+  return (
+    <div className="relative inline-flex">
+      {src ? (
+        <img src={src} alt={name} className={`${sizes[size]} rounded-full object-cover bg-secondary`} />
+      ) : (
+        <div className={`${sizes[size]} rounded-full bg-primary/10 text-primary font-semibold flex items-center justify-center`}>
+          {initials}
+        </div>
+      )}
+      {online !== undefined && (
+        <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white ${online ? "bg-emerald-500" : "bg-gray-300"}`} />
+      )}
+    </div>
+  );
+}
+
+function Input({ label, placeholder, type = "text", icon, value, onChange, className = "" }: {
+  label?: string; placeholder?: string; type?: string; icon?: React.ReactNode;
+  value?: string; onChange?: (v: string) => void; className?: string;
+}) {
+  return (
+    <div className={`flex flex-col gap-1.5 ${className}`}>
+      {label && <label className="text-sm font-medium text-foreground">{label}</label>}
+      <div className="relative">
+        {icon && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">{icon}</span>}
+        <input
+          type={type}
+          placeholder={placeholder}
+          value={value}
+          onChange={e => onChange?.(e.target.value)}
+          className={`w-full ${icon ? "pl-9" : "pl-3"} pr-3 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all`}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, delta, icon, color = "green" }: { label: string; value: string; delta?: string; icon: React.ReactNode; color?: string }) {
+  const colors: Record<string, string> = { green: "bg-primary/10 text-primary", blue: "bg-blue-50 text-blue-600", amber: "bg-amber-50 text-amber-600", purple: "bg-purple-50 text-purple-600" };
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between mb-3">
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${colors[color]}`}>{icon}</div>
+        {delta && (
+          <span className={`flex items-center gap-0.5 text-xs font-medium ${delta.startsWith("+") ? "text-emerald-600" : "text-red-500"}`}>
+            {delta.startsWith("+") ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}{delta}
+          </span>
+        )}
+      </div>
+      <p className="text-2xl font-bold text-foreground font-display">{value}</p>
+      <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+    </Card>
+  );
+}
+
+// ─── Top Nav ──────────────────────────────────────────────────────────────────
+
+function TopNav({ onScreenChange, current }: { onScreenChange: (s: Screen) => void; current: Screen }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur border-b border-border">
+      <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
+        <button onClick={() => onScreenChange("landing")} className="flex items-center gap-2.5 font-bold text-foreground">
+          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+            <Brain size={16} className="text-white" />
+          </div>
+          <span className="text-lg font-display">MindCare</span>
+        </button>
+        <div className="hidden md:flex items-center gap-1">
+          {SCREENS.map(s => (
+            <button
+              key={s.id}
+              onClick={() => onScreenChange(s.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${current === s.id ? "bg-secondary text-primary" : "text-muted-foreground hover:text-foreground hover:bg-muted"}`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <button className="md:hidden p-2 rounded-lg hover:bg-muted" onClick={() => setMenuOpen(!menuOpen)}>
+          <Menu size={20} />
+        </button>
+      </div>
+      {menuOpen && (
+        <div className="md:hidden border-t border-border bg-white p-3 grid grid-cols-2 gap-1">
+          {SCREENS.map(s => (
+            <button key={s.id} onClick={() => { onScreenChange(s.id); setMenuOpen(false); }}
+              className={`px-3 py-2 rounded-lg text-xs font-medium text-left transition-all ${current === s.id ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </nav>
+  );
+}
+
+// ─── App Shell (sidebar for dashboard screens) ────────────────────────────────
+
+function AppShell({
+  children,
+  title,
+  navItems,
+  userName,
+  onSignOut,
+}: {
+  children: React.ReactNode;
+  title: string;
+  navItems: { icon: React.ReactNode; label: string; active?: boolean }[];
+  userName: string;
+  onSignOut: () => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  return (
+    <div className="flex h-screen overflow-hidden bg-background">
+      <aside className={`${collapsed ? "w-16" : "w-60"} flex-shrink-0 bg-white border-r border-border flex flex-col transition-all duration-200`}>
+        <div className="h-16 flex items-center px-4 border-b border-border gap-3">
+          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center flex-shrink-0">
+            <Brain size={16} className="text-white" />
+          </div>
+          {!collapsed && <span className="font-bold text-foreground font-display">MindCare</span>}
+          <button className="ml-auto p-1 rounded-lg hover:bg-muted" onClick={() => setCollapsed(!collapsed)}>
+            {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+          </button>
+        </div>
+        <nav className="flex-1 p-3 flex flex-col gap-1 overflow-y-auto">
+          {navItems.map((item, i) => (
+            <button key={i} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${item.active ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+              {item.icon}
+              {!collapsed && <span>{item.label}</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="p-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onSignOut}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:bg-muted w-full`}
+          >
+            <LogOut size={16} />
+            {!collapsed && <span>Sair</span>}
+          </button>
+        </div>
+      </aside>
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="h-16 bg-white border-b border-border flex items-center justify-between px-6">
+          <h1 className="font-semibold text-foreground font-display">{title}</h1>
+          <div className="flex items-center gap-3">
+            <button className="relative p-2 rounded-xl hover:bg-muted">
+              <Bell size={18} className="text-muted-foreground" />
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
+            </button>
+            <Avatar name={userName} size="sm" online={true} />
+          </div>
+        </header>
+        <div className="flex-1 overflow-y-auto p-6">{children}</div>
+      </main>
+    </div>
+  );
+}
+
+// ─── SCREEN: Landing ──────────────────────────────────────────────────────────
+
+function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [faqOpen, setFaqOpen] = useState<number | null>(null);
+  const [annual, setAnnual] = useState(false);
+
+  const benefits = [
+    { icon: <Shield size={22} />, title: "Profissionais Verificados", desc: "Todos os CRP/CRM são validados pela nossa equipe antes da publicação." },
+    { icon: <Lock size={22} />, title: "Sigilo & Segurança", desc: "Dados criptografados em repouso e em trânsito. Conformidade com LGPD." },
+    { icon: <Video size={22} />, title: "Consultas Online", desc: "Videochamadas integradas com gravação IA e prontuário eletrônico." },
+    { icon: <Zap size={22} />, title: "Agendamento Inteligente", desc: "Calendário com lembretes automáticos e sincronização com Google Agenda." },
+    { icon: <CreditCard size={22} />, title: "Pagamentos Seguros", desc: "Pix, cartão e recorrência. Repasse automático com nota fiscal." },
+    { icon: <Brain size={22} />, title: "IA Clínica", desc: "Transcrição e resumo de sessões com geração automática de notas clínicas." },
+  ];
+
+  const plans = [
+    { name: "Essencial", price: annual ? 79 : 99, desc: "Para profissionais iniciando online", features: ["5 pacientes ativos", "Agenda + lembretes", "Videochamada HD", "Prontuário básico", "Suporte por e-mail"] },
+    { name: "Profissional", price: annual ? 159 : 199, desc: "O plano mais escolhido", features: ["Pacientes ilimitados", "IA de sessão", "Prontuário completo", "Receituário digital", "Dashboard financeiro", "Suporte prioritário"], highlight: true },
+    { name: "Clínica", price: annual ? 399 : 499, desc: "Para equipes e clínicas", features: ["Tudo do Profissional", "Múltiplos profissionais", "Admin da clínica", "API de integração", "Relatórios avançados", "SLA garantido"] },
+  ];
+
+  const testimonials = [
+    { name: "Dra. Fernanda Costa", role: "Psicóloga Clínica · CRP 06/12345", avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format", text: "O MindCare transformou minha prática. A IA que transcreve as sessões me poupa mais de 2h por semana." },
+    { name: "Dr. Rafael Mendes", role: "Psiquiatra · CRM 35/87654", avatar: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=80&h=80&fit=crop&auto=format", text: "O prontuário eletrônico integrado ao agendamento é exatamente o que eu precisava. Plataforma impecável." },
+    { name: "Beatriz Alves", role: "Paciente há 8 meses", avatar: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=80&h=80&fit=crop&auto=format", text: "Encontrei minha terapeuta em 5 minutos. O pagamento pelo app é super seguro e prático." },
+  ];
+
+  const faqs = [
+    { q: "Como os profissionais são verificados?", a: "Nossa equipe valida CRP/CRM junto ao conselho federal e estadual. O processo leva até 48h após o envio da documentação." },
+    { q: "Posso cancelar a qualquer momento?", a: "Sim. Sem multa nem fidelidade. O acesso continua até o fim do período pago." },
+    { q: "Os dados dos pacientes são seguros?", a: "Totalmente. Usamos criptografia AES-256 e seguimos rigorosamente a LGPD. Seus dados nunca são vendidos." },
+    { q: "Existe app móvel?", a: "Sim! Apps nativos para iOS e Android para pacientes e profissionais. A plataforma web também é totalmente responsiva." },
+    { q: "Como funciona o repasse para o profissional?", a: "O paciente paga pelo MindCare. Após a sessão concluída, o valor (menos a comissão de 10%) é transferido em até 2 dias úteis." },
+  ];
+
+  return (
+    <div className="min-h-screen bg-background font-sans">
+      {/* Hero */}
+      <section className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-[#E8F5EE] via-white to-[#EBF0F8] -z-0" />
+        <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-primary/5 rounded-full -translate-y-1/3 translate-x-1/3" />
+        <div className="relative max-w-7xl mx-auto px-6 pt-20 pb-24">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div>
+              <Badge variant="success" className="mb-6"><CheckCircle size={12} />+2.400 profissionais verificados</Badge>
+              <h1 className="text-5xl lg:text-6xl font-bold text-foreground leading-tight font-display mb-6">
+                Cuidado mental <br />
+                <span className="text-primary">com quem entende</span>
+              </h1>
+              <p className="text-lg text-muted-foreground mb-8 max-w-lg leading-relaxed">
+                Encontre psicólogos e psiquiatras verificados, agende consultas online ou presenciais e acompanhe seu tratamento com segurança.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Btn variant="primary" size="lg" onClick={() => onNavigate("directory")}>
+                  <Search size={18} />Encontrar terapeuta
+                </Btn>
+                <Btn variant="outline" size="lg" onClick={() => onNavigate("pricing")}>
+                  Sou profissional
+                </Btn>
+              </div>
+              <div className="flex items-center gap-6 mt-8">
+                {[["4.9", "★ avaliação média"], ["98%", "satisfação"], ["24h", "suporte"]].map(([v, l]) => (
+                  <div key={l}>
+                    <p className="text-xl font-bold text-foreground font-display">{v}</p>
+                    <p className="text-xs text-muted-foreground">{l}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="relative hidden lg:block">
+              <img
+                src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=600&h=520&fit=crop&auto=format"
+                alt="Psicóloga em consulta online"
+                className="rounded-3xl shadow-2xl w-full object-cover h-[480px] bg-secondary"
+              />
+              {/* Floating cards */}
+              <div className="absolute -left-8 top-1/4 bg-white rounded-2xl shadow-lg p-4 flex items-center gap-3 border border-border">
+                <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><CheckCircle size={18} /></div>
+                <div><p className="text-xs font-semibold text-foreground">CRP Verificado</p><p className="text-xs text-muted-foreground">Dra. Fernanda Costa</p></div>
+              </div>
+              <div className="absolute -right-6 bottom-1/4 bg-white rounded-2xl shadow-lg p-4 border border-border">
+                <p className="text-xs text-muted-foreground mb-1">Próxima sessão</p>
+                <p className="text-sm font-semibold text-foreground">Hoje, 16h00</p>
+                <div className="flex items-center gap-1 mt-1"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><p className="text-xs text-emerald-600">Sala aberta</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Benefits */}
+      <section className="py-20 max-w-7xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <h2 className="text-3xl font-bold text-foreground font-display mb-3">Por que o MindCare?</h2>
+          <p className="text-muted-foreground max-w-xl mx-auto">A plataforma completa para conectar pacientes e profissionais de saúde mental com segurança e eficiência.</p>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {benefits.map((b, i) => (
+            <Card key={i} className="p-6 hover:border-primary/30 transition-all">
+              <div className="w-12 h-12 bg-primary/10 text-primary rounded-2xl flex items-center justify-center mb-4">{b.icon}</div>
+              <h3 className="font-semibold text-foreground mb-2 font-display">{b.title}</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">{b.desc}</p>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* How it works */}
+      <section className="py-20 bg-white">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-foreground font-display mb-3">Como funciona</h2>
+          </div>
+          <div className="grid md:grid-cols-4 gap-8">
+            {[
+              { step: "01", title: "Busque", desc: "Filtre por especialidade, cidade, plano de saúde e disponibilidade.", icon: <Search size={22} /> },
+              { step: "02", title: "Escolha", desc: "Veja perfis verificados, avaliações e agende diretamente.", icon: <User size={22} /> },
+              { step: "03", title: "Consulte", desc: "Sessão presencial ou videochamada HD integrada à plataforma.", icon: <Video size={22} /> },
+              { step: "04", title: "Evolua", desc: "Acompanhe seu progresso e histórico com segurança.", icon: <TrendingUp size={22} /> },
+            ].map((s, i) => (
+              <div key={i} className="text-center">
+                <div className="w-16 h-16 bg-primary/10 rounded-2xl flex items-center justify-center text-primary mx-auto mb-4">{s.icon}</div>
+                <span className="text-xs font-bold text-primary tracking-widest font-mono">{s.step}</span>
+                <h3 className="text-lg font-semibold text-foreground font-display mt-1 mb-2">{s.title}</h3>
+                <p className="text-sm text-muted-foreground">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Pricing */}
+      <section className="py-20 max-w-7xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <h2 className="text-3xl font-bold text-foreground font-display mb-3">Planos para profissionais</h2>
+          <div className="flex items-center justify-center gap-3 mt-4">
+            <span className={`text-sm font-medium ${!annual ? "text-foreground" : "text-muted-foreground"}`}>Mensal</span>
+            <button onClick={() => setAnnual(!annual)} className={`w-12 h-6 rounded-full transition-colors ${annual ? "bg-primary" : "bg-muted"} relative`}>
+              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${annual ? "translate-x-7" : "translate-x-1"}`} />
+            </button>
+            <span className={`text-sm font-medium ${annual ? "text-foreground" : "text-muted-foreground"}`}>Anual <Badge variant="success">-20%</Badge></span>
+          </div>
+        </div>
+        <div className="grid md:grid-cols-3 gap-6">
+          {plans.map((p, i) => (
+            <Card key={i} className={`p-8 flex flex-col ${p.highlight ? "ring-2 ring-primary relative" : ""}`}>
+              {p.highlight && <Badge variant="success" className="absolute -top-3 left-1/2 -translate-x-1/2">Mais escolhido</Badge>}
+              <h3 className="font-bold text-xl text-foreground font-display mb-1">{p.name}</h3>
+              <p className="text-sm text-muted-foreground mb-4">{p.desc}</p>
+              <div className="mb-6">
+                <span className="text-4xl font-bold text-foreground font-display">R${p.price}</span>
+                <span className="text-muted-foreground text-sm">/mês</span>
+              </div>
+              <ul className="flex-1 space-y-3 mb-8">
+                {p.features.map((f, j) => (
+                  <li key={j} className="flex items-center gap-2 text-sm text-foreground">
+                    <Check size={15} className="text-primary flex-shrink-0" />{f}
+                  </li>
+                ))}
+              </ul>
+              <Btn variant={p.highlight ? "primary" : "outline"} className="w-full justify-center" onClick={() => onNavigate("checkout")}>
+                Começar agora
+              </Btn>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* Testimonials */}
+      <section className="py-20 bg-white">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-foreground font-display mb-3">O que dizem sobre nós</h2>
+          </div>
+          <div className="grid md:grid-cols-3 gap-6">
+            {testimonials.map((t, i) => (
+              <Card key={i} className="p-6">
+                <div className="flex mb-3">{Array(5).fill(0).map((_, j) => <Star key={j} size={14} className="text-amber-400 fill-amber-400" />)}</div>
+                <p className="text-sm text-foreground leading-relaxed mb-4 italic">"{t.text}"</p>
+                <div className="flex items-center gap-3">
+                  <img src={t.avatar} alt={t.name} className="w-10 h-10 rounded-full object-cover bg-secondary" />
+                  <div><p className="text-sm font-semibold text-foreground">{t.name}</p><p className="text-xs text-muted-foreground">{t.role}</p></div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* FAQ */}
+      <section className="py-20 max-w-3xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <h2 className="text-3xl font-bold text-foreground font-display mb-3">Dúvidas frequentes</h2>
+        </div>
+        <div className="space-y-3">
+          {faqs.map((f, i) => (
+            <Card key={i} className="overflow-hidden">
+              <button
+                className="w-full flex items-center justify-between px-6 py-4 text-left text-sm font-semibold text-foreground hover:bg-muted transition-colors"
+                onClick={() => setFaqOpen(faqOpen === i ? null : i)}
+              >
+                {f.q}
+                {faqOpen === i ? <ChevronUp size={16} className="text-primary flex-shrink-0" /> : <ChevronDown size={16} className="text-muted-foreground flex-shrink-0" />}
+              </button>
+              {faqOpen === i && <div className="px-6 pb-4 text-sm text-muted-foreground leading-relaxed border-t border-border pt-3">{f.a}</div>}
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="py-20 bg-primary mx-6 mb-10 rounded-3xl">
+        <div className="text-center text-white px-6">
+          <h2 className="text-3xl font-bold font-display mb-4">Comece hoje, gratuitamente</h2>
+          <p className="text-primary-foreground/80 mb-8 max-w-md mx-auto">14 dias de Plano Profissional sem cobrar nada. Sem cartão de crédito.</p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Btn variant="secondary" size="lg" onClick={() => onNavigate("pricing")}>Ver planos</Btn>
+            <button className="px-6 py-3 rounded-xl text-sm font-medium text-white border border-white/30 hover:bg-white/10 transition-colors">
+              Agendar demo
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-border py-12">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center"><Brain size={14} className="text-white" /></div>
+            <span className="font-bold text-foreground font-display">MindCare</span>
+          </div>
+          <p className="text-xs text-muted-foreground">© 2025 MindCare. LGPD · Privacidade · Termos</p>
+          <div className="flex gap-4 text-xs text-muted-foreground">
+            <a href="#" className="hover:text-primary">Contato</a>
+            <a href="#" className="hover:text-primary">Blog</a>
+            <a href="#" className="hover:text-primary">Carreiras</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+// ─── SCREEN: Directory ────────────────────────────────────────────────────────
+
+function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [search, setSearch] = useState("");
+  const [modality, setModality] = useState("all");
+  const [specialty, setSpecialty] = useState("all");
+  const [dbProfessionals, setDbProfessionals] = useState<DirectoryProfessional[]>([]);
+  const [loadingProfessionals, setLoadingProfessionals] = useState(false);
+
+  const professionals: DirectoryProfessional[] = [
+    { name: "Dra. Fernanda Costa", role: "Psicóloga Clínica", crp: "CRP 06/12345", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=200&h=200&fit=crop&auto=format", rating: 4.9, reviews: 134, price: 180, modalities: ["Online", "Presencial"], specialties: ["Ansiedade", "Depressão", "TCC"], city: "São Paulo, SP", wait: "Disponível hoje", approaches: ["TCC", "ACT"] },
+    { name: "Dr. Rafael Mendes", role: "Psiquiatra", crm: "CRM 35/87654", img: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=200&h=200&fit=crop&auto=format", rating: 4.8, reviews: 89, price: 350, modalities: ["Online", "Presencial"], specialties: ["TDAH", "Transtorno Bipolar"], city: "Rio de Janeiro, RJ", wait: "Amanhã", approaches: ["Farmacoterapia"] },
+    { name: "Dra. Lara Viana", role: "Psicóloga", crp: "CRP 08/45678", img: "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format", rating: 5.0, reviews: 203, price: 150, modalities: ["Online"], specialties: ["Trauma", "EMDR", "Luto"], city: "Online", wait: "Disponível hoje", approaches: ["EMDR", "Psicanálise"] },
+    { name: "Dr. Carlos Rocha", role: "Psicólogo Organizacional", crp: "CRP 04/98765", img: "https://images.unsplash.com/photo-1582750433449-648ed127bb54?w=200&h=200&fit=crop&auto=format", rating: 4.7, reviews: 67, price: 200, modalities: ["Presencial"], specialties: ["Burnout", "Carreira"], city: "Belo Horizonte, MG", wait: "Esta semana", approaches: ["Cognitivo-Comportamental"] },
+    { name: "Dra. Priya Sharma", role: "Psicóloga Infantil", crp: "CRP 06/33344", img: "https://images.unsplash.com/photo-1594824476967-48c8b964273f?w=200&h=200&fit=crop&auto=format", rating: 4.9, reviews: 112, price: 170, modalities: ["Online", "Presencial"], specialties: ["Autismo", "TDAH infantil"], city: "São Paulo, SP", wait: "Disponível hoje", approaches: ["ABA", "TCC"] },
+    { name: "Dr. André Lima", role: "Psiquiatra", crm: "CRM 26/11223", img: "https://images.unsplash.com/photo-1607990281513-2c110a25bd8c?w=200&h=200&fit=crop&auto=format", rating: 4.6, reviews: 45, price: 400, modalities: ["Online"], specialties: ["Esquizofrenia", "TOC"], city: "Online", wait: "Próxima semana", approaches: ["Farmacoterapia", "Psicoeducação"] },
+  ];
+
+  useEffect(() => {
+    let active = true;
+
+    const loadProfessionals = async () => {
+      setLoadingProfessionals(true);
+
+      const { data, error } = await supabase
+        .from("professional_profiles")
+        .select("id, license_type, license_number, specialties, approaches, session_price, modalities, city, state, profiles(full_name, avatar_url)")
+        .eq("verification_status", "verified")
+        .order("created_at", { ascending: false });
+
+      if (!active) return;
+
+      if (!error && data?.length) {
+        setDbProfessionals(data.map((item: any): DirectoryProfessional => {
+          const license = `${item.license_type ?? "CRP"} ${item.license_number}`;
+          const modalities = (item.modalities ?? []).map((value: string) => value === "online" ? "Online" : "Presencial");
+
+          return {
+            id: item.id,
+            name: item.profiles?.full_name ?? "Profissional verificado",
+            role: item.license_type === "CRM" ? "Psiquiatra" : "Psicólogo(a)",
+            crp: item.license_type === "CRP" ? license : undefined,
+            crm: item.license_type === "CRM" ? license : undefined,
+            img: item.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format",
+            rating: 5,
+            reviews: 0,
+            price: Number(item.session_price ?? 0),
+            modalities: modalities.length ? modalities : ["Online"],
+            specialties: item.specialties?.length ? item.specialties : ["Psicoterapia"],
+            city: item.city && item.state ? `${item.city}, ${item.state}` : item.city ?? "Online",
+            wait: "Agenda aberta",
+            approaches: item.approaches ?? [],
+          };
+        }));
+      }
+
+      setLoadingProfessionals(false);
+    };
+
+    void loadProfessionals();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const directoryProfessionals = dbProfessionals.length ? dbProfessionals : professionals;
+
+  const filtered = directoryProfessionals.filter(p => {
+    const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.specialties.some(s => s.toLowerCase().includes(search.toLowerCase()));
+    const matchModality = modality === "all" || p.modalities.includes(modality === "online" ? "Online" : "Presencial");
+    const matchSpecialty = specialty === "all" || p.specialties.some(s => s.toLowerCase() === specialty.toLowerCase());
+    return matchSearch && matchModality && matchSpecialty;
+  });
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Search header */}
+      <div className="bg-white border-b border-border sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex flex-col md:flex-row gap-3">
+            <Input placeholder="Especialidade, nome ou abordagem..." icon={<Search size={16} />} value={search} onChange={setSearch} className="flex-1" />
+            <Input placeholder="Cidade ou estado" icon={<MapPin size={16} />} className="md:w-52" />
+            <select className="px-4 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30">
+              <option>Qualquer plano</option><option>Particular</option><option>Unimed</option><option>Amil</option>
+            </select>
+            <Btn variant="primary"><Filter size={16} />Filtrar</Btn>
+          </div>
+          <div className="flex gap-2 mt-3 flex-wrap">
+            {[{ id: "all", label: "Todos" }, { id: "online", label: "Online" }, { id: "presencial", label: "Presencial" }].map(m => (
+              <button key={m.id} onClick={() => setModality(m.id)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${modality === m.id ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-secondary"}`}>
+                {m.label}
+              </button>
+            ))}
+            {["Ansiedade", "Depressão", "Trauma", "TDAH", "Burnout"].map(sp => (
+              <button key={sp} onClick={() => setSpecialty(specialty === sp ? "all" : sp)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${specialty === sp ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-secondary"}`}>
+                {sp}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <p className="text-sm text-muted-foreground mb-6">
+          {loadingProfessionals ? "Carregando profissionais..." : `${filtered.length} profissionais encontrados`}
+        </p>
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
+          {filtered.map((p, i) => (
+            <Card key={i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => onNavigate("profile")}>
+              <div className="flex gap-4 mb-4">
+                <img src={p.img} alt={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="font-semibold text-foreground text-sm font-display">{p.name}</h3>
+                      <p className="text-xs text-muted-foreground">{p.role}</p>
+                    </div>
+                    <Badge variant="success" className="flex-shrink-0 gap-1"><Shield size={10} />{p.crp || p.crm}</Badge>
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    <Star size={12} className="text-amber-400 fill-amber-400" />
+                    <span className="text-xs font-semibold text-foreground">{p.rating}</span>
+                    <span className="text-xs text-muted-foreground">({p.reviews})</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1 mb-3">
+                {p.specialties.map(s => <Badge key={s} variant="outline">{s}</Badge>)}
+              </div>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground mb-4">
+                <span className="flex items-center gap-1"><MapPin size={11} />{p.city}</span>
+                <span className="flex items-center gap-1"><Globe size={11} />{p.modalities.join(", ")}</span>
+              </div>
+              <div className="flex items-center justify-between pt-3 border-t border-border">
+                <div>
+                  <span className="text-xs text-muted-foreground">A partir de </span>
+                  <span className="font-bold text-foreground font-display">R${p.price}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-emerald-600 font-medium flex items-center gap-1"><Clock size={11} />{p.wait}</span>
+                  <Btn variant="primary" size="sm">Agendar</Btn>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Professional Profile ─────────────────────────────────────────────
+
+function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [tab, setTab] = useState("sobre");
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+
+  const slots = ["08:00", "09:00", "11:00", "14:00", "15:00", "16:00", "17:00"];
+  const days = ["Seg 07", "Ter 08", "Qua 09", "Qui 10", "Sex 11"];
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Hero */}
+      <div className="bg-white border-b border-border">
+        <div className="max-w-5xl mx-auto px-6 py-8">
+          <div className="flex flex-col md:flex-row gap-8">
+            <div className="flex-shrink-0">
+              <img
+                src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=200&h=200&fit=crop&auto=format"
+                alt="Dra. Fernanda Costa"
+                className="w-32 h-32 rounded-3xl object-cover shadow-lg bg-secondary"
+              />
+            </div>
+            <div className="flex-1">
+              <div className="flex flex-wrap items-start gap-3 mb-2">
+                <h1 className="text-2xl font-bold text-foreground font-display">Dra. Fernanda Costa</h1>
+                <Badge variant="success"><Shield size={12} />CRP 06/12345 Verificado</Badge>
+              </div>
+              <p className="text-muted-foreground mb-3">Psicóloga Clínica · 12 anos de experiência · São Paulo, SP</p>
+              <div className="flex flex-wrap gap-2 mb-4">
+                {["Ansiedade", "Depressão", "TCC", "ACT", "Relacionamentos", "Autoestima"].map(s => (
+                  <Badge key={s} variant="outline">{s}</Badge>
+                ))}
+              </div>
+              <div className="flex items-center gap-6 text-sm">
+                <span className="flex items-center gap-1.5 font-semibold text-foreground"><Star size={15} className="text-amber-400 fill-amber-400" />4.9 <span className="font-normal text-muted-foreground">(134 avaliações)</span></span>
+                <span className="flex items-center gap-1.5 text-muted-foreground"><Video size={15} className="text-primary" />Online</span>
+                <span className="flex items-center gap-1.5 text-muted-foreground"><MapPin size={15} className="text-primary" />Presencial</span>
+                <span className="font-bold text-foreground font-display">R$180/sessão</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Btn variant="primary" size="lg" onClick={() => onNavigate("checkout")}><Calendar size={16} />Agendar sessão</Btn>
+              <Btn variant="outline"><MessageSquare size={16} />Enviar mensagem</Btn>
+            </div>
+          </div>
+          <div className="flex gap-4 mt-6 border-t border-border pt-4">
+            {["sobre", "abordagens", "avaliações", "disponibilidade"].map(t => (
+              <button key={t} onClick={() => setTab(t)}
+                className={`pb-2 text-sm font-medium capitalize border-b-2 transition-all ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-5xl mx-auto px-6 py-8 grid lg:grid-cols-3 gap-8">
+        {/* Main content */}
+        <div className="lg:col-span-2 space-y-6">
+          {tab === "sobre" && (
+            <>
+              <Card className="p-6">
+                <h2 className="font-semibold text-foreground font-display mb-3">Sobre mim</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Sou psicóloga clínica com mais de 12 anos de experiência atendendo adultos e adolescentes. Me especializo em transtornos de ansiedade, depressão, burnout e questões relacionais. Utilizo principalmente a Terapia Cognitivo-Comportamental (TCC) e a Terapia de Aceitação e Compromisso (ACT).
+                </p>
+                <p className="text-sm text-muted-foreground leading-relaxed mt-3">
+                  Acredito que a terapia é um espaço de acolhimento e crescimento. Meu objetivo é ajudar cada paciente a desenvolver ferramentas práticas para lidar com os desafios da vida e construir uma existência mais plena e significativa.
+                </p>
+              </Card>
+              <Card className="p-6">
+                <h2 className="font-semibold text-foreground font-display mb-4">Formação e Credenciais</h2>
+                <div className="space-y-4">
+                  {[
+                    { icon: <Award size={16} />, title: "Doutorado em Psicologia Clínica", sub: "USP · 2016" },
+                    { icon: <BookOpen size={16} />, title: "Especialização em TCC", sub: "FMUSP · 2013" },
+                    { icon: <Shield size={16} />, title: "CRP 06/12345", sub: "Ativo · Verificado pelo MindCare" },
+                  ].map((c, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center text-primary flex-shrink-0">{c.icon}</div>
+                      <div><p className="text-sm font-medium text-foreground">{c.title}</p><p className="text-xs text-muted-foreground">{c.sub}</p></div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </>
+          )}
+
+          {tab === "avaliações" && (
+            <Card className="p-6">
+              <div className="flex items-center gap-4 mb-6 pb-6 border-b border-border">
+                <div className="text-center">
+                  <p className="text-5xl font-bold text-foreground font-display">4.9</p>
+                  <div className="flex">{Array(5).fill(0).map((_, i) => <Star key={i} size={16} className="text-amber-400 fill-amber-400" />)}</div>
+                  <p className="text-xs text-muted-foreground mt-1">134 avaliações</p>
+                </div>
+                <div className="flex-1 space-y-2">
+                  {[5, 4, 3, 2, 1].map(n => (
+                    <div key={n} className="flex items-center gap-2">
+                      <span className="text-xs w-3 text-muted-foreground">{n}</span>
+                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-full bg-amber-400 rounded-full" style={{ width: `${[92, 6, 1, 1, 0][5 - n]}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {[
+                { name: "Mariana S.", date: "Há 2 dias", text: "Atendimento excelente. Fernanda é muito acolhedora e profissional. Recomendo demais!", rating: 5 },
+                { name: "João P.", date: "Há 1 semana", text: "Três meses de terapia e já sinto uma diferença enorme na minha qualidade de vida.", rating: 5 },
+                { name: "Camila R.", date: "Há 2 semanas", text: "Muito competente e empática. A plataforma também facilita muito o agendamento.", rating: 5 },
+              ].map((r, i) => (
+                <div key={i} className="py-4 border-b border-border last:border-0">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Avatar name={r.name} size="sm" />
+                      <span className="text-sm font-medium text-foreground">{r.name}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{r.date}</span>
+                  </div>
+                  <div className="flex mb-2">{Array(r.rating).fill(0).map((_, j) => <Star key={j} size={12} className="text-amber-400 fill-amber-400" />)}</div>
+                  <p className="text-sm text-muted-foreground">{r.text}</p>
+                </div>
+              ))}
+            </Card>
+          )}
+
+          {tab === "disponibilidade" && (
+            <Card className="p-6">
+              <h2 className="font-semibold text-foreground font-display mb-4">Selecione data e horário</h2>
+              <div className="grid grid-cols-5 gap-2 mb-6">
+                {days.map(d => (
+                  <button key={d} className="py-3 rounded-xl text-xs font-medium bg-muted hover:bg-secondary hover:text-primary transition-all text-center">{d}</button>
+                ))}
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {slots.map(s => (
+                  <button key={s} onClick={() => setSelectedSlot(s)}
+                    className={`py-2.5 rounded-xl text-xs font-medium transition-all ${selectedSlot === s ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+              {selectedSlot && (
+                <div className="mt-4 p-4 bg-secondary rounded-xl flex items-center justify-between">
+                  <p className="text-sm font-medium text-foreground">Seg 07 · {selectedSlot} · R$180</p>
+                  <Btn variant="primary" size="sm" onClick={() => onNavigate("checkout")}>Confirmar</Btn>
+                </div>
+              )}
+            </Card>
+          )}
+        </div>
+
+        {/* Sidebar booking */}
+        <div className="space-y-4">
+          <Card className="p-5">
+            <h3 className="font-semibold text-foreground font-display mb-4">Agendar consulta</h3>
+            <div className="space-y-3 mb-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Sessão individual</span>
+                <span className="font-bold font-display">R$180</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Modalidade</span>
+                <div className="flex gap-1">
+                  <Badge variant="success">Online</Badge>
+                  <Badge variant="outline">Presencial</Badge>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Disponível</span>
+                <span className="text-emerald-600 font-medium flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full" />Hoje</span>
+              </div>
+            </div>
+            <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("checkout")}>
+              <Calendar size={16} />Agendar agora
+            </Btn>
+          </Card>
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-foreground mb-3">Convênios aceitos</h3>
+            <div className="flex flex-wrap gap-2">
+              {["Particular", "Unimed", "Amil", "SulAmérica"].map(p => <Badge key={p} variant="outline">{p}</Badge>)}
+            </div>
+          </Card>
+          <Card className="p-5">
+            <h3 className="text-sm font-semibold text-foreground mb-3">Idiomas</h3>
+            <div className="flex flex-wrap gap-2">
+              {["Português", "Inglês", "Espanhol"].map(l => <Badge key={l} variant="outline"><Globe size={10} />{l}</Badge>)}
+            </div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Login ────────────────────────────────────────────────────────────
+
+function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [userType, setUserType] = useState<"patient" | "professional">("patient");
+  const [showPass, setShowPass] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [licenseNumber, setLicenseNumber] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authInfo, setAuthInfo] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleAuth = async () => {
+    setAuthError("");
+    setAuthInfo("");
+    setLoading(true);
+
+    try {
+      const typedPassword = password || Array.from(document.querySelectorAll<HTMLInputElement>("input")).find(input =>
+        input.type === "password" || input.placeholder.includes("•") || input.placeholder.includes("â€¢")
+      )?.value || "";
+
+      if (mode === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password: typedPassword,
+        });
+
+        if (error) throw error;
+
+        const role = (data.user?.user_metadata?.role as UserRole | undefined) ?? "patient";
+        onNavigate(role === "professional" ? "pro-dashboard" : "patient-dashboard");
+        return;
+      }
+
+      const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
+      if (!fullName) throw new Error("Informe nome e sobrenome.");
+      if (!email.trim()) throw new Error("Informe o e-mail.");
+      if (typedPassword.length < 6) throw new Error("A senha deve ter pelo menos 6 caracteres.");
+      if (userType === "professional" && !licenseNumber.trim()) {
+        throw new Error("Informe o CRP/CRM para cadastro profissional.");
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: typedPassword,
+        options: {
+          data: {
+            full_name: fullName,
+            role: userType,
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      if (userType === "professional" && data.user) {
+        const { error: profileError } = await supabase.from("professional_profiles").insert({
+          id: data.user.id,
+          license_type: licenseNumber.toUpperCase().includes("CRM") ? "CRM" : "CRP",
+          license_number: licenseNumber.trim(),
+        });
+
+        if (profileError) throw profileError;
+      }
+
+      if (!data.session) {
+        setAuthInfo("Cadastro criado. Confirme seu e-mail antes de entrar.");
+        setMode("login");
+        return;
+      }
+
+      onNavigate(userType === "professional" ? "pro-dashboard" : "patient-dashboard");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Não foi possível autenticar.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    setAuthError("");
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+    if (error) setAuthError(error.message);
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="w-12 h-12 bg-primary rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Brain size={22} className="text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-foreground font-display">MindCare</h1>
+          <p className="text-sm text-muted-foreground mt-1">Plataforma de saúde mental</p>
+        </div>
+
+        <Card className="p-8">
+          <div className="flex rounded-xl bg-muted p-1 mb-6">
+            <button type="button" onClick={() => setMode("login")} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${mode === "login" ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>Entrar</button>
+            <button type="button" onClick={() => setMode("register")} className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${mode === "register" ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>Cadastrar</button>
+          </div>
+
+          {mode === "register" && (
+            <div className="flex gap-2 mb-5">
+              <button type="button" onClick={() => setUserType("patient")} className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-all ${userType === "patient" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>
+                <Heart size={14} className="inline mr-1.5" />Paciente
+              </button>
+              <button type="button" onClick={() => setUserType("professional")} className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-all ${userType === "professional" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>
+                <Award size={14} className="inline mr-1.5" />Profissional
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {mode === "register" && (
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Nome" placeholder="Ana" value={firstName} onChange={setFirstName} />
+                <Input label="Sobrenome" placeholder="Beatriz" value={lastName} onChange={setLastName} />
+              </div>
+            )}
+            <Input label="E-mail" placeholder="seu@email.com" type="email" icon={<Mail size={15} />} value={email} onChange={setEmail} />
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-foreground">Senha</label>
+              <div className="relative">
+                <input type={showPass ? "text" : "password"} placeholder="••••••••" className="w-full pl-3 pr-10 py-2.5 bg-input-background border border-border rounded-xl text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+                <button className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" onClick={() => setShowPass(!showPass)}>
+                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+            {mode === "register" && userType === "professional" && (
+              <Input label="CRP/CRM" placeholder="Ex: CRP 06/12345" icon={<Shield size={15} />} value={licenseNumber} onChange={setLicenseNumber} />
+            )}
+          </div>
+
+          {mode === "login" && (
+            <div className="text-right mt-2">
+              <a href="#" className="text-xs text-primary hover:underline">Esqueci minha senha</a>
+            </div>
+          )}
+
+          {authError && (
+            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {authError}
+            </div>
+          )}
+          {authInfo && (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {authInfo}
+            </div>
+          )}
+
+          <Btn variant="primary" className="w-full justify-center mt-6" onClick={handleAuth} disabled={loading}>
+            {loading ? "Processando..." : mode === "login" ? "Entrar" : "Criar conta"}
+          </Btn>
+
+          <div className="flex items-center gap-3 my-5">
+            <div className="flex-1 h-px bg-border" />
+            <span className="text-xs text-muted-foreground">ou</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+
+          <button type="button" onClick={handleGoogleAuth} className="w-full flex items-center justify-center gap-3 py-2.5 border border-border rounded-xl text-sm font-medium text-foreground hover:bg-muted transition-all">
+            <svg className="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
+            Continuar com Google
+          </button>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Patient Dashboard ────────────────────────────────────────────────
+
+function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início", active: true },
+    { icon: <Calendar size={18} />, label: "Consultas" },
+    { icon: <MessageSquare size={18} />, label: "Mensagens" },
+    { icon: <FileText size={18} />, label: "Documentos" },
+    { icon: <CreditCard size={18} />, label: "Pagamentos" },
+    { icon: <Settings size={18} />, label: "Configurações" },
+  ];
+
+  return (
+    <AppShell title="Meu Painel" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-6">
+        {/* Welcome */}
+        <Card className="p-6 bg-gradient-to-r from-primary to-[#156038] text-white border-0">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white/70 text-sm mb-1">Bom dia,</p>
+              <h2 className="text-2xl font-bold font-display">Ana Beatriz 👋</h2>
+              <p className="text-white/70 text-sm mt-2">Próxima sessão em <strong className="text-white">2 horas</strong></p>
+            </div>
+            <div className="text-right">
+              <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center">
+                <Heart size={28} className="text-white" />
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {/* Upcoming */}
+        <div>
+          <h2 className="text-base font-semibold text-foreground font-display mb-3">Próximas consultas</h2>
+          <div className="space-y-3">
+            {[
+              { dr: "Dra. Fernanda Costa", time: "Hoje, 16:00", type: "Online", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" },
+              { dr: "Dra. Fernanda Costa", time: "Qui 10 Jan, 16:00", type: "Online", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" },
+            ].map((a, i) => (
+              <Card key={i} className="p-4 flex items-center gap-4">
+                <img src={a.img} alt={a.dr} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-foreground">{a.dr}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{a.time} · {a.type}</p>
+                </div>
+                <div className="flex gap-2">
+                  {i === 0 && <Btn variant="primary" size="sm" onClick={() => onNavigate("video")}><Video size={14} />Entrar</Btn>}
+                  <Btn variant="outline" size="sm">Reagendar</Btn>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard label="Sessões realizadas" value="24" delta="+3" icon={<CheckCircle size={18} />} color="green" />
+          <StatCard label="Semanas em terapia" value="18" icon={<Calendar size={18} />} color="blue" />
+          <StatCard label="Humor médio" value="7.4/10" delta="+0.8" icon={<Heart size={18} />} color="purple" />
+          <StatCard label="Total investido" value="R$4.320" icon={<DollarSign size={18} />} color="amber" />
+        </div>
+
+        {/* Mood tracker */}
+        <Card className="p-6">
+          <h3 className="font-semibold text-foreground font-display mb-4">Registro de humor — últimas 4 semanas</h3>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={[
+              { week: "Sem 1", humor: 5 }, { week: "Sem 2", humor: 6 }, { week: "Sem 3", humor: 7 },
+              { week: "Sem 4", humor: 7.4 }, { week: "Sem 5", humor: 8 }, { week: "Sem 6", humor: 7.8 },
+            ]}>
+              <defs>
+                <linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#1B7A48" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="#1B7A48" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="week" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+              <YAxis domain={[0, 10]} tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
+              <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+              <Area type="monotone" dataKey="humor" stroke="#1B7A48" fill="url(#moodGrad)" strokeWidth={2} dot={{ fill: "#1B7A48", r: 4 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Professional Dashboard ──────────────────────────────────────────
+
+function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início", active: true },
+    { icon: <Calendar size={18} />, label: "Agenda" },
+    { icon: <Users size={18} />, label: "Pacientes" },
+    { icon: <FileText size={18} />, label: "Prontuários" },
+    { icon: <Brain size={18} />, label: "IA Assistente" },
+    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+    { icon: <Settings size={18} />, label: "Configurações" },
+  ];
+
+  const revenueData = [
+    { month: "Ago", receita: 3200 }, { month: "Set", receita: 3800 }, { month: "Out", receita: 3600 },
+    { month: "Nov", receita: 4100 }, { month: "Dez", receita: 4800 }, { month: "Jan", receita: 5200 },
+  ];
+
+  const patients = [
+    { name: "Ana Beatriz", session: "Hoje 16:00", status: "Confirmado", img: "" },
+    { name: "Carlos Silva", session: "Hoje 17:00", status: "Confirmado", img: "" },
+    { name: "Mariana Roque", session: "Amanhã 09:00", status: "Pendente", img: "" },
+    { name: "João Mendes", session: "Qui 10:00", status: "Confirmado", img: "" },
+  ];
+
+  return (
+    <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard label="Pacientes ativos" value="38" delta="+4" icon={<Users size={18} />} color="green" />
+          <StatCard label="Sessões este mês" value="96" delta="+12" icon={<Calendar size={18} />} color="blue" />
+          <StatCard label="Receita (Jan)" value="R$5.200" delta="+8%" icon={<DollarSign size={18} />} color="amber" />
+          <StatCard label="Avaliação média" value="4.9 ★" delta="+0.1" icon={<Star size={18} />} color="purple" />
+        </div>
+
+        <div className="grid lg:grid-cols-3 gap-6">
+          <Card className="lg:col-span-2 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-foreground font-display">Receita mensal</h3>
+              <Badge variant="success">+8% vs mês anterior</Badge>
+            </div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={revenueData}>
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v/1000).toFixed(1)}k`} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" vertical={false} />
+                <Tooltip formatter={(v: number) => [`R$${v.toLocaleString()}`, "Receita"]} contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+                <Bar dataKey="receita" fill="#1B7A48" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <Card className="p-6">
+            <h3 className="font-semibold text-foreground font-display mb-4">Taxa de ocupação</h3>
+            <div className="flex items-center justify-center mb-4">
+              <ResponsiveContainer width={160} height={160}>
+                <PieChart>
+                  <Pie data={[{ value: 78 }, { value: 22 }]} cx="50%" cy="50%" innerRadius={50} outerRadius={70} startAngle={90} endAngle={-270} dataKey="value">
+                    <Cell fill="#1B7A48" />
+                    <Cell fill="#EEF6F1" />
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="text-center -mt-20 mb-4">
+              <p className="text-3xl font-bold text-foreground font-display">78%</p>
+              <p className="text-xs text-muted-foreground">da agenda ocupada</p>
+            </div>
+            <div className="mt-16 space-y-2">
+              <div className="flex justify-between text-xs"><span className="text-muted-foreground">Confirmadas</span><span className="font-medium">62 sessões</span></div>
+              <div className="flex justify-between text-xs"><span className="text-muted-foreground">Disponíveis</span><span className="font-medium">18 slots</span></div>
+            </div>
+          </Card>
+        </div>
+
+        <div className="grid lg:grid-cols-2 gap-6">
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-foreground font-display">Próximas sessões</h3>
+              <Btn variant="ghost" size="sm" onClick={() => onNavigate("calendar")}>Ver agenda <ChevronRight size={14} /></Btn>
+            </div>
+            <div className="space-y-3">
+              {patients.map((p, i) => (
+                <div key={i} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                  <Avatar name={p.name} size="sm" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-foreground">{p.name}</p>
+                    <p className="text-xs text-muted-foreground">{p.session}</p>
+                  </div>
+                  <Badge variant={p.status === "Confirmado" ? "success" : "warning"}>{p.status}</Badge>
+                  <Btn variant="ghost" size="sm"><Video size={14} /></Btn>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-foreground font-display">Tarefas pendentes</h3>
+            </div>
+            <div className="space-y-3">
+              {[
+                { task: "Nota clínica — Ana Beatriz", time: "Vence hoje", icon: <FileText size={15} />, urgent: true },
+                { task: "Renovar receita — João Mendes", time: "Vence amanhã", icon: <Clipboard size={15} />, urgent: true },
+                { task: "Responder mensagem — Mariana R.", time: "Há 2h", icon: <MessageSquare size={15} />, urgent: false },
+                { task: "Atualizar disponibilidade (fev)", time: "Esta semana", icon: <Calendar size={15} />, urgent: false },
+              ].map((t, i) => (
+                <div key={i} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${t.urgent ? "bg-amber-50 text-amber-600" : "bg-muted text-muted-foreground"}`}>{t.icon}</div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-foreground">{t.task}</p>
+                    <p className="text-xs text-muted-foreground">{t.time}</p>
+                  </div>
+                  {t.urgent && <div className="w-2 h-2 rounded-full bg-amber-400" />}
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Calendar ─────────────────────────────────────────────────────────
+
+function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const [view, setView] = useState<"week" | "month" | "day">("week");
+  const [selectedDay, setSelectedDay] = useState(7);
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início" },
+    { icon: <Calendar size={18} />, label: "Agenda", active: true },
+    { icon: <Users size={18} />, label: "Pacientes" },
+    { icon: <FileText size={18} />, label: "Prontuários" },
+    { icon: <Brain size={18} />, label: "IA Assistente" },
+    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+  ];
+
+  const hours = Array.from({ length: 10 }, (_, i) => i + 8);
+  const days = ["Seg 06", "Ter 07", "Qua 08", "Qui 09", "Sex 10", "Sáb 11"];
+
+  const appointments: Record<string, { patient: string; type: string; color: string }[]> = {
+    "Ter 07-9": [{ patient: "Ana Beatriz", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+    "Ter 07-10": [{ patient: "Carlos Silva", type: "Presencial", color: "bg-blue-50 border-blue-200 text-blue-700" }],
+    "Ter 07-14": [{ patient: "Mariana Roque", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+    "Qua 08-9": [{ patient: "João Mendes", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+    "Qua 08-11": [{ patient: "Sofia Lima", type: "Presencial", color: "bg-blue-50 border-blue-200 text-blue-700" }],
+    "Sex 10-10": [{ patient: "Pedro Santos", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+    "Sex 10-15": [{ patient: "Laura Costa", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+  };
+
+  return (
+    <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-4 h-full">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button className="p-2 rounded-lg hover:bg-muted"><ChevronLeft size={18} /></button>
+            <h2 className="font-semibold text-foreground font-display">Janeiro 2025</h2>
+            <button className="p-2 rounded-lg hover:bg-muted"><ChevronRight size={18} /></button>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex bg-muted rounded-xl p-1">
+              {(["day", "week", "month"] as const).map(v => (
+                <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${view === v ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>{v === "day" ? "Dia" : v === "week" ? "Semana" : "Mês"}</button>
+              ))}
+            </div>
+            <Btn variant="primary" size="sm"><Plus size={15} />Nova consulta</Btn>
+            <Btn variant="outline" size="sm"><RefreshCw size={15} />Google Agenda</Btn>
+          </div>
+        </div>
+
+        <Card className="overflow-hidden flex-1">
+          {/* Day headers */}
+          <div className="grid border-b border-border bg-muted/50" style={{ gridTemplateColumns: "60px repeat(6, 1fr)" }}>
+            <div className="p-3" />
+            {days.map(d => (
+              <div key={d} className="p-3 text-center">
+                <p className="text-xs font-medium text-muted-foreground">{d.split(" ")[0]}</p>
+                <p className={`text-sm font-semibold mt-0.5 w-8 h-8 rounded-full flex items-center justify-center mx-auto ${d.includes("07") ? "bg-primary text-white" : "text-foreground"}`}>{d.split(" ")[1]}</p>
+              </div>
+            ))}
+          </div>
+          {/* Time grid */}
+          <div className="overflow-y-auto max-h-[480px]">
+            {hours.map(h => (
+              <div key={h} className="grid border-b border-border/50 min-h-[60px]" style={{ gridTemplateColumns: "60px repeat(6, 1fr)" }}>
+                <div className="px-3 py-2 text-xs text-muted-foreground text-right font-mono">{h}:00</div>
+                {days.map(d => {
+                  const key = `${d}-${h}`;
+                  const appt = appointments[key];
+                  return (
+                    <div key={d} className="border-l border-border/30 p-1 relative cursor-pointer hover:bg-muted/30 transition-colors">
+                      {appt && appt.map((a, i) => (
+                        <div key={i} className={`rounded-lg border px-2 py-1 text-xs font-medium ${a.color}`}>
+                          <p className="font-semibold truncate">{a.patient}</p>
+                          <p className="opacity-70">{a.type}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { label: "Disponibilidade semanal", value: "Seg–Sex 8h–18h", icon: <Clock size={16} />, action: "Editar" },
+            { label: "Próximo bloqueio", value: "20–24 Jan (férias)", icon: <Calendar size={16} />, action: "Gerenciar" },
+            { label: "Lembretes automáticos", value: "24h + 1h antes", icon: <Bell size={16} />, action: "Configurar" },
+          ].map((s, i) => (
+            <Card key={i} className="p-4 flex items-center gap-3">
+              <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center text-primary">{s.icon}</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-muted-foreground">{s.label}</p>
+                <p className="text-sm font-medium text-foreground truncate">{s.value}</p>
+              </div>
+              <Btn variant="ghost" size="sm">{s.action}</Btn>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: EHR ─────────────────────────────────────────────────────────────
+
+function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const [selectedPatient, setSelectedPatient] = useState(0);
+  const [ehrTab, setEhrTab] = useState("historico");
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início" },
+    { icon: <Calendar size={18} />, label: "Agenda" },
+    { icon: <Users size={18} />, label: "Pacientes" },
+    { icon: <FileText size={18} />, label: "Prontuários", active: true },
+    { icon: <Brain size={18} />, label: "IA Assistente" },
+    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+  ];
+
+  const patients = [
+    { name: "Ana Beatriz Souza", age: 28, since: "Jun 2024", sessions: 24, diagnosis: "F41.1 Ansiedade Generalizada" },
+    { name: "Carlos Augusto Silva", age: 35, since: "Mar 2024", sessions: 36, diagnosis: "F32.1 Episódio Depressivo Moderado" },
+    { name: "Mariana Roque Lima", age: 22, since: "Nov 2024", sessions: 8, diagnosis: "F43.1 PTSD" },
+    { name: "João Pedro Mendes", age: 42, since: "Jan 2025", sessions: 4, diagnosis: "Em avaliação" },
+  ];
+
+  const sessions = [
+    { date: "07 Jan 2025", duration: "50min", type: "Online", summary: "Paciente relatou melhora na qualidade do sono. Trabalhamos técnicas de respiração diafragmática e reestruturação cognitiva de crenças disfuncionais sobre o trabalho.", mood: 7 },
+    { date: "31 Dez 2024", duration: "50min", type: "Online", summary: "Sessão de encerramento do ano. Revisão de progressos e definição de metas para 2025. Notável avanço na regulação emocional.", mood: 8 },
+    { date: "24 Dez 2024", duration: "50min", type: "Online", summary: "Foco em técnicas de mindfulness para o período natalino. Discussão sobre dinâmicas familiares e estratégias de enfrentamento.", mood: 6 },
+  ];
+
+  const p = patients[selectedPatient];
+
+  return (
+    <AppShell title="Prontuário Eletrônico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="flex gap-6 h-full">
+        {/* Patient list */}
+        <div className="w-64 flex-shrink-0">
+          <div className="mb-3">
+            <Input placeholder="Buscar paciente..." icon={<Search size={15} />} />
+          </div>
+          <div className="space-y-2">
+            {patients.map((pt, i) => (
+              <button key={i} onClick={() => setSelectedPatient(i)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all ${selectedPatient === i ? "bg-secondary border border-border" : "hover:bg-muted"}`}>
+                <Avatar name={pt.name} size="sm" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate">{pt.name}</p>
+                  <p className="text-xs text-muted-foreground">{pt.sessions} sessões</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Patient record */}
+        <div className="flex-1 space-y-4">
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-4">
+                <Avatar name={p.name} size="lg" />
+                <div>
+                  <h2 className="font-bold text-foreground font-display">{p.name}</h2>
+                  <p className="text-sm text-muted-foreground">{p.age} anos · Paciente desde {p.since}</p>
+                  <Badge variant="accent" className="mt-1"><Clipboard size={11} />{p.diagnosis}</Badge>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <Btn variant="outline" size="sm"><Upload size={14} />Anexar</Btn>
+                <Btn variant="primary" size="sm" onClick={() => onNavigate("ai-assistant")}><Brain size={14} />IA Assistente</Btn>
+              </div>
+            </div>
+            <div className="flex gap-1 border-t border-border pt-3">
+              {["historico", "plano", "receitas", "anexos", "notas"].map(t => (
+                <button key={t} onClick={() => setEhrTab(t)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
+                  {t === "historico" ? "Histórico" : t === "plano" ? "Plano Terapêutico" : t === "receitas" ? "Receituário" : t === "anexos" ? "Anexos" : "Notas Seguras"}
+                </button>
+              ))}
+            </div>
+          </Card>
+
+          {ehrTab === "historico" && (
+            <div className="space-y-3">
+              {sessions.map((s, i) => (
+                <Card key={i} className="p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
+                        {s.type === "Online" ? <Video size={16} /> : <MapPin size={16} />}
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">{s.date} · {s.duration}</p>
+                        <Badge variant="outline">{s.type}</Badge>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Humor:</span>
+                      <div className="flex gap-0.5">
+                        {Array(10).fill(0).map((_, j) => (
+                          <div key={j} className={`w-2 h-4 rounded-sm ${j < s.mood ? "bg-primary" : "bg-muted"}`} />
+                        ))}
+                      </div>
+                      <span className="text-xs font-mono text-foreground">{s.mood}/10</span>
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{s.summary}</p>
+                  <div className="flex gap-2 mt-3">
+                    <Btn variant="ghost" size="sm"><Edit3 size={13} />Editar nota</Btn>
+                    <Btn variant="ghost" size="sm"><Brain size={13} />Ver resumo IA</Btn>
+                    <Btn variant="ghost" size="sm"><Download size={13} />PDF</Btn>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+
+          {ehrTab === "plano" && (
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-4">Plano Terapêutico</h3>
+              <div className="space-y-4">
+                <div><p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Objetivos</p>
+                  {["Reduzir sintomas de ansiedade generalizada", "Desenvolver estratégias de regulação emocional", "Melhorar qualidade do sono e rotina de autocuidado"].map((o, i) => (
+                    <div key={i} className="flex items-center gap-2 py-2 border-b border-border last:border-0">
+                      <CheckCircle size={15} className="text-primary" /><p className="text-sm text-foreground">{o}</p>
+                    </div>
+                  ))}
+                </div>
+                <div><p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Abordagem</p>
+                  <p className="text-sm text-muted-foreground">TCC + ACT com sessões semanais de 50 minutos. Revisão trimestral do plano.</p>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {ehrTab === "notas" && (
+            <Card className="p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Lock size={16} className="text-amber-600" />
+                <h3 className="font-semibold text-foreground font-display">Notas Seguras</h3>
+                <Badge variant="warning">Criptografado</Badge>
+              </div>
+              <textarea className="w-full h-40 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground" placeholder="Adicione notas clínicas seguras sobre este paciente...Elas são criptografadas e visíveis apenas por você." />
+              <div className="flex justify-end mt-3"><Btn variant="primary" size="sm"><Lock size={13} />Salvar com segurança</Btn></div>
+            </Card>
+          )}
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: AI Assistant ─────────────────────────────────────────────────────
+
+function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const [recording, setRecording] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "recording" | "processing" | "done">("idle");
+  const [consent, setConsent] = useState(false);
+
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início" },
+    { icon: <Calendar size={18} />, label: "Agenda" },
+    { icon: <Users size={18} />, label: "Pacientes" },
+    { icon: <FileText size={18} />, label: "Prontuários" },
+    { icon: <Brain size={18} />, label: "IA Assistente", active: true },
+    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+  ];
+
+  const transcript = [
+    { role: "T", text: "Bom dia, Ana. Como você se sentiu desde nossa última sessão?" },
+    { role: "P", text: "Olá! Tive uma semana bem mais tranquila. Consegui usar a técnica de respiração que você ensinou quando fiquei ansiosa no trabalho." },
+    { role: "T", text: "Que ótimo! Pode me contar mais sobre essa situação? O que aconteceu e como você reagiu?" },
+    { role: "P", text: "Então... meu chefe me chamou numa reunião de última hora e eu já senti aquele nó no estômago. Mas respirei fundo três vezes como você disse, me lembrei que era só uma situação, não uma catástrofe." },
+    { role: "T", text: "Excelente! Isso é exatamente a reestruturação cognitiva que trabalhamos. Como você avalia sua ansiedade naquele momento, de 0 a 10?" },
+    { role: "P", text: "Começou em uns 7, mas depois de respirar caiu pra uns 4. Consegui participar da reunião normalmente." },
+  ];
+
+  const summary = {
+    pontos: ["Melhora significativa no manejo da ansiedade situacional", "Uso bem-sucedido da técnica de respiração diafragmática", "Aplicação da reestruturação cognitiva no ambiente de trabalho", "Redução da ansiedade de 7 para 4 em situação desafiadora"],
+    acoes: ["Praticar diário de pensamentos automáticos (5min/dia)", "Continuar técnica de respiração 3x/dia", "Registrar situações ansiosas e estratégias usadas"],
+    nota: "Paciente demonstra progresso consistente no manejo de sintomas ansiosos. Uso efetivo de técnicas de TCC em contexto real de trabalho. Humor relatado: 7/10. Plano: manter frequência semanal, introduzir técnica de mindfulness na próxima sessão.",
+  };
+
+  return (
+    <AppShell title="IA Assistente Clínico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="grid lg:grid-cols-2 gap-6 h-full">
+        {/* Recording panel */}
+        <div className="space-y-4">
+          {!consent && (
+            <Card className="p-5 border-amber-200 bg-amber-50">
+              <div className="flex items-start gap-3">
+                <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-semibold text-amber-800">Consentimento necessário</p>
+                  <p className="text-xs text-amber-700 mt-1 mb-3">Para gravar e transcrever a sessão, o paciente deve consentir explicitamente. A gravação é armazenada com criptografia AES-256.</p>
+                  <div className="flex gap-2">
+                    <Btn variant="primary" size="sm" onClick={() => setConsent(true)}><Check size={13} />Paciente consentiu</Btn>
+                    <Btn variant="outline" size="sm">Pular gravação</Btn>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-semibold text-foreground font-display">Sessão: Ana Beatriz</h3>
+                <p className="text-xs text-muted-foreground">07 Jan 2025 · Sessão #24</p>
+              </div>
+              {phase === "recording" && <Badge variant="danger"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />Gravando</Badge>}
+            </div>
+
+            <div className="flex flex-col items-center py-8 gap-4">
+              <button
+                onClick={() => {
+                  if (!consent) return;
+                  if (phase === "idle") { setPhase("recording"); setRecording(true); }
+                  else if (phase === "recording") { setPhase("processing"); setRecording(false); setTimeout(() => setPhase("done"), 2000); }
+                }}
+                className={`w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-lg ${!consent ? "bg-muted cursor-not-allowed" : phase === "recording" ? "bg-red-500 hover:bg-red-600 animate-pulse" : "bg-primary hover:bg-[#156038]"}`}
+              >
+                {phase === "recording" ? <MicOff size={30} className="text-white" /> : <Mic size={30} className="text-white" />}
+              </button>
+              <p className="text-sm text-muted-foreground">
+                {!consent ? "Obtenha consentimento primeiro" : phase === "idle" ? "Clique para iniciar gravação" : phase === "recording" ? "Gravando… Clique para parar" : phase === "processing" ? "Processando transcrição…" : "Sessão processada ✓"}
+              </p>
+              {phase === "recording" && (
+                <div className="flex gap-1 items-center">
+                  {Array(20).fill(0).map((_, i) => (
+                    <div key={i} className="w-1 bg-primary rounded-full animate-bounce" style={{ height: `${Math.random() * 20 + 8}px`, animationDelay: `${i * 0.05}s` }} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Transcript */}
+          <Card className="p-5">
+            <h3 className="font-semibold text-foreground font-display mb-3">Transcrição em tempo real</h3>
+            <div className="space-y-3 max-h-72 overflow-y-auto">
+              {transcript.map((t, i) => (
+                <div key={i} className={`flex gap-2 ${t.role === "T" ? "" : "flex-row-reverse"}`}>
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-1 ${t.role === "T" ? "bg-primary text-white" : "bg-accent text-white"}`}>{t.role}</div>
+                  <div className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed ${t.role === "T" ? "bg-muted text-foreground" : "bg-secondary text-primary"}`}>{t.text}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+
+        {/* Summary panel */}
+        <div className="space-y-4">
+          <Card className="p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-8 h-8 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><Zap size={16} /></div>
+              <h3 className="font-semibold text-foreground font-display">Resumo IA da sessão</h3>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pontos-chave</p>
+                <ul className="space-y-2">
+                  {summary.pontos.map((p, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-foreground"><Check size={14} className="text-primary flex-shrink-0 mt-0.5" />{p}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="border-t border-border pt-4">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Itens de ação</p>
+                <ul className="space-y-2">
+                  {summary.acoes.map((a, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-foreground"><div className="w-5 h-5 rounded border border-border flex-shrink-0 mt-0.5" /></ li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-foreground font-display">Nota clínica gerada</h3>
+              <Badge variant="success"><Brain size={11} />Gerada por IA</Badge>
+            </div>
+            <div className="bg-muted rounded-xl p-4 mb-3">
+              <p className="text-sm text-muted-foreground leading-relaxed">{summary.nota}</p>
+            </div>
+            <div className="flex gap-2">
+              <Btn variant="outline" size="sm" className="flex-1 justify-center"><Edit3 size={13} />Editar</Btn>
+              <Btn variant="primary" size="sm" className="flex-1 justify-center"><FileText size={13} />Salvar no prontuário</Btn>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <h3 className="font-semibold text-foreground font-display mb-3">Identificado pela IA</h3>
+            <div className="space-y-2">
+              {[
+                { label: "Emoção predominante", value: "Ansiedade → Alívio", icon: "🧠" },
+                { label: "Técnica utilizada", value: "Respiração + TCC", icon: "🛠️" },
+                { label: "Nível de engajamento", value: "Alto", icon: "✨" },
+                { label: "Humor final relatado", value: "7/10", icon: "😊" },
+              ].map((s, i) => (
+                <div key={i} className="flex items-center justify-between py-1.5 border-b border-border last:border-0">
+                  <span className="text-sm text-muted-foreground">{s.icon} {s.label}</span>
+                  <span className="text-sm font-medium text-foreground">{s.value}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Video Consultation ───────────────────────────────────────────────
+
+function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [msg, setMsg] = useState("");
+
+  const messages = [
+    { from: "Dra. Fernanda", text: "Olá Ana! Pode me ouvir bem?", time: "16:00" },
+    { from: "Ana", text: "Sim, perfeitamente! Bom dia!", time: "16:00" },
+    { from: "Dra. Fernanda", text: "Ótimo. Vamos começar. Como foi sua semana?", time: "16:01" },
+  ];
+
+  return (
+    <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-6 py-3 bg-[#161B22] border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center"><Brain size={14} className="text-white" /></div>
+          <span className="text-white font-semibold text-sm font-display">MindCare · Videoconsulta</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><span className="text-green-400 text-xs font-medium">00:32:14</span></div>
+          <Badge variant="success">Criptografado</Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn variant="ghost" size="sm" className="text-white/70 hover:text-white hover:bg-white/10" onClick={() => setChatOpen(!chatOpen)}>
+            <MessageSquare size={16} />Chat
+          </Btn>
+          <Btn variant="ghost" size="sm" className="text-white/70 hover:text-white hover:bg-white/10">
+            <Monitor size={16} />Compartilhar tela
+          </Btn>
+          <Btn variant="ghost" size="sm" className="text-white/70 hover:text-white hover:bg-white/10">
+            <Upload size={16} />Enviar arquivo
+          </Btn>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Video area */}
+        <div className="flex-1 relative flex items-center justify-center p-6">
+          {/* Main video */}
+          <div className="w-full max-w-4xl aspect-video bg-[#1C2128] rounded-3xl overflow-hidden relative">
+            <img
+              src="https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=900&h=500&fit=crop&auto=format"
+              alt="Terapeuta em videochamada"
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur-sm rounded-xl px-3 py-1.5 flex items-center gap-2">
+              <div className="w-2 h-2 bg-emerald-400 rounded-full" />
+              <span className="text-white text-xs font-medium">Dra. Fernanda Costa</span>
+            </div>
+          </div>
+
+          {/* Self video */}
+          <div className="absolute bottom-10 right-10 w-44 aspect-video bg-[#1C2128] rounded-2xl overflow-hidden border-2 border-white/20 shadow-xl">
+            {camOn ? (
+              <img src="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=120&fit=crop&auto=format" alt="Você" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center"><Avatar name="Ana Beatriz" size="md" /></div>
+            )}
+            <div className="absolute bottom-2 left-2 bg-black/50 rounded-lg px-2 py-0.5">
+              <span className="text-white text-xs">Você</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Chat panel */}
+        {chatOpen && (
+          <div className="w-72 bg-[#161B22] border-l border-white/10 flex flex-col">
+            <div className="p-4 border-b border-white/10">
+              <h3 className="text-white text-sm font-semibold">Chat da sessão</h3>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {messages.map((m, i) => (
+                <div key={i}>
+                  <p className="text-xs text-white/40 mb-1">{m.from} · {m.time}</p>
+                  <div className={`rounded-xl px-3 py-2 text-xs text-white leading-relaxed ${m.from === "Ana" ? "bg-primary ml-4" : "bg-white/10"}`}>{m.text}</div>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-white/10">
+              <div className="flex gap-2">
+                <input value={msg} onChange={e => setMsg(e.target.value)} placeholder="Mensagem..." className="flex-1 bg-white/10 text-white text-xs rounded-xl px-3 py-2 placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-primary" />
+                <button className="w-8 h-8 bg-primary rounded-xl flex items-center justify-center"><Send size={14} className="text-white" /></button>
+              </div>
+              <button className="mt-2 w-full flex items-center justify-center gap-2 text-white/50 text-xs hover:text-white/80 transition-colors">
+                <Paperclip size={12} />Enviar arquivo
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div className="flex items-center justify-center gap-4 py-5 bg-[#161B22] border-t border-white/10">
+        <button onClick={() => setMicOn(!micOn)} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${micOn ? "bg-white/10 hover:bg-white/20" : "bg-red-500/80"}`}>
+          {micOn ? <Mic size={20} className="text-white" /> : <MicOff size={20} className="text-white" />}
+        </button>
+        <button onClick={() => setCamOn(!camOn)} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${camOn ? "bg-white/10 hover:bg-white/20" : "bg-red-500/80"}`}>
+          {camOn ? <Camera size={20} className="text-white" /> : <X size={20} className="text-white" />}
+        </button>
+        <button className="w-14 h-14 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center shadow-lg transition-all" onClick={() => onNavigate("pro-dashboard")}>
+          <PhoneOff size={22} className="text-white" />
+        </button>
+        <button className="w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center"><Monitor size={20} className="text-white" /></button>
+        <button className="w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center"><MoreHorizontal size={20} className="text-white" /></button>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Pricing ──────────────────────────────────────────────────────────
+
+function PricingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [annual, setAnnual] = useState(false);
+  const plans = [
+    { name: "Essencial", price: annual ? 79 : 99, color: "border-border", features: ["5 pacientes ativos", "Agenda + lembretes", "Videochamada HD", "Prontuário básico", "Suporte por e-mail"], notIncluded: ["IA de sessão", "Receituário digital", "API", "Dashboard financeiro avançado"] },
+    { name: "Profissional", price: annual ? 159 : 199, color: "ring-2 ring-primary", highlight: true, features: ["Pacientes ilimitados", "IA de sessão completa", "Prontuário com IA", "Receituário digital", "Dashboard financeiro", "Repasse automático", "Suporte prioritário 24h"], notIncluded: ["Múltiplos profissionais", "API de integração", "SLA garantido"] },
+    { name: "Clínica", price: annual ? 399 : 499, color: "border-border", features: ["Tudo do Profissional", "Até 20 profissionais", "Painel admin da clínica", "API REST completa", "Relatórios avançados + BI", "SLA 99.9% garantido", "Gerente de conta dedicado", "Treinamento da equipe"], notIncluded: [] },
+  ];
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="max-w-5xl mx-auto px-6 py-16">
+        <div className="text-center mb-12">
+          <Badge variant="success" className="mb-4">Para profissionais</Badge>
+          <h1 className="text-4xl font-bold text-foreground font-display mb-4">Preços simples, sem surpresas</h1>
+          <p className="text-muted-foreground mb-6">Comece com 14 dias grátis. Sem cartão de crédito.</p>
+          <div className="flex items-center justify-center gap-3">
+            <span className={`text-sm font-medium ${!annual ? "text-foreground" : "text-muted-foreground"}`}>Mensal</span>
+            <button onClick={() => setAnnual(!annual)} className={`w-12 h-6 rounded-full transition-colors ${annual ? "bg-primary" : "bg-muted"} relative`}>
+              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${annual ? "translate-x-7" : "translate-x-1"}`} />
+            </button>
+            <span className={`text-sm font-medium ${annual ? "text-foreground" : "text-muted-foreground"}`}>Anual <Badge variant="success">Economize 20%</Badge></span>
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-6 mb-12">
+          {plans.map((p, i) => (
+            <Card key={i} className={`p-8 flex flex-col relative ${p.color}`}>
+              {p.highlight && <Badge variant="success" className="absolute -top-3 left-1/2 -translate-x-1/2">Mais escolhido</Badge>}
+              <h2 className="text-xl font-bold text-foreground font-display mb-1">{p.name}</h2>
+              <div className="mb-6 mt-2">
+                <span className="text-4xl font-bold text-foreground font-display">R${p.price}</span>
+                <span className="text-muted-foreground">/mês</span>
+                {annual && <p className="text-xs text-emerald-600 mt-1">Cobrado anualmente (R${p.price * 12}/ano)</p>}
+              </div>
+              <div className="flex-1 space-y-2 mb-6">
+                {p.features.map((f, j) => <div key={j} className="flex items-center gap-2 text-sm text-foreground"><Check size={15} className="text-primary" />{f}</div>)}
+                {p.notIncluded.map((f, j) => <div key={j} className="flex items-center gap-2 text-sm text-muted-foreground"><X size={15} className="text-muted-foreground/50" />{f}</div>)}
+              </div>
+              <Btn variant={p.highlight ? "primary" : "outline"} className="w-full justify-center" onClick={() => onNavigate("checkout")}>
+                Começar grátis por 14 dias
+              </Btn>
+            </Card>
+          ))}
+        </div>
+
+        <Card className="p-8">
+          <h2 className="text-xl font-bold text-foreground font-display mb-6 text-center">Compare todos os recursos</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left py-3 font-medium text-muted-foreground w-1/2">Recurso</th>
+                  {["Essencial", "Profissional", "Clínica"].map(n => <th key={n} className="text-center py-3 font-semibold text-foreground">{n}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ["Pacientes ativos", "5", "Ilimitado", "Ilimitado"],
+                  ["Videochamada HD", "✓", "✓", "✓"],
+                  ["IA de sessão", "—", "✓", "✓"],
+                  ["Prontuário eletrônico", "Básico", "Completo", "Completo"],
+                  ["Receituário digital", "—", "✓", "✓"],
+                  ["Dashboard financeiro", "—", "✓", "✓ Avançado"],
+                  ["Múltiplos profissionais", "—", "—", "Até 20"],
+                  ["API de integração", "—", "—", "✓"],
+                  ["SLA garantido", "—", "—", "99.9%"],
+                ].map(([feat, ...vals], i) => (
+                  <tr key={i} className="border-b border-border/50 last:border-0">
+                    <td className="py-3 text-foreground">{feat}</td>
+                    {vals.map((v, j) => (
+                      <td key={j} className="py-3 text-center text-muted-foreground">
+                        {v === "✓" ? <Check size={16} className="text-primary mx-auto" /> : v === "—" ? <X size={14} className="text-muted-foreground/30 mx-auto" /> : v}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Checkout ─────────────────────────────────────────────────────────
+
+function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) => void; currentUser: AppUser }) {
+  const [payMethod, setPayMethod] = useState<"pix" | "card" | "sub">("card");
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [checkoutError, setCheckoutError] = useState("");
+  const [processingPayment, setProcessingPayment] = useState(false);
+
+  const handlePayment = async () => {
+    setCheckoutError("");
+    setProcessingPayment(true);
+
+    try {
+      const { data: professional, error: professionalError } = await supabase
+        .from("professional_profiles")
+        .select("id, session_price")
+        .eq("verification_status", "verified")
+        .limit(1)
+        .maybeSingle();
+
+      if (professionalError) throw professionalError;
+      if (!professional) throw new Error("Nenhum profissional verificado disponível para agendamento.");
+
+      const amount = Number(professional.session_price || 180);
+      const scheduledAt = new Date();
+      scheduledAt.setDate(scheduledAt.getDate() + 1);
+      scheduledAt.setHours(16, 0, 0, 0);
+
+      const { data: appointment, error: appointmentError } = await supabase
+        .from("appointments")
+        .insert({
+          patient_id: currentUser.id,
+          professional_id: professional.id,
+          scheduled_at: scheduledAt.toISOString(),
+          modality: "online",
+          price: amount,
+        })
+        .select("id")
+        .single();
+
+      if (appointmentError) throw appointmentError;
+
+      await mockPaymentProvider.charge({
+        appointmentId: appointment.id,
+        amount,
+        method: payMethod === "pix" ? "pix" : "card",
+      });
+
+      setStep(3);
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "Não foi possível concluir o pagamento.");
+    } finally {
+      setProcessingPayment(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center p-6">
+      <div className="w-full max-w-4xl">
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center"><Brain size={16} className="text-white" /></div>
+          <span className="font-bold text-foreground font-display">MindCare</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-sm text-muted-foreground">Checkout seguro</span>
+          <Lock size={14} className="text-primary ml-auto" />
+          <span className="text-xs text-muted-foreground">SSL 256-bit</span>
+        </div>
+
+        <div className="grid lg:grid-cols-5 gap-8">
+          {/* Form */}
+          <div className="lg:col-span-3 space-y-6">
+            {/* Steps */}
+            <div className="flex items-center gap-2">
+              {[1, 2, 3].map(s => (
+                <div key={s} className="flex items-center gap-2">
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${step >= s ? "bg-primary text-white" : "bg-muted text-muted-foreground"}`}>{step > s ? <Check size={13} /> : s}</div>
+                  {s < 3 && <div className={`h-px w-16 ${step > s ? "bg-primary" : "bg-border"}`} />}
+                </div>
+              ))}
+              <span className="text-xs text-muted-foreground ml-2">{["Dados pessoais", "Pagamento", "Confirmação"][step - 1]}</span>
+            </div>
+
+            {step === 1 && (
+              <Card className="p-6 space-y-4">
+                <h2 className="font-semibold text-foreground font-display">Seus dados</h2>
+                <div className="grid grid-cols-2 gap-4">
+                  <Input label="Nome completo" placeholder="Ana Beatriz" />
+                  <Input label="CPF" placeholder="000.000.000-00" />
+                </div>
+                <Input label="E-mail" placeholder="ana@email.com" type="email" />
+                <Input label="Telefone" placeholder="(11) 99999-9999" icon={<PhoneIcon size={15} />} />
+                <Btn variant="primary" className="w-full justify-center" onClick={() => setStep(2)}>Continuar <ChevronRight size={16} /></Btn>
+              </Card>
+            )}
+
+            {step === 2 && (
+              <Card className="p-6 space-y-4">
+                <h2 className="font-semibold text-foreground font-display">Forma de pagamento</h2>
+                <div className="grid grid-cols-3 gap-3">
+                  {[{ id: "card" as const, label: "Cartão", icon: <CreditCard size={18} /> }, { id: "pix" as const, label: "Pix", icon: <Zap size={18} /> }, { id: "sub" as const, label: "Assinatura", icon: <RefreshCw size={18} /> }].map(m => (
+                    <button key={m.id} onClick={() => setPayMethod(m.id)}
+                      className={`py-3 rounded-xl border text-sm font-medium flex flex-col items-center gap-1.5 transition-all ${payMethod === m.id ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground hover:border-primary/40"}`}>
+                      {m.icon}{m.label}
+                    </button>
+                  ))}
+                </div>
+
+                {payMethod === "card" && (
+                  <div className="space-y-3">
+                    <Input label="Número do cartão" placeholder="0000 0000 0000 0000" icon={<CreditCard size={15} />} />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input label="Validade" placeholder="MM/AA" />
+                      <Input label="CVV" placeholder="123" />
+                    </div>
+                    <Input label="Nome no cartão" placeholder="ANA B SOUZA" />
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" className="accent-primary" defaultChecked />
+                      <span className="text-xs text-muted-foreground">Salvar cartão para próximas sessões</span>
+                    </div>
+                  </div>
+                )}
+
+                {payMethod === "pix" && (
+                  <div className="flex flex-col items-center gap-3 py-4">
+                    <div className="w-32 h-32 bg-muted rounded-2xl flex items-center justify-center border border-border">
+                      <div className="grid grid-cols-4 gap-0.5">{Array(16).fill(0).map((_, i) => <div key={i} className={`w-3 h-3 rounded-sm ${Math.random() > 0.5 ? "bg-foreground" : "bg-white"}`} />)}</div>
+                    </div>
+                    <p className="text-sm text-muted-foreground">QR Code gerado após confirmar</p>
+                    <Badge variant="success"><Clock size={11} />Expira em 15 min</Badge>
+                  </div>
+                )}
+
+                {payMethod === "sub" && (
+                  <div className="bg-muted rounded-xl p-4 text-sm text-muted-foreground">
+                    <p>Cobrança mensal automática de <strong className="text-foreground">R$199/mês</strong>. Cancele quando quiser. Sem fidelidade.</p>
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <Btn variant="outline" onClick={() => setStep(1)}>Voltar</Btn>
+                  <Btn variant="primary" className="flex-1 justify-center" onClick={handlePayment} disabled={processingPayment}>
+                    <Lock size={15} />{processingPayment ? "Processando..." : "Pagar com segurança"}
+                  </Btn>
+                </div>
+                {checkoutError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {checkoutError}
+                  </div>
+                )}
+              </Card>
+            )}
+
+            {step === 3 && (
+              <Card className="p-8 flex flex-col items-center text-center">
+                <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4">
+                  <CheckCircle size={32} className="text-primary" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground font-display mb-2">Pagamento confirmado!</h2>
+                <p className="text-muted-foreground text-sm mb-6">Sua sessão foi agendada com sucesso. Você receberá um e-mail de confirmação.</p>
+                <div className="bg-muted rounded-xl p-4 w-full text-left mb-6">
+                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Profissional</span><span className="font-medium">Dra. Fernanda Costa</span></div>
+                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Data e hora</span><span className="font-medium">Seg 07 Jan · 16:00</span></div>
+                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">Valor pago</span><span className="font-bold font-display">R$180,00</span></div>
+                </div>
+                <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("patient-dashboard")}>
+                  Ir para meu painel
+                </Btn>
+              </Card>
+            )}
+          </div>
+
+          {/* Order summary */}
+          <div className="lg:col-span-2">
+            <Card className="p-6">
+              <h2 className="font-semibold text-foreground font-display mb-4">Resumo</h2>
+              <div className="flex items-center gap-3 mb-4 pb-4 border-b border-border">
+                <img src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" alt="Dra. Fernanda" className="w-12 h-12 rounded-2xl object-cover" />
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Dra. Fernanda Costa</p>
+                  <p className="text-xs text-muted-foreground">Psicóloga Clínica</p>
+                  <p className="text-xs text-muted-foreground">Seg 07 Jan · 16:00 · Online</p>
+                </div>
+              </div>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">Sessão individual</span><span>R$180,00</span></div>
+                <div className="flex justify-between text-emerald-600"><span>Desconto pacote 4x</span><span>-R$0,00</span></div>
+                <div className="flex justify-between font-bold text-foreground border-t border-border pt-2 mt-2"><span>Total</span><span className="font-display">R$180,00</span></div>
+              </div>
+              <div className="mt-4 p-3 bg-primary/5 rounded-xl flex items-start gap-2">
+                <Shield size={14} className="text-primary flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-muted-foreground">Pagamento seguro. Os dados são criptografados e o profissional recebe após a sessão ser realizada.</p>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SCREEN: Financial Dashboard ──────────────────────────────────────────────
+
+function FinancialDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início" },
+    { icon: <Calendar size={18} />, label: "Agenda" },
+    { icon: <Users size={18} />, label: "Pacientes" },
+    { icon: <FileText size={18} />, label: "Prontuários" },
+    { icon: <Brain size={18} />, label: "IA Assistente" },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", active: true },
+  ];
+
+  const revenueData = [
+    { month: "Jul", bruto: 3800, liquido: 3420 }, { month: "Ago", bruto: 4200, liquido: 3780 },
+    { month: "Set", bruto: 3900, liquido: 3510 }, { month: "Out", bruto: 4800, liquido: 4320 },
+    { month: "Nov", bruto: 5200, liquido: 4680 }, { month: "Dez", bruto: 4600, liquido: 4140 },
+    { month: "Jan", bruto: 5800, liquido: 5220 },
+  ];
+
+  const transfers = [
+    { date: "07 Jan", amount: 1620, sessions: 9, status: "Processado" },
+    { date: "31 Dez", amount: 1440, sessions: 8, status: "Processado" },
+    { date: "24 Dez", amount: 900, sessions: 5, status: "Processado" },
+    { date: "17 Dez", amount: 1980, sessions: 11, status: "Processado" },
+    { date: "10 Dez", amount: 720, sessions: 4, status: "Processado" },
+  ];
+
+  return (
+    <AppShell title="Dashboard Financeiro" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard label="Receita bruta (Jan)" value="R$5.800" delta="+12%" icon={<TrendingUp size={18} />} color="green" />
+          <StatCard label="Após comissão (10%)" value="R$5.220" delta="+12%" icon={<DollarSign size={18} />} color="blue" />
+          <StatCard label="Pendente de repasse" value="R$1.440" icon={<Clock size={18} />} color="amber" />
+          <StatCard label="Total acumulado 2025" value="R$5.220" icon={<BarChart2 size={18} />} color="purple" />
+        </div>
+
+        <Card className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-semibold text-foreground font-display">Receita bruta vs. líquida</h3>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-primary" />Bruto</span>
+              <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-accent" />Líquido (após 10%)</span>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={revenueData}>
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#1B7A48" stopOpacity={0.15} /><stop offset="95%" stopColor="#1B7A48" stopOpacity={0} /></linearGradient>
+                <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B6FA8" stopOpacity={0.15} /><stop offset="95%" stopColor="#3B6FA8" stopOpacity={0} /></linearGradient>
+              </defs>
+              <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v / 1000).toFixed(1)}k`} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
+              <Tooltip formatter={(v: number, n: string) => [`R$${v.toLocaleString()}`, n === "bruto" ? "Bruto" : "Líquido"]} contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+              <Area type="monotone" dataKey="bruto" stroke="#1B7A48" fill="url(#g1)" strokeWidth={2} dot={false} />
+              <Area type="monotone" dataKey="liquido" stroke="#3B6FA8" fill="url(#g2)" strokeWidth={2} dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <div className="grid lg:grid-cols-2 gap-6">
+          <Card className="p-6">
+            <h3 className="font-semibold text-foreground font-display mb-4">Histórico de repasses</h3>
+            <div className="space-y-3">
+              {transfers.map((t, i) => (
+                <div key={i} className="flex items-center justify-between py-2.5 border-b border-border last:border-0">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{t.date}</p>
+                    <p className="text-xs text-muted-foreground">{t.sessions} sessões realizadas</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-foreground font-display">R${t.amount.toLocaleString()}</p>
+                    <Badge variant="success">{t.status}</Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-6">
+            <h3 className="font-semibold text-foreground font-display mb-4">Fiscal & Impostos</h3>
+            <div className="space-y-3 mb-6">
+              {[
+                { label: "Receita bruta acumulada (2025)", value: "R$5.800,00" },
+                { label: "ISS estimado (5%)", value: "R$290,00" },
+                { label: "INSS estimado (11%)", value: "R$638,00" },
+                { label: "IR estimado (tabela progressiva)", value: "R$312,00" },
+                { label: "Comissão plataforma (10%)", value: "R$580,00" },
+              ].map((r, i) => (
+                <div key={i} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
+                  <span className="text-muted-foreground">{r.label}</span>
+                  <span className="font-medium text-foreground">{r.value}</span>
+                </div>
+              ))}
+              <div className="flex justify-between text-sm font-bold pt-1">
+                <span>Líquido estimado</span>
+                <span className="text-primary font-display">R$3.980,00</span>
+              </div>
+            </div>
+            <Btn variant="outline" size="sm" className="w-full justify-center"><Download size={14} />Exportar DRE (PDF)</Btn>
+          </Card>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Admin Panel ──────────────────────────────────────────────────────
+
+function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const [adminTab, setAdminTab] = useState("validations");
+  const navItems = [
+    { icon: <Home size={18} />, label: "Visão geral", active: true },
+    { icon: <Shield size={18} />, label: "Validações" },
+    { icon: <Users size={18} />, label: "Usuários" },
+    { icon: <CreditCard size={18} />, label: "Pagamentos" },
+    { icon: <BarChart2 size={18} />, label: "Relatórios" },
+    { icon: <Settings size={18} />, label: "Configurações" },
+  ];
+
+  const pending = [
+    { name: "Dr. Marcelo Faria", role: "Psiquiatra", crm: "CRM 35/44123", date: "2h atrás", docs: 3 },
+    { name: "Dra. Giovana Luz", role: "Psicóloga", crp: "CRP 06/78901", date: "5h atrás", docs: 4 },
+    { name: "Dr. Paulo Meireles", role: "Neuropsicologo", crp: "CRP 08/33221", date: "1 dia", docs: 2 },
+  ];
+
+  const statsData = [
+    { label: "Profissionais ativos", value: "2.418", delta: "+34 este mês", color: "green" },
+    { label: "Pacientes cadastrados", value: "18.743", delta: "+1.2k este mês", color: "blue" },
+    { label: "Sessões realizadas (Jan)", value: "12.390", delta: "+18%", color: "purple" },
+    { label: "GMV (Jan)", value: "R$2.23M", delta: "+22%", color: "amber" },
+  ];
+
+  return (
+    <AppShell title="Painel Administrativo" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {statsData.map((s, i) => (
+            <StatCard key={i} label={s.label} value={s.value} delta={s.delta} icon={[<Users size={18} />, <Heart size={18} />, <Calendar size={18} />, <DollarSign size={18} />][i]} color={s.color as "green" | "blue" | "purple" | "amber"} />
+          ))}
+        </div>
+
+        <div className="flex gap-2 border-b border-border">
+          {[{ id: "validations", label: "Validações pendentes" }, { id: "users", label: "Usuários" }, { id: "payments", label: "Pagamentos" }, { id: "reports", label: "Relatórios" }].map(t => (
+            <button key={t.id} onClick={() => setAdminTab(t.id)}
+              className={`pb-3 px-1 text-sm font-medium border-b-2 transition-all ${adminTab === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              {t.label}
+              {t.id === "validations" && <span className="ml-1.5 bg-amber-100 text-amber-700 text-xs px-1.5 py-0.5 rounded-full">3</span>}
+            </button>
+          ))}
+        </div>
+
+        {adminTab === "validations" && (
+          <div className="space-y-4">
+            {pending.map((p, i) => (
+              <Card key={i} className="p-5">
+                <div className="flex items-center gap-4">
+                  <Avatar name={p.name} size="md" />
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="font-semibold text-foreground text-sm">{p.name}</h3>
+                      <Badge variant="outline">{p.crm || (p as any).crp}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{p.role} · Enviado {p.date} · {p.docs} documentos</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Btn variant="outline" size="sm"><Eye size={14} />Revisar docs</Btn>
+                    <Btn variant="danger" size="sm"><X size={14} />Rejeitar</Btn>
+                    <Btn variant="primary" size="sm"><Check size={14} />Aprovar</Btn>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {adminTab === "users" && (
+          <Card className="overflow-hidden">
+            <div className="p-4 flex items-center justify-between border-b border-border">
+              <Input placeholder="Buscar usuário..." icon={<Search size={15} />} className="w-64" />
+              <div className="flex gap-2">
+                <select className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-foreground focus:outline-none"><option>Todos os tipos</option><option>Pacientes</option><option>Profissionais</option></select>
+                <Btn variant="outline" size="sm"><Download size={14} />Exportar</Btn>
+              </div>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Plano", "Cadastro", "Status", "Ações"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
+              <tbody>
+                {[
+                  { name: "Ana Beatriz Souza", email: "ana@email.com", type: "Paciente", plan: "—", date: "Jun 2024", status: "Ativo" },
+                  { name: "Dra. Fernanda Costa", email: "fernanda@email.com", type: "Profissional", plan: "Profissional", date: "Mar 2024", status: "Ativo" },
+                  { name: "Carlos Augusto", email: "carlos@email.com", type: "Paciente", plan: "—", date: "Nov 2024", status: "Ativo" },
+                  { name: "Dr. Rafael Mendes", email: "rafael@email.com", type: "Profissional", plan: "Essencial", date: "Jan 2024", status: "Ativo" },
+                  { name: "João Pedro", email: "joao@email.com", type: "Paciente", plan: "—", date: "Jan 2025", status: "Pendente" },
+                ].map((u, i) => (
+                  <tr key={i} className="border-t border-border hover:bg-muted/30 transition-colors">
+                    <td className="py-3 px-4"><div><p className="font-medium text-foreground">{u.name}</p><p className="text-xs text-muted-foreground">{u.email}</p></div></td>
+                    <td className="py-3 px-4"><Badge variant={u.type === "Profissional" ? "accent" : "outline"}>{u.type}</Badge></td>
+                    <td className="py-3 px-4 text-muted-foreground">{u.plan}</td>
+                    <td className="py-3 px-4 text-muted-foreground text-xs">{u.date}</td>
+                    <td className="py-3 px-4"><Badge variant={u.status === "Ativo" ? "success" : "warning"}>{u.status}</Badge></td>
+                    <td className="py-3 px-4">
+                      <div className="flex gap-1">
+                        <Btn variant="ghost" size="sm"><Eye size={13} /></Btn>
+                        <Btn variant="ghost" size="sm"><Edit3 size={13} /></Btn>
+                        <Btn variant="ghost" size="sm"><Trash2 size={13} /></Btn>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        )}
+
+        {adminTab === "payments" && (
+          <div className="grid lg:grid-cols-2 gap-6">
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-4">Volume de pagamentos</h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={[
+                  { month: "Out", gmv: 1800000 }, { month: "Nov", gmv: 2100000 }, { month: "Dez", gmv: 1950000 }, { month: "Jan", gmv: 2230000 },
+                ]}>
+                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v / 1000000).toFixed(1)}M`} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" vertical={false} />
+                  <Tooltip formatter={(v: number) => [`R$${(v / 1000).toFixed(0)}k`, "GMV"]} contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+                  <Bar dataKey="gmv" fill="#1B7A48" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-4">Métricas de comissão</h3>
+              <div className="space-y-3">
+                {[["GMV total (Jan)", "R$2.230.000"], ["Comissão plataforma (10%)", "R$223.000"], ["Repasses a profissionais", "R$2.007.000"], ["Transações processadas", "12.389"], ["Chargeback rate", "0.02%"], ["Taxa de sucesso", "99.8%"]].map(([l, v], i) => (
+                  <div key={i} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
+                    <span className="text-muted-foreground">{l}</span><span className="font-medium text-foreground">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {adminTab === "reports" && (
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { title: "Relatório de usuários", desc: "Cadastros, churn, retenção", icon: <Users size={20} /> },
+              { title: "Relatório financeiro", desc: "GMV, comissões, repasses", icon: <DollarSign size={20} /> },
+              { title: "Relatório de sessões", desc: "Volume, cancelamentos, NPS", icon: <Calendar size={20} /> },
+              { title: "Relatório de profissionais", desc: "Ativos, planos, avaliações", icon: <Award size={20} /> },
+            ].map((r, i) => (
+              <Card key={i} className="p-5 flex items-center gap-4 hover:border-primary/30 cursor-pointer transition-all">
+                <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">{r.icon}</div>
+                <div className="flex-1">
+                  <p className="font-semibold text-foreground text-sm">{r.title}</p>
+                  <p className="text-xs text-muted-foreground">{r.desc}</p>
+                </div>
+                <Btn variant="outline" size="sm"><Download size={13} />PDF</Btn>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── Root App ─────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [screen, setScreen] = useState<Screen>("landing");
+  const [session, setSession] = useState<Session | null>(null);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
+  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
+  const showTopNav = !noTopNavScreens.includes(screen);
+
+  const loadAppUser = async (nextSession: Session | null) => {
+    setSession(nextSession);
+
+    if (!nextSession?.user) {
+      setCurrentUser(null);
+      setAuthLoading(false);
+      return;
+    }
+
+    const metadata = nextSession.user.user_metadata as { full_name?: string; role?: UserRole };
+    let nextUser: AppUser = {
+      id: nextSession.user.id,
+      email: nextSession.user.email ?? "",
+      fullName: metadata.full_name ?? nextSession.user.email ?? "Usuário",
+      role: metadata.role ?? "patient",
+    };
+
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, full_name, role")
+      .eq("id", nextSession.user.id)
+      .maybeSingle();
+
+    if (data) {
+      nextUser = {
+        ...nextUser,
+        fullName: data.full_name,
+        role: data.role,
+      };
+    }
+
+    setCurrentUser(nextUser);
+    setAuthLoading(false);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (active) void loadAppUser(data.session);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      void loadAppUser(nextSession);
+    });
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authLoading && protectedScreens.includes(screen) && !currentUser) {
+      setScreen("login");
+    }
+  }, [authLoading, currentUser, screen]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setCurrentUser(null);
+    setScreen("landing");
+  };
+
+  return (
+    <div className="min-h-screen bg-background font-sans" style={{ fontFamily: "'Plus Jakarta Sans', 'Inter', system-ui, sans-serif" }}>
+      {showTopNav && <TopNav onScreenChange={setScreen} current={screen} />}
+      {authLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 text-sm text-muted-foreground">
+          Carregando sessão...
+        </div>
+      )}
+      {screen === "landing" && <LandingPage onNavigate={setScreen} />}
+      {screen === "directory" && <DirectoryPage onNavigate={setScreen} />}
+      {screen === "profile" && <ProfilePage onNavigate={setScreen} />}
+      {screen === "login" && <LoginPage onNavigate={setScreen} />}
+      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "ehr" && currentUser && <EHRScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "video" && currentUser && <VideoScreen onNavigate={setScreen} />}
+      {screen === "pricing" && <PricingPage onNavigate={setScreen} />}
+      {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={setScreen} currentUser={currentUser} />}
+      {screen === "financial" && currentUser && <FinancialDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "admin" && currentUser && <AdminPanel onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+    </div>
+  );
+}
