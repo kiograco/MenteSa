@@ -64,7 +64,7 @@
   - [x] Vídeo real (Daily.co)
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
-  - [ ] Projeto Supabase real (staging/prod) + deploy de migrations via CI
+  - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
   - [ ] Checagem de responsividade mobile
   - [ ] Revisão de segurança final
 
@@ -155,6 +155,31 @@
   rejeitada; o admin abre cada arquivo (URL assinada, expira em 60s) na aba "Validações pendentes"
   antes de aprovar ou rejeitar. Não precisa de nenhuma chave nova — só de o bucket existir no
   projeto Supabase real (a migration já cria).
+
+  ### Projeto Supabase real + deploy automático
+
+  `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
+  linkado a nada real). `.github/workflows/deploy-supabase.yml` roda depois que o CI passa em
+  `main` (ou manualmente via "Run workflow") e aplica as migrations (`supabase db push`) + faz
+  deploy de todas as 4 Edge Functions. O job usa o GitHub Environment `production` — configure uma
+  regra de "required reviewers" nele (Settings → Environments → production) se quiser um aprovador
+  manual antes de qualquer deploy tocar o banco real; sem essa regra, o deploy roda direto depois
+  do CI verde.
+
+  Setup (uma vez):
+  1. Crie o projeto em https://supabase.com/dashboard (pode ser um projeto de staging e depois um
+     de produção, cada um com seu próprio `project-ref`).
+  2. Rode `supabase link --project-ref <ref>` localmente pelo menos uma vez (ou copie o
+     `project-ref` do dashboard).
+  3. No GitHub, crie o Environment `production` (Settings → Environments) e adicione os secrets:
+     `SUPABASE_ACCESS_TOKEN` (Account → Access Tokens no dashboard do Supabase),
+     `SUPABASE_PROJECT_REF`, `SUPABASE_DB_PASSWORD` (a senha do Postgres do projeto).
+  4. Configure os secrets das próprias Edge Functions com `supabase secrets set ...` (não são
+     secrets do GitHub Actions — são os do Supabase, listados na tabela abaixo).
+
+  Para ter staging e produção separados, duplique o job `deploy` do workflow apontando pra um
+  Environment `staging` com seus próprios `SUPABASE_PROJECT_REF`/`SUPABASE_DB_PASSWORD`, disparado
+  por push numa branch `staging` em vez de `main`.
 
   ### Chaves de acesso necessárias
 

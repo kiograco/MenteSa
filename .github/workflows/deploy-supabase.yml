@@ -1,0 +1,45 @@
+name: Deploy Supabase (migrations + functions)
+
+# Runs after CI passes on main. Gated behind the "production" GitHub Environment — configure a
+# required-reviewer rule on it (Settings → Environments) if you want a manual approval step
+# before this touches the real database. Does nothing until the secrets below are set: missing
+# secrets just fail the job, they never fall back to touching the wrong project.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+      - name: Apply database migrations
+        run: supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      - name: Deploy Edge Functions
+        run: |
+          supabase functions deploy daily-room-access
+          supabase functions deploy create-mp-preference
+          supabase functions deploy mercadopago-webhook --no-verify-jwt
+          supabase functions deploy send-booking-confirmation
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
