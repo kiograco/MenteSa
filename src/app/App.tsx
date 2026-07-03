@@ -1278,7 +1278,17 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
 // ─── SCREEN: Patient Dashboard ────────────────────────────────────────────────
 
-function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+type PatientAppointment = {
+  id: string;
+  scheduledAt: string;
+  modality: string;
+  status: string;
+  price: number;
+  professionalName: string;
+  professionalImg: string;
+};
+
+function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: true },
     { icon: <Calendar size={18} />, label: "Consultas" },
@@ -1288,6 +1298,64 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedS
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
+  const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
+  const [totalInvested, setTotalInvested] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase
+        .from("appointments")
+        .select("id, scheduled_at, modality, status, price, professional_profiles(profiles(full_name, avatar_url))")
+        .eq("patient_id", currentUser.id)
+        .order("scheduled_at", { ascending: true });
+
+      if (!active) return;
+
+      const rows: PatientAppointment[] = ((data ?? []) as any[]).map(a => ({
+        id: a.id,
+        scheduledAt: a.scheduled_at,
+        modality: a.modality,
+        status: a.status,
+        price: Number(a.price),
+        professionalName: a.professional_profiles?.profiles?.full_name ?? "Profissional",
+        professionalImg: a.professional_profiles?.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format",
+      }));
+      setAppointments(rows);
+
+      const ids = rows.map(r => r.id);
+      if (ids.length) {
+        const { data: paymentsData } = await supabase
+          .from("payments")
+          .select("amount, appointment_id")
+          .in("appointment_id", ids)
+          .eq("status", "paid");
+        if (active) setTotalInvested((paymentsData ?? []).reduce((sum, p) => sum + Number(p.amount), 0));
+      }
+
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const now = new Date();
+  const upcoming = appointments.filter(a => a.status === "scheduled" && new Date(a.scheduledAt) >= now);
+  const past = appointments.filter(a => a.status !== "scheduled" || new Date(a.scheduledAt) < now);
+  const completedCount = appointments.filter(a => a.status === "completed").length;
+  const distinctProfessionals = new Set(appointments.map(a => a.professionalName)).size;
+  const firstName = currentUser.fullName.split(" ")[0];
+
+  const nextSessionLabel = upcoming.length
+    ? new Date(upcoming[0].scheduledAt).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "short" }) +
+      " às " + new Date(upcoming[0].scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    : null;
+
   return (
     <AppShell title="Meu Painel" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
@@ -1295,9 +1363,11 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedS
         <Card className="p-6 bg-gradient-to-r from-primary to-[#156038] text-white border-0">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-white/70 text-sm mb-1">Bom dia,</p>
-              <h2 className="text-2xl font-bold font-display">Ana Beatriz 👋</h2>
-              <p className="text-white/70 text-sm mt-2">Próxima sessão em <strong className="text-white">2 horas</strong></p>
+              <p className="text-white/70 text-sm mb-1">Olá,</p>
+              <h2 className="text-2xl font-bold font-display">{firstName} 👋</h2>
+              <p className="text-white/70 text-sm mt-2">
+                {nextSessionLabel ? <>Próxima sessão em <strong className="text-white">{nextSessionLabel}</strong></> : "Nenhuma sessão agendada no momento"}
+              </p>
             </div>
             <div className="text-right">
               <div className="w-16 h-16 bg-white/20 rounded-2xl flex items-center justify-center">
@@ -1310,20 +1380,27 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedS
         {/* Upcoming */}
         <div>
           <h2 className="text-base font-semibold text-foreground font-display mb-3">Próximas consultas</h2>
+          {loading && <p className="text-sm text-muted-foreground">Carregando consultas...</p>}
+          {!loading && upcoming.length === 0 && (
+            <Card className="p-6 text-center">
+              <p className="text-sm text-muted-foreground mb-3">Você ainda não tem consultas agendadas.</p>
+              <Btn variant="primary" size="sm" onClick={() => onNavigate("directory")}><Search size={14} />Encontrar terapeuta</Btn>
+            </Card>
+          )}
           <div className="space-y-3">
-            {[
-              { dr: "Dra. Fernanda Costa", time: "Hoje, 16:00", type: "Online", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" },
-              { dr: "Dra. Fernanda Costa", time: "Qui 10 Jan, 16:00", type: "Online", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" },
-            ].map((a, i) => (
-              <Card key={i} className="p-4 flex items-center gap-4">
-                <img src={a.img} alt={a.dr} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
+            {upcoming.map(a => (
+              <Card key={a.id} className="p-4 flex items-center gap-4">
+                <img src={a.professionalImg} alt={a.professionalName} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-foreground">{a.dr}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">{a.time} · {a.type}</p>
+                  <p className="text-sm font-semibold text-foreground">{a.professionalName}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} · {a.modality === "online" ? "Online" : "Presencial"}
+                  </p>
                 </div>
                 <div className="flex gap-2">
-                  {i === 0 && <Btn variant="primary" size="sm" onClick={() => onNavigate("video")}><Video size={14} />Entrar</Btn>}
-                  <Btn variant="outline" size="sm">Reagendar</Btn>
+                  {a.modality === "online" && (
+                    <Btn variant="primary" size="sm" onClick={() => { onEnterVideo(a.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
+                  )}
                 </div>
               </Card>
             ))}
@@ -1332,33 +1409,29 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedS
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard label="Sessões realizadas" value="24" delta="+3" icon={<CheckCircle size={18} />} color="green" />
-          <StatCard label="Semanas em terapia" value="18" icon={<Calendar size={18} />} color="blue" />
-          <StatCard label="Humor médio" value="7.4/10" delta="+0.8" icon={<Heart size={18} />} color="purple" />
-          <StatCard label="Total investido" value="R$4.320" icon={<DollarSign size={18} />} color="amber" />
+          <StatCard label="Sessões realizadas" value={String(completedCount)} icon={<CheckCircle size={18} />} color="green" />
+          <StatCard label="Consultas agendadas" value={String(upcoming.length)} icon={<Calendar size={18} />} color="blue" />
+          <StatCard label="Profissionais" value={String(distinctProfessionals)} icon={<Heart size={18} />} color="purple" />
+          <StatCard label="Total investido" value={`R$${totalInvested.toFixed(2).replace(".", ",")}`} icon={<DollarSign size={18} />} color="amber" />
         </div>
 
-        {/* Mood tracker */}
+        {/* History */}
         <Card className="p-6">
-          <h3 className="font-semibold text-foreground font-display mb-4">Registro de humor — últimas 4 semanas</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={[
-              { week: "Sem 1", humor: 5 }, { week: "Sem 2", humor: 6 }, { week: "Sem 3", humor: 7 },
-              { week: "Sem 4", humor: 7.4 }, { week: "Sem 5", humor: 8 }, { week: "Sem 6", humor: 7.8 },
-            ]}>
-              <defs>
-                <linearGradient id="moodGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#1B7A48" stopOpacity={0.2} />
-                  <stop offset="95%" stopColor="#1B7A48" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="week" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
-              <YAxis domain={[0, 10]} tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
-              <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
-              <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
-              <Area type="monotone" dataKey="humor" stroke="#1B7A48" fill="url(#moodGrad)" strokeWidth={2} dot={{ fill: "#1B7A48", r: 4 }} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <h3 className="font-semibold text-foreground font-display mb-4">Histórico de consultas</h3>
+          {past.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta anterior ainda.</p>}
+          <div className="divide-y divide-border">
+            {past.map(a => (
+              <div key={a.id} className="py-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">{a.professionalName}</p>
+                  <p className="text-xs text-muted-foreground">{new Date(a.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
+                </div>
+                <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : "outline"}>
+                  {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status}
+                </Badge>
+              </div>
+            ))}
+          </div>
         </Card>
       </div>
     </AppShell>
@@ -1367,7 +1440,20 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedS
 
 // ─── SCREEN: Professional Dashboard ──────────────────────────────────────────
 
-function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+type ProAppointment = {
+  id: string;
+  scheduledAt: string;
+  modality: string;
+  status: string;
+  price: number;
+  patientName: string;
+  patientImg: string;
+};
+
+const STATUS_COLORS: Record<string, string> = { scheduled: "#1B7A48", completed: "#5B8DEF", cancelled: "#D9E4DE" };
+const STATUS_LABELS: Record<string, string> = { scheduled: "Agendadas", completed: "Concluídas", cancelled: "Canceladas" };
+
+function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: true },
     { icon: <Calendar size={18} />, label: "Agenda" },
@@ -1378,36 +1464,108 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: Authentic
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
-  const revenueData = [
-    { month: "Ago", receita: 3200 }, { month: "Set", receita: 3800 }, { month: "Out", receita: 3600 },
-    { month: "Nov", receita: 4100 }, { month: "Dez", receita: 4800 }, { month: "Jan", receita: 5200 },
-  ];
+  const [appointments, setAppointments] = useState<ProAppointment[]>([]);
+  const [revenueByMonth, setRevenueByMonth] = useState<{ month: string; receita: number }[]>([]);
+  const [avgRating, setAvgRating] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const patients = [
-    { name: "Ana Beatriz", session: "Hoje 16:00", status: "Confirmado", img: "" },
-    { name: "Carlos Silva", session: "Hoje 17:00", status: "Confirmado", img: "" },
-    { name: "Mariana Roque", session: "Amanhã 09:00", status: "Pendente", img: "" },
-    { name: "João Mendes", session: "Qui 10:00", status: "Confirmado", img: "" },
-  ];
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoading(true);
+
+      const [{ data: apptData }, { data: paymentRows }, { data: reviewRows }] = await Promise.all([
+        supabase
+          .from("appointments")
+          .select("id, scheduled_at, modality, status, price, profiles(full_name, avatar_url)")
+          .eq("professional_id", currentUser.id)
+          .order("scheduled_at", { ascending: true }),
+        supabase
+          .from("payments")
+          .select("amount, appointments!inner(professional_id, scheduled_at)")
+          .eq("appointments.professional_id", currentUser.id)
+          .eq("status", "paid"),
+        supabase.from("reviews").select("rating").eq("professional_id", currentUser.id),
+      ]);
+
+      if (!active) return;
+
+      setAppointments(((apptData ?? []) as any[]).map(a => ({
+        id: a.id,
+        scheduledAt: a.scheduled_at,
+        modality: a.modality,
+        status: a.status,
+        price: Number(a.price),
+        patientName: a.profiles?.full_name ?? "Paciente",
+        patientImg: a.profiles?.avatar_url ?? "",
+      })));
+
+      const months = Array.from({ length: 6 }).map((_, i) => {
+        const d = new Date();
+        d.setDate(1);
+        d.setMonth(d.getMonth() - (5 - i));
+        return { key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString("pt-BR", { month: "short" }) };
+      });
+      const totals = new Map(months.map(m => [m.key, 0]));
+      ((paymentRows ?? []) as any[]).forEach(p => {
+        const scheduledAt = p.appointments?.scheduled_at;
+        if (!scheduledAt) return;
+        const d = new Date(scheduledAt);
+        const key = `${d.getFullYear()}-${d.getMonth()}`;
+        if (totals.has(key)) totals.set(key, (totals.get(key) ?? 0) + Number(p.amount));
+      });
+      setRevenueByMonth(months.map(m => ({ month: m.label, receita: totals.get(m.key) ?? 0 })));
+
+      const ratings = ((reviewRows ?? []) as any[]).map(r => r.rating as number);
+      setAvgRating(ratings.length ? ratings.reduce((s, r) => s + r, 0) / ratings.length : null);
+
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const now = new Date();
+  const upcoming = appointments.filter(a => a.status === "scheduled" && new Date(a.scheduledAt) >= now).slice(0, 5);
+  const distinctPatients = new Set(appointments.map(a => a.patientName)).size;
+  const thisMonthSessions = appointments.filter(a => {
+    const d = new Date(a.scheduledAt);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  }).length;
+  const statusBreakdown = (["scheduled", "completed", "cancelled"] as const)
+    .map(status => ({ status, value: appointments.filter(a => a.status === status).length }))
+    .filter(s => s.value > 0);
+  const currentMonthRevenue = revenueByMonth[revenueByMonth.length - 1]?.receita ?? 0;
+
+  const recentPatientsMap = new Map<string, { name: string; img: string; lastSession: string }>();
+  appointments.forEach(a => {
+    const existing = recentPatientsMap.get(a.patientName);
+    if (!existing || new Date(a.scheduledAt) > new Date(existing.lastSession)) {
+      recentPatientsMap.set(a.patientName, { name: a.patientName, img: a.patientImg, lastSession: a.scheduledAt });
+    }
+  });
+  const recentPatients = Array.from(recentPatientsMap.values())
+    .sort((a, b) => new Date(b.lastSession).getTime() - new Date(a.lastSession).getTime())
+    .slice(0, 5);
 
   return (
     <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard label="Pacientes ativos" value="38" delta="+4" icon={<Users size={18} />} color="green" />
-          <StatCard label="Sessões este mês" value="96" delta="+12" icon={<Calendar size={18} />} color="blue" />
-          <StatCard label="Receita (Jan)" value="R$5.200" delta="+8%" icon={<DollarSign size={18} />} color="amber" />
-          <StatCard label="Avaliação média" value="4.9 ★" delta="+0.1" icon={<Star size={18} />} color="purple" />
+          <StatCard label="Pacientes atendidos" value={String(distinctPatients)} icon={<Users size={18} />} color="green" />
+          <StatCard label="Sessões este mês" value={String(thisMonthSessions)} icon={<Calendar size={18} />} color="blue" />
+          <StatCard label="Receita (mês atual)" value={`R$${currentMonthRevenue.toFixed(2).replace(".", ",")}`} icon={<DollarSign size={18} />} color="amber" />
+          <StatCard label="Avaliação média" value={avgRating ? `${avgRating.toFixed(1)} ★` : "Sem avaliações"} icon={<Star size={18} />} color="purple" />
         </div>
 
         <div className="grid lg:grid-cols-3 gap-6">
           <Card className="lg:col-span-2 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-foreground font-display">Receita mensal</h3>
-              <Badge variant="success">+8% vs mês anterior</Badge>
-            </div>
+            <h3 className="font-semibold text-foreground font-display mb-4">Receita mensal</h3>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={revenueData}>
+              <BarChart data={revenueByMonth}>
                 <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v/1000).toFixed(1)}k`} />
                 <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" vertical={false} />
@@ -1418,25 +1576,30 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: Authentic
           </Card>
 
           <Card className="p-6">
-            <h3 className="font-semibold text-foreground font-display mb-4">Taxa de ocupação</h3>
-            <div className="flex items-center justify-center mb-4">
-              <ResponsiveContainer width={160} height={160}>
-                <PieChart>
-                  <Pie data={[{ value: 78 }, { value: 22 }]} cx="50%" cy="50%" innerRadius={50} outerRadius={70} startAngle={90} endAngle={-270} dataKey="value">
-                    <Cell fill="#1B7A48" />
-                    <Cell fill="#EEF6F1" />
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="text-center -mt-20 mb-4">
-              <p className="text-3xl font-bold text-foreground font-display">78%</p>
-              <p className="text-xs text-muted-foreground">da agenda ocupada</p>
-            </div>
-            <div className="mt-16 space-y-2">
-              <div className="flex justify-between text-xs"><span className="text-muted-foreground">Confirmadas</span><span className="font-medium">62 sessões</span></div>
-              <div className="flex justify-between text-xs"><span className="text-muted-foreground">Disponíveis</span><span className="font-medium">18 slots</span></div>
-            </div>
+            <h3 className="font-semibold text-foreground font-display mb-4">Consultas por status</h3>
+            {statusBreakdown.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhuma consulta ainda.</p>
+            ) : (
+              <>
+                <div className="flex items-center justify-center mb-4">
+                  <ResponsiveContainer width={160} height={160}>
+                    <PieChart>
+                      <Pie data={statusBreakdown} cx="50%" cy="50%" innerRadius={50} outerRadius={70} startAngle={90} endAngle={-270} dataKey="value">
+                        {statusBreakdown.map(s => <Cell key={s.status} fill={STATUS_COLORS[s.status]} />)}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="space-y-2">
+                  {statusBreakdown.map(s => (
+                    <div key={s.status} className="flex justify-between text-xs">
+                      <span className="text-muted-foreground flex items-center gap-1.5"><span className="w-2 h-2 rounded-full" style={{ background: STATUS_COLORS[s.status] }} />{STATUS_LABELS[s.status]}</span>
+                      <span className="font-medium">{s.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </Card>
         </div>
 
@@ -1446,16 +1609,20 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: Authentic
               <h3 className="font-semibold text-foreground font-display">Próximas sessões</h3>
               <Btn variant="ghost" size="sm" onClick={() => onNavigate("calendar")}>Ver agenda <ChevronRight size={14} /></Btn>
             </div>
+            {!loading && upcoming.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma sessão agendada.</p>}
             <div className="space-y-3">
-              {patients.map((p, i) => (
-                <div key={i} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
-                  <Avatar name={p.name} size="sm" />
+              {upcoming.map(a => (
+                <div key={a.id} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                  <Avatar name={a.patientName} src={a.patientImg || undefined} size="sm" />
                   <div className="flex-1">
-                    <p className="text-sm font-medium text-foreground">{p.name}</p>
-                    <p className="text-xs text-muted-foreground">{p.session}</p>
+                    <p className="text-sm font-medium text-foreground">{a.patientName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
                   </div>
-                  <Badge variant={p.status === "Confirmado" ? "success" : "warning"}>{p.status}</Badge>
-                  <Btn variant="ghost" size="sm"><Video size={14} /></Btn>
+                  {a.modality === "online" && (
+                    <Btn variant="ghost" size="sm" onClick={() => { onEnterVideo(a.id); onNavigate("video"); }}><Video size={14} /></Btn>
+                  )}
                 </div>
               ))}
             </div>
@@ -1463,22 +1630,18 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut }: Authentic
 
           <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-foreground font-display">Tarefas pendentes</h3>
+              <h3 className="font-semibold text-foreground font-display">Pacientes recentes</h3>
+              <Btn variant="ghost" size="sm" onClick={() => onNavigate("ehr")}>Prontuários <ChevronRight size={14} /></Btn>
             </div>
+            {recentPatients.length === 0 && <p className="text-sm text-muted-foreground">Nenhum paciente ainda.</p>}
             <div className="space-y-3">
-              {[
-                { task: "Nota clínica — Ana Beatriz", time: "Vence hoje", icon: <FileText size={15} />, urgent: true },
-                { task: "Renovar receita — João Mendes", time: "Vence amanhã", icon: <Clipboard size={15} />, urgent: true },
-                { task: "Responder mensagem — Mariana R.", time: "Há 2h", icon: <MessageSquare size={15} />, urgent: false },
-                { task: "Atualizar disponibilidade (fev)", time: "Esta semana", icon: <Calendar size={15} />, urgent: false },
-              ].map((t, i) => (
-                <div key={i} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${t.urgent ? "bg-amber-50 text-amber-600" : "bg-muted text-muted-foreground"}`}>{t.icon}</div>
+              {recentPatients.map(p => (
+                <div key={p.name} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                  <Avatar name={p.name} src={p.img || undefined} size="sm" />
                   <div className="flex-1">
-                    <p className="text-sm font-medium text-foreground">{t.task}</p>
-                    <p className="text-xs text-muted-foreground">{t.time}</p>
+                    <p className="text-sm font-medium text-foreground">{p.name}</p>
+                    <p className="text-xs text-muted-foreground">Última sessão: {new Date(p.lastSession).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}</p>
                   </div>
-                  {t.urgent && <div className="w-2 h-2 rounded-full bg-amber-400" />}
                 </div>
               ))}
             </div>
@@ -1904,17 +2067,114 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
 
 // ─── SCREEN: Video Consultation ───────────────────────────────────────────────
 
-function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+type VideoAppointment = {
+  otherPartyName: string;
+  scheduledAt: string;
+  roomUrl: string | null;
+};
+
+function VideoScreen({ onNavigate, currentUser, appointmentId }: {
+  onNavigate: (s: Screen) => void;
+  currentUser: AppUser;
+  appointmentId: string | null;
+}) {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
   const [msg, setMsg] = useState("");
+  const [appointment, setAppointment] = useState<VideoAppointment | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
-  const messages = [
-    { from: "Dra. Fernanda", text: "Olá Ana! Pode me ouvir bem?", time: "16:00" },
-    { from: "Ana", text: "Sim, perfeitamente! Bom dia!", time: "16:00" },
-    { from: "Dra. Fernanda", text: "Ótimo. Vamos começar. Como foi sua semana?", time: "16:01" },
-  ];
+  const exitScreen: Screen = currentUser.role === "professional" ? "pro-dashboard" : "patient-dashboard";
+
+  useEffect(() => {
+    if (!appointmentId) {
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+    setLoadError("");
+
+    (async () => {
+      const { data: appt, error } = await supabase
+        .from("appointments")
+        .select("id, scheduled_at, profiles(full_name), professional_profiles(profiles(full_name))")
+        .eq("id", appointmentId)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (error || !appt) {
+        setLoadError("Não foi possível carregar esta consulta.");
+        setLoading(false);
+        return;
+      }
+
+      const item: any = appt;
+      const otherPartyName = currentUser.role === "professional"
+        ? item.profiles?.full_name ?? "Paciente"
+        : item.professional_profiles?.profiles?.full_name ?? "Profissional";
+
+      let { data: room } = await supabase
+        .from("video_rooms")
+        .select("room_url")
+        .eq("appointment_id", appointmentId)
+        .maybeSingle();
+
+      if (!room) {
+        const roomId = `room-${appointmentId}`;
+        const { data: createdRoom } = await supabase
+          .from("video_rooms")
+          .insert({ appointment_id: appointmentId, room_url: `https://meet.mindcare.test/${roomId}`, provider_room_id: roomId })
+          .select("room_url")
+          .maybeSingle();
+        room = createdRoom ?? null;
+      }
+
+      if (!active) return;
+      setAppointment({ otherPartyName, scheduledAt: item.scheduled_at, roomUrl: room?.room_url ?? null });
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [appointmentId, currentUser.role]);
+
+  const messages = appointment ? [
+    { from: appointment.otherPartyName, text: "Olá! Pode me ouvir bem?", time: new Date(appointment.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) },
+  ] : [];
+
+  if (!appointmentId) {
+    return (
+      <div className="h-screen bg-[#0D1117] flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Nenhuma consulta selecionada</h2>
+          <p className="text-sm text-muted-foreground mb-4">Entre em uma sala pelo painel de consultas.</p>
+          <Btn variant="primary" onClick={() => onNavigate(exitScreen)}>Voltar ao painel</Btn>
+        </Card>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <div className="h-screen bg-[#0D1117] flex items-center justify-center text-sm text-white/70">Entrando na sala...</div>;
+  }
+
+  if (loadError || !appointment) {
+    return (
+      <div className="h-screen bg-[#0D1117] flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Sala indisponível</h2>
+          <p className="text-sm text-muted-foreground mb-4">{loadError || "Esta consulta não foi encontrada."}</p>
+          <Btn variant="primary" onClick={() => onNavigate(exitScreen)}>Voltar ao painel</Btn>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
@@ -1925,8 +2185,18 @@ function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
           <span className="text-white font-semibold text-sm font-display">MindCare · Videoconsulta</span>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><span className="text-green-400 text-xs font-medium">00:32:14</span></div>
+          <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><span className="text-green-400 text-xs font-medium">Sala com {appointment.otherPartyName}</span></div>
           <Badge variant="success">Criptografado</Badge>
+          {appointment.roomUrl && (
+            <button
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(appointment.roomUrl!)}
+              className="text-xs text-white/50 hover:text-white/80 transition-colors underline decoration-dotted"
+              title={appointment.roomUrl}
+            >
+              Copiar link da sala
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Btn variant="ghost" size="sm" className="text-white/70 hover:text-white hover:bg-white/10" onClick={() => setChatOpen(!chatOpen)}>
@@ -1953,7 +2223,7 @@ function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             />
             <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur-sm rounded-xl px-3 py-1.5 flex items-center gap-2">
               <div className="w-2 h-2 bg-emerald-400 rounded-full" />
-              <span className="text-white text-xs font-medium">Dra. Fernanda Costa</span>
+              <span className="text-white text-xs font-medium">{appointment.otherPartyName}</span>
             </div>
           </div>
 
@@ -1962,7 +2232,7 @@ function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             {camOn ? (
               <img src="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=120&fit=crop&auto=format" alt="Você" className="w-full h-full object-cover" />
             ) : (
-              <div className="w-full h-full flex items-center justify-center"><Avatar name="Ana Beatriz" size="md" /></div>
+              <div className="w-full h-full flex items-center justify-center"><Avatar name={currentUser.fullName} size="md" /></div>
             )}
             <div className="absolute bottom-2 left-2 bg-black/50 rounded-lg px-2 py-0.5">
               <span className="text-white text-xs">Você</span>
@@ -2005,7 +2275,7 @@ function VideoScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <button onClick={() => setCamOn(!camOn)} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${camOn ? "bg-white/10 hover:bg-white/20" : "bg-red-500/80"}`}>
           {camOn ? <Camera size={20} className="text-white" /> : <X size={20} className="text-white" />}
         </button>
-        <button className="w-14 h-14 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center shadow-lg transition-all" onClick={() => onNavigate("pro-dashboard")}>
+        <button className="w-14 h-14 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center shadow-lg transition-all" onClick={() => onNavigate(exitScreen)}>
           <PhoneOff size={22} className="text-white" />
         </button>
         <button className="w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center"><Monitor size={20} className="text-white" /></button>
@@ -2621,6 +2891,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [selectedProfessionalId, setSelectedProfessionalId] = useState<string | null>(null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
+  const [activeAppointmentId, setActiveAppointmentId] = useState<string | null>(null);
 
   const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
   const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
@@ -2726,12 +2997,12 @@ export default function App() {
       {screen === "directory" && <DirectoryPage onNavigate={setScreen} onSelectProfessional={setSelectedProfessionalId} />}
       {screen === "profile" && <ProfilePage onNavigate={setScreen} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
       {screen === "login" && <LoginPage onNavigate={setScreen} />}
-      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
+      {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "calendar" && currentUser && <CalendarScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "ehr" && currentUser && <EHRScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "video" && currentUser && <VideoScreen onNavigate={setScreen} />}
+      {screen === "video" && currentUser && <VideoScreen onNavigate={setScreen} currentUser={currentUser} appointmentId={activeAppointmentId} />}
       {screen === "pricing" && <PricingPage onNavigate={setScreen} />}
       {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={setScreen} currentUser={currentUser} bookingDraft={bookingDraft} />}
       {screen === "financial" && currentUser && <FinancialDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
