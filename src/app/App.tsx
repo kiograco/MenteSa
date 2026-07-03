@@ -39,6 +39,7 @@ type DirectoryProfessional = {
   role: string;
   crp?: string;
   crm?: string;
+  bio?: string;
   img: string;
   rating: number;
   reviews: number;
@@ -46,6 +47,8 @@ type DirectoryProfessional = {
   modalities: string[];
   specialties: string[];
   city: string;
+  insurances: string[];
+  yearsExperience: number;
   wait: string;
   approaches: string[];
 };
@@ -527,12 +530,15 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
 function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [search, setSearch] = useState("");
+  const [citySearch, setCitySearch] = useState("");
   const [modality, setModality] = useState("all");
   const [specialty, setSpecialty] = useState("all");
+  const [insurance, setInsurance] = useState("all");
   const [dbProfessionals, setDbProfessionals] = useState<DirectoryProfessional[]>([]);
   const [loadingProfessionals, setLoadingProfessionals] = useState(false);
+  const [professionalsError, setProfessionalsError] = useState("");
 
-  const professionals: DirectoryProfessional[] = [
+  const professionals = [
     { name: "Dra. Fernanda Costa", role: "Psicóloga Clínica", crp: "CRP 06/12345", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=200&h=200&fit=crop&auto=format", rating: 4.9, reviews: 134, price: 180, modalities: ["Online", "Presencial"], specialties: ["Ansiedade", "Depressão", "TCC"], city: "São Paulo, SP", wait: "Disponível hoje", approaches: ["TCC", "ACT"] },
     { name: "Dr. Rafael Mendes", role: "Psiquiatra", crm: "CRM 35/87654", img: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=200&h=200&fit=crop&auto=format", rating: 4.8, reviews: 89, price: 350, modalities: ["Online", "Presencial"], specialties: ["TDAH", "Transtorno Bipolar"], city: "Rio de Janeiro, RJ", wait: "Amanhã", approaches: ["Farmacoterapia"] },
     { name: "Dra. Lara Viana", role: "Psicóloga", crp: "CRP 08/45678", img: "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format", rating: 5.0, reviews: 203, price: 150, modalities: ["Online"], specialties: ["Trauma", "EMDR", "Luto"], city: "Online", wait: "Disponível hoje", approaches: ["EMDR", "Psicanálise"] },
@@ -546,16 +552,20 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
     const loadProfessionals = async () => {
       setLoadingProfessionals(true);
+      setProfessionalsError("");
 
       const { data, error } = await supabase
         .from("professional_profiles")
-        .select("id, license_type, license_number, specialties, approaches, session_price, modalities, city, state, profiles(full_name, avatar_url)")
+        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
         .eq("verification_status", "verified")
         .order("created_at", { ascending: false });
 
       if (!active) return;
 
-      if (!error && data?.length) {
+      if (error) {
+        setProfessionalsError("Não foi possível carregar os profissionais verificados.");
+        setDbProfessionals([]);
+      } else if (data?.length) {
         setDbProfessionals(data.map((item: any): DirectoryProfessional => {
           const license = `${item.license_type ?? "CRP"} ${item.license_number}`;
           const modalities = (item.modalities ?? []).map((value: string) => value === "online" ? "Online" : "Presencial");
@@ -566,6 +576,7 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             role: item.license_type === "CRM" ? "Psiquiatra" : "Psicólogo(a)",
             crp: item.license_type === "CRP" ? license : undefined,
             crm: item.license_type === "CRM" ? license : undefined,
+            bio: item.bio ?? undefined,
             img: item.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format",
             rating: 5,
             reviews: 0,
@@ -573,10 +584,14 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             modalities: modalities.length ? modalities : ["Online"],
             specialties: item.specialties?.length ? item.specialties : ["Psicoterapia"],
             city: item.city && item.state ? `${item.city}, ${item.state}` : item.city ?? "Online",
+            insurances: item.insurances?.length ? item.insurances : ["Particular"],
+            yearsExperience: Number(item.years_experience ?? 0),
             wait: "Agenda aberta",
             approaches: item.approaches ?? [],
           };
         }));
+      } else {
+        setDbProfessionals([]);
       }
 
       setLoadingProfessionals(false);
@@ -589,13 +604,23 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
     };
   }, []);
 
-  const directoryProfessionals = dbProfessionals.length ? dbProfessionals : professionals;
+  const directoryProfessionals = dbProfessionals;
+  const specialtyOptions = Array.from(new Set(directoryProfessionals.flatMap(p => p.specialties))).sort();
+  const insuranceOptions = Array.from(new Set(directoryProfessionals.flatMap(p => p.insurances))).sort();
 
   const filtered = directoryProfessionals.filter(p => {
-    const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.specialties.some(s => s.toLowerCase().includes(search.toLowerCase()));
+    const normalizedSearch = search.trim().toLowerCase();
+    const normalizedCity = citySearch.trim().toLowerCase();
+    const matchSearch = !normalizedSearch
+      || p.name.toLowerCase().includes(normalizedSearch)
+      || p.role.toLowerCase().includes(normalizedSearch)
+      || p.specialties.some(s => s.toLowerCase().includes(normalizedSearch))
+      || p.approaches.some(a => a.toLowerCase().includes(normalizedSearch));
+    const matchCity = !normalizedCity || p.city.toLowerCase().includes(normalizedCity);
     const matchModality = modality === "all" || p.modalities.includes(modality === "online" ? "Online" : "Presencial");
     const matchSpecialty = specialty === "all" || p.specialties.some(s => s.toLowerCase() === specialty.toLowerCase());
-    return matchSearch && matchModality && matchSpecialty;
+    const matchInsurance = insurance === "all" || p.insurances.some(item => item.toLowerCase() === insurance.toLowerCase());
+    return matchSearch && matchCity && matchModality && matchSpecialty && matchInsurance;
   });
 
   return (
@@ -605,9 +630,22 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex flex-col md:flex-row gap-3">
             <Input placeholder="Especialidade, nome ou abordagem..." icon={<Search size={16} />} value={search} onChange={setSearch} className="flex-1" />
-            <Input placeholder="Cidade ou estado" icon={<MapPin size={16} />} className="md:w-52" />
-            <select className="px-4 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30">
-              <option>Qualquer plano</option><option>Particular</option><option>Unimed</option><option>Amil</option>
+            <Input placeholder="Cidade ou estado" icon={<MapPin size={16} />} value={citySearch} onChange={setCitySearch} className="md:w-52" />
+            <select
+              value={insurance}
+              onChange={e => setInsurance(e.target.value)}
+              className="px-4 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="all">Qualquer plano</option>
+              {insuranceOptions.map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <select
+              value={specialty}
+              onChange={e => setSpecialty(e.target.value)}
+              className="px-4 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="all">Qualquer especialidade</option>
+              {specialtyOptions.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
             <Btn variant="primary"><Filter size={16} />Filtrar</Btn>
           </div>
@@ -632,9 +670,24 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <p className="text-sm text-muted-foreground mb-6">
           {loadingProfessionals ? "Carregando profissionais..." : `${filtered.length} profissionais encontrados`}
         </p>
+        {professionalsError && (
+          <Card className="p-5 mb-5 border-red-200 bg-red-50">
+            <p className="text-sm font-medium text-red-700">{professionalsError}</p>
+            <p className="text-xs text-red-600 mt-1">Verifique as credenciais do Supabase e as políticas RLS do diretório público.</p>
+          </Card>
+        )}
+        {!loadingProfessionals && !professionalsError && filtered.length === 0 && (
+          <Card className="p-8 text-center mb-5">
+            <div className="w-12 h-12 rounded-2xl bg-muted flex items-center justify-center mx-auto mb-3">
+              <Search size={20} className="text-muted-foreground" />
+            </div>
+            <h2 className="font-semibold text-foreground font-display">Nenhum profissional verificado encontrado</h2>
+            <p className="text-sm text-muted-foreground mt-1">Ajuste os filtros ou execute o seed fake do MVP no Supabase.</p>
+          </Card>
+        )}
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
           {filtered.map((p, i) => (
-            <Card key={i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => onNavigate("profile")}>
+            <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => onNavigate("profile")}>
               <div className="flex gap-4 mb-4">
                 <img src={p.img} alt={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -654,6 +707,10 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
               </div>
               <div className="flex flex-wrap gap-1 mb-3">
                 {p.specialties.map(s => <Badge key={s} variant="outline">{s}</Badge>)}
+              </div>
+              <div className="flex flex-wrap gap-1 mb-3">
+                {p.insurances.slice(0, 3).map(plan => <Badge key={plan} variant="accent">{plan}</Badge>)}
+                {p.yearsExperience > 0 && <Badge variant="outline">{p.yearsExperience} anos de experiência</Badge>}
               </div>
               <div className="flex items-center gap-3 text-xs text-muted-foreground mb-4">
                 <span className="flex items-center gap-1"><MapPin size={11} />{p.city}</span>
