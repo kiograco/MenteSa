@@ -1204,15 +1204,13 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
       }
 
       if (mode === "login") {
-        const { data, error } = await supabase.auth.signInWithPassword({
+        const { error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
           password: typedPassword,
         });
 
         if (error) throw error;
-
-        const role = (data.user?.user_metadata?.role as UserRole | undefined) ?? "patient";
-        onNavigate(role === "professional" ? "pro-dashboard" : "patient-dashboard");
+        // Redirect happens once currentUser loads, see the "login" redirect effect near navigate().
         return;
       }
 
@@ -1250,8 +1248,8 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         setMode("login");
         return;
       }
-
-      onNavigate(userType === "professional" ? "pro-dashboard" : "patient-dashboard");
+      // Session exists (email confirmation disabled): redirect happens once currentUser loads,
+      // see the "login" redirect effect near navigate().
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Não foi possível autenticar.");
     } finally {
@@ -4402,6 +4400,15 @@ export default function App() {
       if (allowedRoles && !allowedRoles.includes(currentUser.role)) {
         navigate(homeScreenForRole(currentUser.role));
       }
+    }
+  }, [authLoading, currentUser, screen]);
+
+  // handleAuth() can't navigate straight to the dashboard on login success: currentUser is
+  // still loading (async profiles fetch via onAuthStateChange), so the protectedScreens guard
+  // above would immediately bounce back to /entrar. Wait for currentUser instead.
+  useEffect(() => {
+    if (!authLoading && currentUser && screen === "login") {
+      navigate(homeScreenForRole(currentUser.role));
     }
   }, [authLoading, currentUser, screen]);
 
