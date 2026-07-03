@@ -11,6 +11,7 @@ import { termsOfService, privacyPolicy, type LegalDocument } from "../content/le
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { getDailyRoomAccess, type DailyRoomAccess } from "../lib/video";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
+import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
 import type { VerificationStatus } from "../lib/database.types";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
@@ -1951,9 +1952,23 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
 
 // ─── SCREEN: Calendar ─────────────────────────────────────────────────────────
 
-function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+type CalendarAppointment = {
+  id: string;
+  scheduledAt: string;
+  durationMinutes: number;
+  modality: string;
+  status: string;
+  patientId: string;
+  patientName: string;
+  googleEventId: string | null;
+};
+
+const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–19:00
+const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+
+function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const [view, setView] = useState<"week" | "month" | "day">("week");
-  const [selectedDay, setSelectedDay] = useState(7);
+  const [anchorDate, setAnchorDate] = useState(() => new Date());
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
@@ -1964,27 +1979,266 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScr
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
-  const hours = Array.from({ length: 10 }, (_, i) => i + 8);
-  const days = ["Seg 06", "Ter 07", "Qua 08", "Qui 09", "Sex 10", "Sáb 11"];
+  const [appointments, setAppointments] = useState<CalendarAppointment[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(true);
+  const [availabilitySummary, setAvailabilitySummary] = useState("Nenhum horário definido ainda");
+  const [selectedAppointment, setSelectedAppointment] = useState<CalendarAppointment | null>(null);
 
-  const appointments: Record<string, { patient: string; type: string; color: string }[]> = {
-    "Ter 07-9": [{ patient: "Ana Beatriz", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
-    "Ter 07-10": [{ patient: "Carlos Silva", type: "Presencial", color: "bg-blue-50 border-blue-200 text-blue-700" }],
-    "Ter 07-14": [{ patient: "Mariana Roque", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
-    "Qua 08-9": [{ patient: "João Mendes", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
-    "Qua 08-11": [{ patient: "Sofia Lima", type: "Presencial", color: "bg-blue-50 border-blue-200 text-blue-700" }],
-    "Sex 10-10": [{ patient: "Pedro Santos", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
-    "Sex 10-15": [{ patient: "Laura Costa", type: "Online", color: "bg-primary/10 border-primary/30 text-primary" }],
+  const [patients, setPatients] = useState<{ id: string; name: string }[]>([]);
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [newPatientId, setNewPatientId] = useState("");
+  const [newDate, setNewDate] = useState("");
+  const [newTime, setNewTime] = useState("09:00");
+  const [newModality, setNewModality] = useState<"online" | "presencial">("online");
+  const [newError, setNewError] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [googleSyncing, setGoogleSyncing] = useState(false);
+  const [googleMessage, setGoogleMessage] = useState("");
+
+  const weekStart = getWeekStart(anchorDate);
+  const weekDays = getWeekDays(weekStart);
+  const monthStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+  const monthEnd = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 1);
+
+  const reloadAppointments = async () => {
+    setLoadingAppointments(true);
+    const { data } = await supabase
+      .from("appointments")
+      .select("id, scheduled_at, duration_minutes, modality, status, patient_id, google_event_id, profiles(full_name)")
+      .eq("professional_id", currentUser.id)
+      .gte("scheduled_at", monthStart.toISOString())
+      .lt("scheduled_at", monthEnd.toISOString())
+      .order("scheduled_at", { ascending: true });
+
+    setAppointments(((data ?? []) as any[]).map(a => ({
+      id: a.id,
+      scheduledAt: a.scheduled_at,
+      durationMinutes: a.duration_minutes,
+      modality: a.modality,
+      status: a.status,
+      patientId: a.patient_id,
+      patientName: a.profiles?.full_name ?? "Paciente",
+      googleEventId: a.google_event_id,
+    })));
+    setLoadingAppointments(false);
   };
+
+  useEffect(() => {
+    void reloadAppointments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id, anchorDate.getFullYear(), anchorDate.getMonth()]);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      const { data } = await supabase
+        .from("professional_availability")
+        .select("weekday, start_time, end_time")
+        .eq("professional_id", currentUser.id)
+        .not("weekday", "is", null)
+        .order("weekday", { ascending: true });
+
+      if (!active || !data || data.length === 0) return;
+
+      const dayLabels = Array.from(new Set(data.map(d => d.weekday)))
+        .sort()
+        .map(w => WEEKDAY_OPTIONS.find(o => o.value === w)?.label.slice(0, 3) ?? String(w))
+        .join(", ");
+      const minStart = data.reduce((min, d) => (d.start_time < min ? d.start_time : min), data[0].start_time).slice(0, 5);
+      const maxEnd = data.reduce((max, d) => (d.end_time > max ? d.end_time : max), data[0].end_time).slice(0, 5);
+      setAvailabilitySummary(`${dayLabels} · ${minStart}–${maxEnd}`);
+    })();
+
+    (async () => {
+      const { data } = await supabase.from("appointments").select("patient_id, profiles(full_name)").eq("professional_id", currentUser.id);
+      if (!active) return;
+      const map = new Map<string, string>();
+      ((data ?? []) as any[]).forEach(a => {
+        if (!map.has(a.patient_id)) map.set(a.patient_id, a.profiles?.full_name ?? "Paciente");
+      });
+      setPatients(Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)));
+    })();
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (active) setGoogleConnected(Boolean(data.session?.provider_token));
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const appointmentsFor = (day: Date, hour: number) =>
+    appointments.filter(a => {
+      const d = new Date(a.scheduledAt);
+      return isSameDay(d, day) && d.getHours() === hour;
+    });
+
+  const openNewAppointmentModal = (day?: Date, hour?: number) => {
+    setNewError("");
+    setNewPatientId(patients[0]?.id ?? "");
+    setNewDate(day ? day.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
+    setNewTime(hour !== undefined ? `${String(hour).padStart(2, "0")}:00` : "09:00");
+    setShowNewModal(true);
+  };
+
+  const handleCreateAppointment = async () => {
+    setNewError("");
+
+    if (!newPatientId) {
+      setNewError("Selecione um paciente. Só é possível agendar com pacientes que já tiveram consulta com você.");
+      return;
+    }
+    if (!newDate || !newTime) {
+      setNewError("Selecione data e horário.");
+      return;
+    }
+
+    const scheduledAt = new Date(`${newDate}T${newTime}:00`);
+    if (scheduledAt.getTime() < Date.now()) {
+      setNewError("Escolha uma data e horário no futuro.");
+      return;
+    }
+
+    setCreating(true);
+
+    const { data: conflict } = await supabase
+      .from("appointments")
+      .select("id")
+      .eq("professional_id", currentUser.id)
+      .eq("scheduled_at", scheduledAt.toISOString())
+      .eq("status", "scheduled")
+      .maybeSingle();
+
+    if (conflict) {
+      setCreating(false);
+      setNewError("Você já tem uma consulta marcada nesse horário.");
+      return;
+    }
+
+    const { data: profile } = await supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle();
+
+    const { error } = await supabase.from("appointments").insert({
+      patient_id: newPatientId,
+      professional_id: currentUser.id,
+      scheduled_at: scheduledAt.toISOString(),
+      modality: newModality,
+      price: Number(profile?.session_price ?? 0),
+    });
+
+    setCreating(false);
+
+    if (error) {
+      reportError(error, { flow: "calendar.createAppointment" });
+      setNewError("Não foi possível criar a consulta.");
+      return;
+    }
+
+    setShowNewModal(false);
+    await reloadAppointments();
+  };
+
+  const handleConnectGoogle = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        scopes: "https://www.googleapis.com/auth/calendar.events",
+        queryParams: { access_type: "offline", prompt: "consent" },
+        redirectTo: `${window.location.origin}/profissional/agenda`,
+      },
+    });
+  };
+
+  const handleSyncGoogle = async () => {
+    setGoogleSyncing(true);
+    setGoogleMessage("");
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.provider_token;
+
+    if (!token) {
+      setGoogleSyncing(false);
+      setGoogleConnected(false);
+      setGoogleMessage("Sua conexão com o Google expirou. Clique em \"Conectar Google Agenda\" de novo.");
+      return;
+    }
+
+    const upcoming = appointments.filter(a => a.status === "scheduled" && new Date(a.scheduledAt) >= new Date());
+    let successCount = 0;
+
+    for (const appt of upcoming) {
+      const start = new Date(appt.scheduledAt);
+      const end = new Date(start.getTime() + appt.durationMinutes * 60000);
+      const body = JSON.stringify({
+        summary: `Consulta — ${appt.patientName}`,
+        description: `Consulta MindCare (${appt.modality === "online" ? "Online" : "Presencial"})`,
+        start: { dateTime: start.toISOString() },
+        end: { dateTime: end.toISOString() },
+      });
+
+      try {
+        const url = appt.googleEventId
+          ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${appt.googleEventId}`
+          : "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+        const res = await fetch(url, {
+          method: appt.googleEventId ? "PATCH" : "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body,
+        });
+
+        if (res.ok) {
+          successCount++;
+          if (!appt.googleEventId) {
+            const created = await res.json();
+            await supabase.from("appointments").update({ google_event_id: created.id }).eq("id", appt.id);
+          }
+        }
+      } catch (error) {
+        reportError(error, { flow: "calendar.syncGoogle", appointmentId: appt.id });
+      }
+    }
+
+    setGoogleSyncing(false);
+    setGoogleMessage(`${successCount} de ${upcoming.length} consultas sincronizadas com o Google Agenda.`);
+    if (successCount > 0) await reloadAppointments();
+  };
+
+  const monthList = appointments.slice().sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
 
   return (
     <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-4 h-full">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
-            <button className="p-2 rounded-lg hover:bg-muted"><ChevronLeft size={18} /></button>
-            <h2 className="font-semibold text-foreground font-display">Janeiro 2025</h2>
-            <button className="p-2 rounded-lg hover:bg-muted"><ChevronRight size={18} /></button>
+            <button
+              className="p-2 rounded-lg hover:bg-muted"
+              onClick={() => setAnchorDate(d => {
+                const next = new Date(d);
+                if (view === "month") next.setMonth(next.getMonth() - 1);
+                else next.setDate(next.getDate() - 7);
+                return next;
+              })}
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <h2 className="font-semibold text-foreground font-display">
+              {view === "month" ? anchorDate.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) : formatWeekRangeLabel(weekStart)}
+            </h2>
+            <button
+              className="p-2 rounded-lg hover:bg-muted"
+              onClick={() => setAnchorDate(d => {
+                const next = new Date(d);
+                if (view === "month") next.setMonth(next.getMonth() + 1);
+                else next.setDate(next.getDate() + 7);
+                return next;
+              })}
+            >
+              <ChevronRight size={18} />
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <div className="flex bg-muted rounded-xl p-1">
@@ -1992,63 +2246,165 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScr
                 <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${view === v ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>{v === "day" ? "Dia" : v === "week" ? "Semana" : "Mês"}</button>
               ))}
             </div>
-            <Btn variant="primary" size="sm"><Plus size={15} />Nova consulta</Btn>
-            <Btn variant="outline" size="sm"><RefreshCw size={15} />Google Agenda</Btn>
+            <Btn variant="primary" size="sm" onClick={() => openNewAppointmentModal()}><Plus size={15} />Nova consulta</Btn>
+            {googleConnected ? (
+              <Btn variant="outline" size="sm" onClick={handleSyncGoogle} disabled={googleSyncing}><RefreshCw size={15} />{googleSyncing ? "Sincronizando..." : "Sincronizar Google"}</Btn>
+            ) : (
+              <Btn variant="outline" size="sm" onClick={handleConnectGoogle}><RefreshCw size={15} />Conectar Google Agenda</Btn>
+            )}
           </div>
         </div>
+        {googleMessage && <p className="text-xs text-muted-foreground">{googleMessage}</p>}
 
-        <Card className="overflow-hidden flex-1">
-          {/* Day headers */}
-          <div className="grid border-b border-border bg-muted/50" style={{ gridTemplateColumns: "60px repeat(6, 1fr)" }}>
-            <div className="p-3" />
-            {days.map(d => (
-              <div key={d} className="p-3 text-center">
-                <p className="text-xs font-medium text-muted-foreground">{d.split(" ")[0]}</p>
-                <p className={`text-sm font-semibold mt-0.5 w-8 h-8 rounded-full flex items-center justify-center mx-auto ${d.includes("07") ? "bg-primary text-white" : "text-foreground"}`}>{d.split(" ")[1]}</p>
-              </div>
-            ))}
-          </div>
-          {/* Time grid */}
-          <div className="overflow-y-auto max-h-[480px]">
-            {hours.map(h => (
-              <div key={h} className="grid border-b border-border/50 min-h-[60px]" style={{ gridTemplateColumns: "60px repeat(6, 1fr)" }}>
-                <div className="px-3 py-2 text-xs text-muted-foreground text-right font-mono">{h}:00</div>
-                {days.map(d => {
-                  const key = `${d}-${h}`;
-                  const appt = appointments[key];
-                  return (
-                    <div key={d} className="border-l border-border/30 p-1 relative cursor-pointer hover:bg-muted/30 transition-colors">
-                      {appt && appt.map((a, i) => (
-                        <div key={i} className={`rounded-lg border px-2 py-1 text-xs font-medium ${a.color}`}>
-                          <p className="font-semibold truncate">{a.patient}</p>
-                          <p className="opacity-70">{a.type}</p>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </Card>
+        {(view === "week" || view === "day") && (
+          <Card className="overflow-hidden flex-1">
+            <div className="grid border-b border-border bg-muted/50" style={{ gridTemplateColumns: `60px repeat(${view === "day" ? 1 : 7}, 1fr)` }}>
+              <div className="p-3" />
+              {(view === "day" ? [weekDays.find(d => isSameDay(d, anchorDate)) ?? anchorDate] : weekDays).map(d => (
+                <div key={d.toISOString()} className="p-3 text-center">
+                  <p className="text-xs font-medium text-muted-foreground">{CALENDAR_DAY_LABELS[d.getDay()]}</p>
+                  <p className={`text-sm font-semibold mt-0.5 w-8 h-8 rounded-full flex items-center justify-center mx-auto ${isSameDay(d, new Date()) ? "bg-primary text-white" : "text-foreground"}`}>{d.getDate()}</p>
+                </div>
+              ))}
+            </div>
+            <div className="overflow-y-auto max-h-[480px]">
+              {loadingAppointments && <p className="text-sm text-muted-foreground p-4">Carregando consultas...</p>}
+              {!loadingAppointments && CALENDAR_HOURS.map(h => (
+                <div key={h} className="grid border-b border-border/50 min-h-[60px]" style={{ gridTemplateColumns: `60px repeat(${view === "day" ? 1 : 7}, 1fr)` }}>
+                  <div className="px-3 py-2 text-xs text-muted-foreground text-right font-mono">{h}:00</div>
+                  {(view === "day" ? [weekDays.find(d => isSameDay(d, anchorDate)) ?? anchorDate] : weekDays).map(d => {
+                    const appts = appointmentsFor(d, h);
+                    return (
+                      <div key={d.toISOString()} className="border-l border-border/30 p-1 relative cursor-pointer hover:bg-muted/30 transition-colors" onClick={() => appts.length === 0 && openNewAppointmentModal(d, h)}>
+                        {appts.map(a => (
+                          <div
+                            key={a.id}
+                            onClick={e => { e.stopPropagation(); setSelectedAppointment(a); }}
+                            className={`rounded-lg border px-2 py-1 text-xs font-medium ${a.status === "cancelled" ? "bg-muted border-border text-muted-foreground line-through" : a.modality === "online" ? "bg-primary/10 border-primary/30 text-primary" : "bg-blue-50 border-blue-200 text-blue-700"}`}
+                          >
+                            <p className="font-semibold truncate">{a.patientName}</p>
+                            <p className="opacity-70">{a.modality === "online" ? "Online" : "Presencial"}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { label: "Disponibilidade semanal", value: "Seg–Sex 8h–18h", icon: <Clock size={16} />, action: "Editar" },
-            { label: "Próximo bloqueio", value: "20–24 Jan (férias)", icon: <Calendar size={16} />, action: "Gerenciar" },
-            { label: "Lembretes automáticos", value: "24h + 1h antes", icon: <Bell size={16} />, action: "Configurar" },
-          ].map((s, i) => (
-            <Card key={i} className="p-4 flex items-center gap-3">
-              <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center text-primary">{s.icon}</div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-muted-foreground">{s.label}</p>
-                <p className="text-sm font-medium text-foreground truncate">{s.value}</p>
-              </div>
-              <Btn variant="ghost" size="sm">{s.action}</Btn>
-            </Card>
-          ))}
+        {view === "month" && (
+          <Card className="p-4 flex-1 overflow-y-auto max-h-[560px]">
+            {loadingAppointments && <p className="text-sm text-muted-foreground">Carregando consultas...</p>}
+            {!loadingAppointments && monthList.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta neste mês.</p>}
+            <div className="divide-y divide-border">
+              {monthList.map(a => (
+                <div key={a.id} className="flex items-center justify-between py-3 cursor-pointer hover:bg-muted/30 px-2 rounded-lg" onClick={() => setSelectedAppointment(a)}>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{a.patientName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                  <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : "outline"}>
+                    {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.modality === "online" ? "Online" : "Presencial"}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        <div className="grid grid-cols-2 gap-4">
+          <Card className="p-4 flex items-center gap-3">
+            <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><Clock size={16} /></div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-muted-foreground">Disponibilidade semanal</p>
+              <p className="text-sm font-medium text-foreground truncate">{availabilitySummary}</p>
+            </div>
+            <Btn variant="ghost" size="sm" onClick={() => onNavigate("professional-settings")}>Editar</Btn>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="w-9 h-9 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><RefreshCw size={16} /></div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-muted-foreground">Google Agenda</p>
+              <p className="text-sm font-medium text-foreground truncate">{googleConnected ? "Conectado" : "Não conectado"}</p>
+            </div>
+          </Card>
         </div>
       </div>
+
+      {selectedAppointment && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setSelectedAppointment(null)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">{selectedAppointment.patientName}</h2>
+              <button type="button" onClick={() => setSelectedAppointment(null)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            <div className="space-y-2 text-sm">
+              <p className="text-muted-foreground">
+                {new Date(selectedAppointment.scheduledAt).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })} · {new Date(selectedAppointment.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+              </p>
+              <p className="text-muted-foreground">{selectedAppointment.modality === "online" ? "Online" : "Presencial"}</p>
+              <Badge variant={selectedAppointment.status === "completed" ? "success" : selectedAppointment.status === "cancelled" ? "danger" : "outline"}>
+                {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : "Agendada"}
+              </Badge>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <Btn variant="outline" onClick={() => onNavigate("ehr")}>Ver prontuário</Btn>
+              {selectedAppointment.modality === "online" && selectedAppointment.status === "scheduled" && (
+                <Btn variant="primary" onClick={() => { onEnterVideo(selectedAppointment.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNewModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowNewModal(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Nova consulta</h2>
+              <button type="button" onClick={() => setShowNewModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            {patients.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Você ainda não tem nenhum paciente. Novos pacientes agendam a primeira consulta pelo diretório público — depois disso você pode marcar consultas de retorno por aqui.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-foreground">Paciente</label>
+                  <select value={newPatientId} onChange={e => setNewPatientId(e.target.value)} className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                    {patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-foreground">Data</label>
+                    <input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-foreground">Horário</label>
+                    <input type="time" value={newTime} onChange={e => setNewTime(e.target.value)} className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-foreground">Modalidade</label>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setNewModality("online")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newModality === "online" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Online</button>
+                    <button type="button" onClick={() => setNewModality("presencial")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newModality === "presencial" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Presencial</button>
+                  </div>
+                </div>
+                {newError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newError}</div>}
+                <Btn variant="primary" className="w-full justify-center" onClick={handleCreateAppointment} disabled={creating}>{creating ? "Criando..." : "Criar consulta"}</Btn>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
@@ -4019,7 +4375,7 @@ export default function App() {
       {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}

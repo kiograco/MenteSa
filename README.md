@@ -44,6 +44,8 @@
   - [x] Painel admin: aprovar/rejeitar profissionais, listar usuários e pagamentos
   - [x] Autoatendimento do profissional: editar bio/especialidades/preço/cidade/modalidades/convênios
         e gerenciar a própria disponibilidade semanal (tela "Configurações" do dashboard profissional)
+  - [x] Agenda do profissional com consultas reais (semana/dia/mês), criação de consulta de retorno
+        e sincronização opcional com o Google Agenda
   - [x] Build limpo (`npm run build`), typecheck limpo (`npm run typecheck`) e testes unitários básicos (`npm run test`)
 
   Fora do escopo do MVP (ficou como mock/placeholder de propósito): IA de transcrição de sessão
@@ -171,6 +173,53 @@
   rejeitada; o admin abre cada arquivo (URL assinada, expira em 60s) na aba "Validações pendentes"
   antes de aprovar ou rejeitar. Não precisa de nenhuma chave nova — só de o bucket existir no
   projeto Supabase real (a migration já cria).
+
+  ### Agenda do profissional (`/profissional/agenda`)
+
+  Consultas reais, filtradas por `professional_id`, nas visões semana/dia/mês. Clicar numa consulta
+  abre um painel com paciente/horário/status e atalhos pra "Ver prontuário" e "Entrar" (sala de
+  vídeo, só quando online e ainda não realizada). Clicar num horário vazio já abre "Nova consulta"
+  com aquele dia/hora preenchidos.
+
+  **"Nova consulta"** cria uma consulta de retorno com um paciente que **já teve consulta com você**
+  (a política de RLS `appointments_insert_professional_existing_patient`, migration
+  `20260703000005`, exige isso — não dá pra criar consulta pra um paciente novo por aqui, porque não
+  existe como buscar um estranho por nome/e-mail sem violar a privacidade dos outros usuários; o
+  primeiro contato de um paciente novo continua sendo ele agendar pelo diretório público).
+
+  **Correção de bug junto:** a política de RLS de `profiles` nunca deixava um profissional ver o
+  nome/foto dos próprios pacientes — só via a própria linha, a de um profissional verificado, ou
+  tudo se fosse admin. Isso fazia o Dashboard Profissional e o Prontuário mostrarem "Paciente"
+  genérico em vez do nome real desde que essas telas foram construídas. Corrigido na migration
+  `20260703000004` (`profiles_select_own_patients`), que libera a leitura quando o paciente tem
+  uma consulta com o profissional que está pedindo.
+
+  ### Google Agenda
+
+  "Conectar Google Agenda" reautentica via `supabase.auth.signInWithOAuth` pedindo o escopo
+  `calendar.events` **além** do escopo básico de login — é o mesmo provedor Google já usado pelo
+  botão "Continuar com Google" na tela de login, só que com uma permissão a mais. Depois de
+  conectado, "Sincronizar Google" cria (ou atualiza, se já sincronizada antes — o id do evento fica
+  em `appointments.google_event_id`, migration `20260703000006`) um evento no Google Agenda pra
+  cada consulta futura, direto do navegador pra API do Google, usando o token de acesso que o
+  Supabase devolve na sessão (`session.provider_token`).
+
+  **Limitação conhecida, documentada em vez de escondida:** o Supabase não persiste
+  `provider_token` depois que o token de sessão renova sozinho (isso acontece por padrão depois de
+  ~1h) — é uma limitação do próprio supabase-js, não deste código. Na prática, a conexão "dura" a
+  sessão atual; se "Sincronizar Google" disser que a conexão expirou, é só clicar em "Conectar
+  Google Agenda" de novo. Sincronizar é uma ação sob demanda (o profissional clica quando quer),
+  não um sync automático contínuo em segundo plano — isso exigiria guardar o refresh token no
+  servidor e um job agendado, fora do escopo deste MVP.
+
+  Para ativar, seu provedor Google no Supabase (Authentication → Providers → Google) precisa:
+  1. Ter a **Google Calendar API** habilitada no mesmo projeto do Google Cloud Console usado pra
+     gerar o Client ID/Secret do login.
+  2. Ter o escopo `https://www.googleapis.com/auth/calendar.events` liberado na tela de
+     consentimento OAuth (OAuth consent screen → Scopes). Enquanto o app Google estiver em modo de
+     teste, só usuários adicionados como "Test users" conseguem autorizar esse escopo.
+  3. Nenhuma chave nova no `.env` ou nos secrets do Supabase — reaproveita o Client ID/Secret do
+     Google que já autentica o login.
 
   ### Projeto Supabase real + deploy automático
 

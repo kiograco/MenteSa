@@ -80,6 +80,7 @@ export interface Database {
           modality: Modality;
           status: AppointmentStatus;
           price: number;
+          google_event_id: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["appointments"]["Row"]> & {
