@@ -9,6 +9,7 @@ import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
+import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
@@ -130,9 +131,25 @@ function Card({ children, className = "", onClick }: { children: React.ReactNode
   );
 }
 
+function getInitials(name: string): string {
+  return name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
+}
+
+/** Fallback for the raw <img> spots that need a specific size/shape Avatar's fixed sizes don't
+ *  cover (card thumbnails, hero photos) — same "photo or initials" behavior, custom className. */
+function PhotoOrInitials({ src, name, className }: { src?: string; name: string; className: string }) {
+  return src ? (
+    <img src={src} alt={name} className={className} />
+  ) : (
+    <div className={`${className} bg-primary/10 text-primary font-semibold flex items-center justify-center flex-shrink-0`}>
+      {getInitials(name)}
+    </div>
+  );
+}
+
 function Avatar({ name, src, size = "md", online }: { name: string; src?: string; size?: "sm" | "md" | "lg" | "xl"; online?: boolean }) {
   const sizes = { sm: "w-8 h-8 text-xs", md: "w-10 h-10 text-sm", lg: "w-14 h-14 text-base", xl: "w-20 h-20 text-xl" };
-  const initials = name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase();
+  const initials = getInitials(name);
   return (
     <div className="relative inline-flex">
       {src ? (
@@ -630,7 +647,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
             crp: item.license_type === "CRP" ? license : undefined,
             crm: item.license_type === "CRM" ? license : undefined,
             bio: item.bio ?? undefined,
-            img: item.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format",
+            img: item.profiles?.avatar_url ?? "",
             rating: 5,
             reviews: 0,
             price: Number(item.session_price ?? 0),
@@ -742,7 +759,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
           {filtered.map((p, i) => (
             <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => { if (p.id) { onSelectProfessional(p.id); onNavigate("profile"); } }}>
               <div className="flex gap-4 mb-4">
-                <img src={p.img} alt={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
+                <PhotoOrInitials src={p.img || undefined} name={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -878,7 +895,7 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
         yearsExperience: Number(item.years_experience ?? 0),
         price: Number(item.session_price ?? 0),
         modalities: (item.modalities ?? []).map((v: string) => (v === "online" ? "Online" : "Presencial")),
-        img: item.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format",
+        img: item.profiles?.avatar_url ?? "",
       });
       setAvailability((availData ?? []) as any);
       setReviews(((reviewData ?? []) as any[]).map(r => ({ name: r.profiles?.full_name ?? "Paciente", rating: r.rating, comment: r.comment })));
@@ -958,7 +975,7 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
         <div className="max-w-5xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row gap-8">
             <div className="flex-shrink-0">
-              <img src={pro.img} alt={pro.name} className="w-32 h-32 rounded-3xl object-cover shadow-lg bg-secondary" />
+              <PhotoOrInitials src={pro.img || undefined} name={pro.name} className="w-32 h-32 rounded-3xl object-cover shadow-lg bg-secondary text-3xl" />
             </div>
             <div className="flex-1">
               <div className="flex flex-wrap items-start gap-3 mb-2">
@@ -1531,7 +1548,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         status: a.status,
         price: Number(a.price),
         professionalName: a.professional_profiles?.profiles?.full_name ?? "Profissional",
-        professionalImg: a.professional_profiles?.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format",
+        professionalImg: a.professional_profiles?.profiles?.avatar_url ?? "",
       }));
       setAppointments(rows);
 
@@ -1599,7 +1616,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
           <div className="space-y-3">
             {upcoming.map(a => (
               <Card key={a.id} className="p-4 flex items-center gap-4">
-                <img src={a.professionalImg} alt={a.professionalName} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
+                <PhotoOrInitials src={a.professionalImg || undefined} name={a.professionalName} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-foreground">{a.professionalName}</p>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -3607,7 +3624,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
             <Card className="p-6">
               <h2 className="font-semibold text-foreground font-display mb-4">Resumo</h2>
               <div className="flex items-center gap-3 mb-4 pb-4 border-b border-border">
-                <img src={bookingDraft.professionalImg} alt={bookingDraft.professionalName} className="w-12 h-12 rounded-2xl object-cover" />
+                <PhotoOrInitials src={bookingDraft.professionalImg || undefined} name={bookingDraft.professionalName} className="w-12 h-12 rounded-2xl object-cover" />
                 <div>
                   <p className="text-sm font-semibold text-foreground">{bookingDraft.professionalName}</p>
                   <p className="text-xs text-muted-foreground">{bookingDraft.professionalRole}</p>
@@ -3765,6 +3782,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   ];
 
   const [loading, setLoading] = useState(true);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
   const [licenseType, setLicenseType] = useState("CRP");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [bio, setBio] = useState("");
@@ -3842,6 +3862,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         await supabase.from("professional_profiles").insert({ id: currentUser.id, license_type: "CRP", license_number: "" });
       }
 
+      const { data: profileRow } = await supabase.from("profiles").select("avatar_url").eq("id", currentUser.id).maybeSingle();
+      if (active) setAvatarUrl(profileRow?.avatar_url ?? "");
+
       await loadAvailability();
       if (active) setLoading(false);
     })();
@@ -3885,6 +3908,20 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     }
 
     setSaveMessage("Perfil atualizado com sucesso.");
+  };
+
+  const handleUploadAvatar = async (file: File) => {
+    setAvatarError("");
+    setUploadingAvatar(true);
+    try {
+      const url = await uploadAvatar(currentUser.id, file);
+      setAvatarUrl(url);
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.uploadAvatar" });
+      setAvatarError(error instanceof Error ? error.message : "Não foi possível enviar a foto.");
+    } finally {
+      setUploadingAvatar(false);
+    }
   };
 
   const toggleDay = (weekday: number, enabled: boolean) => {
@@ -3973,6 +4010,26 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           <p className="text-xs text-muted-foreground -mt-2">
             Esses dados aparecem no seu perfil público e são usados pelos filtros de busca do diretório (cidade/estado, especialidade, convênio, modalidade).
           </p>
+
+          <div className="flex items-center gap-4">
+            <PhotoOrInitials src={avatarUrl || undefined} name={currentUser.fullName} className="w-20 h-20 rounded-2xl object-cover bg-secondary text-xl" />
+            <div>
+              <label className="cursor-pointer">
+                <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingAvatar ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload size={14} />{uploadingAvatar ? "Enviando..." : avatarUrl ? "Trocar foto" : "Enviar foto"}
+                </span>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  disabled={uploadingAvatar}
+                  onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadAvatar(file); e.target.value = ""; }}
+                />
+              </label>
+              <p className="text-xs text-muted-foreground mt-1.5">JPG ou PNG. Aparece no diretório e no seu perfil público.</p>
+              {avatarError && <p className="text-xs text-red-600 mt-1">{avatarError}</p>}
+            </div>
+          </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">

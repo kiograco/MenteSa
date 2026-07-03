@@ -187,6 +187,18 @@
   antes de aprovar ou rejeitar. Não precisa de nenhuma chave nova — só de o bucket existir no
   projeto Supabase real (a migration já cria).
 
+  ### Foto de perfil
+
+  Bucket **público** do Supabase Storage `avatars` (migration `20260703000008`), organizado por
+  `{user_id}/{timestamp}-{arquivo}` — público porque a foto já aparece no diretório/perfil público,
+  mesma exposição do nome. RLS garante que só o próprio usuário sobe/troca a própria foto; leitura é
+  liberada pra qualquer um (`storage.objects` do bucket `avatars`). Em
+  "Configurações → Meu perfil profissional", o profissional troca a foto a qualquer momento; ela
+  atualiza `profiles.avatar_url` e passa a aparecer no diretório, no perfil público e nas telas do
+  paciente. Sem foto enviada, todo lugar que antes mostrava uma foto de banco de imagens fixa agora
+  mostra as iniciais do nome (mesmo componente usado no resto do app) — nada de foto genérica que
+  não é da pessoa de verdade. Não precisa de nenhuma chave nova.
+
   ### Verificação de registro profissional (CRP/CRM)
 
   Fluxo completo de ponta a ponta:
