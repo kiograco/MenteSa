@@ -5,6 +5,8 @@
 
   ## Running the code
 
+  Requires Node 22+ (see `.nvmrc`; `@supabase/supabase-js` targets Node 22). Run `nvm use` if you use nvm.
+
   Run `npm i` to install the dependencies.
 
   Run `npm run dev` to start the development server.
@@ -43,4 +45,17 @@
   - [x] Build limpo (`npm run build`), typecheck limpo (`npm run typecheck`) e testes unitários básicos (`npm run test`)
 
   Fora do escopo do MVP (ficou como mock/placeholder de propósito): IA de transcrição de sessão
-  (`AIAssistantScreen`), vídeo em tempo real (WebRTC), receituário digital e relatórios em PDF.
+  (`AIAssistantScreen`) e receituário digital.
+
+  ## Indo para produção
+
+  Checklist do que falta para o app sair do MVP e virar algo usável com dinheiro/dados reais.
+  Todo o código já está pronto — o que falta é você criar as contas nos provedores abaixo e
+  preencher as chaves (nenhuma chave real está no repositório).
+
+  ### Chaves de acesso necessárias
+
+  | Variável | Onde configurar | Para quê |
+  |---|---|---|
+  | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
+  | *(preenchido nas próximas etapas)* | | |
