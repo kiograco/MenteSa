@@ -9,6 +9,7 @@ import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
+import { getDailyRoomAccess, type DailyRoomAccess } from "../lib/video";
 import type { VerificationStatus } from "../lib/database.types";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
@@ -2425,6 +2426,36 @@ type VideoAppointment = {
   roomUrl: string | null;
 };
 
+function DailyCallFrame({ roomUrl, token, onLeave }: { roomUrl: string; token: string; onLeave: () => void }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let destroyed = false;
+    let callFrame: Awaited<ReturnType<typeof import("@daily-co/daily-js").default.createFrame>> | null = null;
+
+    // Loaded on demand — daily-js is a sizable dependency only ever needed on this screen.
+    void import("@daily-co/daily-js").then(({ default: DailyIframe }) => {
+      if (destroyed || !containerRef.current) return;
+
+      callFrame = DailyIframe.createFrame(containerRef.current, {
+        showLeaveButton: true,
+        iframeStyle: { width: "100%", height: "100%", border: "0" },
+      });
+
+      void callFrame.join({ url: roomUrl, token });
+      callFrame.on("left-meeting", onLeave);
+    });
+
+    return () => {
+      destroyed = true;
+      callFrame?.destroy();
+    };
+  }, [roomUrl, token]);
+
+  return <div ref={containerRef} className="flex-1" />;
+}
+
 function VideoScreen({ onNavigate, currentUser, appointmentId }: {
   onNavigate: (s: Screen) => void;
   currentUser: AppUser;
@@ -2437,6 +2468,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
   const [appointment, setAppointment] = useState<VideoAppointment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [dailyAccess, setDailyAccess] = useState<DailyRoomAccess | null>(null);
 
   const exitScreen: Screen = currentUser.role === "professional" ? "pro-dashboard" : "patient-dashboard";
 
@@ -2470,6 +2502,11 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
         ? item.profiles?.full_name ?? "Paciente"
         : item.professional_profiles?.profiles?.full_name ?? "Profissional";
 
+      // Tries Daily.co first (real video); falls back to the mock room below if it's not configured.
+      const access = await getDailyRoomAccess(appointmentId);
+      if (!active) return;
+      setDailyAccess(access);
+
       let { data: room } = await supabase
         .from("video_rooms")
         .select("room_url")
@@ -2487,7 +2524,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
       }
 
       if (!active) return;
-      setAppointment({ otherPartyName, scheduledAt: item.scheduled_at, roomUrl: room?.room_url ?? null });
+      setAppointment({ otherPartyName, scheduledAt: item.scheduled_at, roomUrl: access?.roomUrl ?? room?.room_url ?? null });
       setLoading(false);
     })();
 
@@ -2524,6 +2561,22 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
           <p className="text-sm text-muted-foreground mb-4">{loadError || "Esta consulta não foi encontrada."}</p>
           <Btn variant="primary" onClick={() => onNavigate(exitScreen)}>Voltar ao painel</Btn>
         </Card>
+      </div>
+    );
+  }
+
+  if (dailyAccess) {
+    return (
+      <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-3 bg-[#161B22] border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center"><Brain size={14} className="text-white" /></div>
+            <span className="text-white font-semibold text-sm font-display">MindCare · Videoconsulta</span>
+          </div>
+          <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><span className="text-green-400 text-xs font-medium">Sala com {appointment.otherPartyName}</span></div>
+          <Badge variant="success">Criptografado</Badge>
+        </div>
+        <DailyCallFrame roomUrl={dailyAccess.roomUrl} token={dailyAccess.token} onLeave={() => onNavigate(exitScreen)} />
       </div>
     );
   }

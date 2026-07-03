@@ -61,7 +61,7 @@
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
-  - [ ] Vídeo real (Daily.co)
+  - [x] Vídeo real (Daily.co)
   - [ ] Pagamento real (Mercado Pago)
   - [ ] E-mail transacional de confirmação
   - [ ] Projeto Supabase real (staging/prod) + deploy de migrations via CI
@@ -88,6 +88,21 @@
   um provedor SMTP próprio lá (Authentication → Settings → SMTP Settings), senão o volume de
   e-mails transacionais é bem limitado.
 
+  ### Vídeo real (Daily.co)
+
+  `supabase/functions/daily-room-access` cria (ou reaproveita) uma sala privada no Daily.co por
+  consulta e emite um token de acesso de curta duração (4h) para quem está chamando — o
+  `DAILY_API_KEY` nunca chega ao navegador. No cliente, `VideoScreen` chama essa função ao entrar
+  na sala; se der certo, embute o iframe do Daily (`@daily-co/daily-js`, carregado sob demanda só
+  nessa tela) com a UI completa deles (câmera, mic, chat, compartilhar tela). **Se a função não
+  estiver implantada ou a chave não estiver configurada, a tela cai de volta pro mock anterior**
+  (imagem estática + sala fake) — nada quebra, só não tem vídeo real.
+
+  Para ativar:
+  1. Crie uma conta em https://daily.co e pegue a API key.
+  2. `supabase functions deploy daily-room-access`
+  3. `supabase secrets set DAILY_API_KEY=...`
+
   ### Upload de documentos de verificação
 
   Bucket privado do Supabase Storage `professional-documents` (migration `20260703000001`),
@@ -104,6 +119,7 @@
   |---|---|---|
   | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
   | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
+  | `DAILY_API_KEY` | Secret da função Edge (`supabase secrets set`) | Sala de vídeo real (Daily.co). Sem ela, cai no mock. |
   | *(preenchido nas próximas etapas)* | | |
 
   ### Monitoramento de erros
