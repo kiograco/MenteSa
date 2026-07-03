@@ -60,7 +60,7 @@
   - [x] Monitoramento de erros (Sentry, opcional via `VITE_SENTRY_DSN`)
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
   - [x] Fluxo de "esqueci minha senha"
-  - [ ] Upload de documento para verificação profissional
+  - [x] Upload de documento para verificação profissional
   - [ ] Vídeo real (Daily.co)
   - [ ] Pagamento real (Mercado Pago)
   - [ ] E-mail transacional de confirmação
@@ -87,6 +87,16 @@
   já vem com um serviço de e-mail básico por padrão (bom para testar), mas para produção configure
   um provedor SMTP próprio lá (Authentication → Settings → SMTP Settings), senão o volume de
   e-mails transacionais é bem limitado.
+
+  ### Upload de documentos de verificação
+
+  Bucket privado do Supabase Storage `professional-documents` (migration `20260703000001`),
+  organizado por `{professional_id}/{arquivo}`, com RLS tanto no bucket quanto na tabela auxiliar
+  `professional_documents` (o profissional só vê os próprios arquivos; o admin vê todos). O
+  profissional envia o documento pelo próprio dashboard enquanto a verificação estiver pendente ou
+  rejeitada; o admin abre cada arquivo (URL assinada, expira em 60s) na aba "Validações pendentes"
+  antes de aprovar ou rejeitar. Não precisa de nenhuma chave nova — só de o bucket existir no
+  projeto Supabase real (a migration já cria).
 
   ### Chaves de acesso necessárias
 

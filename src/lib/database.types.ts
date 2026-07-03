@@ -161,6 +161,22 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["reviews"]["Row"]>;
         Relationships: [];
       };
+      professional_documents: {
+        Row: {
+          id: string;
+          professional_id: string;
+          storage_path: string;
+          file_name: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["professional_documents"]["Row"]> & {
+          professional_id: string;
+          storage_path: string;
+          file_name: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["professional_documents"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

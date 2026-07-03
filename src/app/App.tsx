@@ -8,6 +8,8 @@ import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
+import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
+import type { VerificationStatus } from "../lib/database.types";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
   BarChart2, Users, Settings, Bell, ChevronDown, ChevronRight, ChevronLeft,
@@ -1634,6 +1636,51 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
   const [revenueByMonth, setRevenueByMonth] = useState<{ month: string; receita: number }[]>([]);
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [verificationStatus, setVerificationStatus] = useState<VerificationStatus | null>(null);
+  const [documents, setDocuments] = useState<ProfessionalDocument[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+
+  const refreshDocuments = async () => {
+    try {
+      setDocuments(await listProfessionalDocuments(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "professionalDashboard.refreshDocuments" });
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      const { data } = await supabase
+        .from("professional_profiles")
+        .select("verification_status")
+        .eq("id", currentUser.id)
+        .maybeSingle();
+      if (active) setVerificationStatus(data?.verification_status ?? null);
+    })();
+
+    void refreshDocuments();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const handleUploadDocument = async (file: File) => {
+    setUploadError("");
+    setUploading(true);
+    try {
+      await uploadProfessionalDocument(currentUser.id, file);
+      await refreshDocuments();
+    } catch (error) {
+      reportError(error, { flow: "professionalDashboard.uploadDocument" });
+      setUploadError(error instanceof Error ? error.message : "Não foi possível enviar o documento.");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -1710,6 +1757,40 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
   return (
     <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
+        {verificationStatus && verificationStatus !== "verified" && (
+          <Card className={`p-5 ${verificationStatus === "rejected" ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle size={18} className={verificationStatus === "rejected" ? "text-red-600" : "text-amber-600"} />
+              <div>
+                <p className={`text-sm font-semibold ${verificationStatus === "rejected" ? "text-red-800" : "text-amber-800"}`}>
+                  {verificationStatus === "rejected" ? "Verificação rejeitada" : "Verificação pendente"}
+                </p>
+                <p className={`text-xs mt-1 ${verificationStatus === "rejected" ? "text-red-700" : "text-amber-700"}`}>
+                  Envie documentos que comprovem seu registro (CRP/CRM) para aparecer no diretório público.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="cursor-pointer">
+                <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload size={14} />{uploading ? "Enviando..." : "Enviar documento"}
+                </span>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="application/pdf,image/*"
+                  disabled={uploading}
+                  onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadDocument(file); e.target.value = ""; }}
+                />
+              </label>
+              {documents.map(doc => (
+                <Badge key={doc.id} variant="outline"><FileText size={11} />{doc.fileName}</Badge>
+              ))}
+            </div>
+            {uploadError && <p className="text-xs text-red-600 mt-2">{uploadError}</p>}
+          </Card>
+        )}
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Pacientes atendidos" value={String(distinctPatients)} icon={<Users size={18} />} color="green" />
           <StatCard label="Sessões este mês" value={String(thisMonthSessions)} icon={<Calendar size={18} />} color="blue" />
@@ -3001,6 +3082,7 @@ type PendingProfessional = {
   img: string;
   license: string;
   createdAt: string;
+  documents: ProfessionalDocument[];
 };
 
 type AdminUserRow = {
@@ -3051,14 +3133,27 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
       .eq("verification_status", "pending")
       .order("created_at", { ascending: true });
 
-    setPending(((data ?? []) as any[]).map(p => ({
+    const rows = (data ?? []) as any[];
+    const documentsByProfessional = await Promise.all(rows.map(p => listProfessionalDocuments(p.id).catch(() => [])));
+
+    setPending(rows.map((p, i) => ({
       id: p.id,
       name: p.profiles?.full_name ?? "Profissional",
       img: p.profiles?.avatar_url ?? "",
       license: `${p.license_type} ${p.license_number}`,
       createdAt: p.created_at,
+      documents: documentsByProfessional[i],
     })));
     setLoadingPending(false);
+  };
+
+  const handleViewDocument = async (storagePath: string) => {
+    try {
+      const url = await getDocumentSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "adminPanel.viewDocument" });
+    }
   };
 
   useEffect(() => {
@@ -3154,6 +3249,19 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
                     <Btn variant="danger" size="sm" disabled={updatingId === p.id} onClick={() => handleVerification(p.id, "rejected")}><X size={14} />Rejeitar</Btn>
                     <Btn variant="primary" size="sm" disabled={updatingId === p.id} onClick={() => handleVerification(p.id, "verified")}><Check size={14} />Aprovar</Btn>
                   </div>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border">
+                  {p.documents.length === 0 && <span className="text-xs text-muted-foreground">Nenhum documento enviado ainda.</span>}
+                  {p.documents.map(doc => (
+                    <button
+                      key={doc.id}
+                      type="button"
+                      onClick={() => handleViewDocument(doc.storagePath)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium bg-muted text-foreground hover:bg-secondary transition-all"
+                    >
+                      <Eye size={11} />{doc.fileName}
+                    </button>
+                  ))}
                 </div>
               </Card>
             ))}
