@@ -62,7 +62,7 @@
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
   - [x] Vídeo real (Daily.co)
-  - [ ] Pagamento real (Mercado Pago)
+  - [x] Pagamento real (Mercado Pago)
   - [ ] E-mail transacional de confirmação
   - [ ] Projeto Supabase real (staging/prod) + deploy de migrations via CI
   - [ ] Checagem de responsividade mobile
@@ -103,6 +103,32 @@
   2. `supabase functions deploy daily-room-access`
   3. `supabase secrets set DAILY_API_KEY=...`
 
+  ### Pagamento real (Mercado Pago)
+
+  Fluxo: `create-mp-preference` cria uma preferência do **Checkout Pro** (o checkout hospedado
+  pelo próprio Mercado Pago) para a consulta e devolve o link; o cliente redireciona o navegador
+  para lá — nenhum dado de cartão passa pelo nosso app. `mercadopago-webhook` é chamado pelo
+  Mercado Pago quando o status do pagamento muda; ele busca o pagamento direto na API deles (nunca
+  confia só na notificação recebida) e grava em `payments` com `provider_payment_id` (upsert
+  idempotente — o Mercado Pago reenvia notificações). **O redirecionamento de volta (`back_urls`)
+  é só cosmético** (mostra o banner "pagamento aprovado/pendente/falhou" no topo da tela) — quem
+  decide de verdade se a consulta foi paga é sempre o webhook.
+
+  Como este app não tem router (navegação é só estado em memória), o retorno do Mercado Pago cai
+  em `/` com `?mp=success|pending|failure` na URL; `App()` lê esse parâmetro, limpa a URL e manda
+  o usuário pro dashboard dele.
+
+  Se `MERCADOPAGO_ACCESS_TOKEN` não estiver configurado (ou a função não estiver implantada), o
+  checkout cai automaticamente no fluxo mock anterior — nada quebra.
+
+  Para ativar:
+  1. Crie uma conta em https://www.mercadopago.com.br/developers e pegue o Access Token (produção
+     ou teste).
+  2. `supabase functions deploy create-mp-preference`
+  3. `supabase functions deploy mercadopago-webhook --no-verify-jwt` (sem isso, o Supabase exige
+     um JWT que o Mercado Pago nunca vai enviar, e o webhook sempre falharia com 401)
+  4. `supabase secrets set MERCADOPAGO_ACCESS_TOKEN=... APP_BASE_URL=https://seu-app.exemplo`
+
   ### Upload de documentos de verificação
 
   Bucket privado do Supabase Storage `professional-documents` (migration `20260703000001`),
@@ -120,6 +146,8 @@
   | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
   | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
   | `DAILY_API_KEY` | Secret da função Edge (`supabase secrets set`) | Sala de vídeo real (Daily.co). Sem ela, cai no mock. |
+  | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
+  | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
   | *(preenchido nas próximas etapas)* | | |
 
   ### Monitoramento de erros

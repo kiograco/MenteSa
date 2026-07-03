@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-import { mockPaymentProvider } from "../lib/payment-provider";
+import { mockPaymentProvider, createMercadoPagoCheckout } from "../lib/payment-provider";
 import type { UserRole } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
 import { downloadCsv } from "../lib/csv";
@@ -2848,6 +2848,15 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
 
       if (appointmentError) throw appointmentError;
 
+      // Real payment path: redirect to Mercado Pago's hosted checkout. The webhook (not this
+      // redirect) is what actually confirms payment — see supabase/functions/mercadopago-webhook.
+      const mpCheckoutUrl = await createMercadoPagoCheckout(appointment.id);
+      if (mpCheckoutUrl) {
+        window.location.href = mpCheckoutUrl;
+        return;
+      }
+
+      // Fallback: Mercado Pago isn't configured yet, so simulate an instant successful charge.
       await mockPaymentProvider.charge({
         appointmentId: appointment.id,
         amount: bookingDraft.price,
@@ -3421,6 +3430,15 @@ export default function App() {
   const [selectedProfessionalId, setSelectedProfessionalId] = useState<string | null>(null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
   const [activeAppointmentId, setActiveAppointmentId] = useState<string | null>(null);
+  const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
+
+  useEffect(() => {
+    const mpStatus = new URLSearchParams(window.location.search).get("mp");
+    if (mpStatus === "success" || mpStatus === "pending" || mpStatus === "failure") {
+      setPaymentReturnStatus(mpStatus);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
   const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
@@ -3510,6 +3528,14 @@ export default function App() {
     }
   }, [authLoading, currentUser, screen]);
 
+  // Mercado Pago's back_urls land the browser back on "/" with no session context of what
+  // happened; once the user's session has loaded, send them to their dashboard to see the result.
+  useEffect(() => {
+    if (!authLoading && currentUser && paymentReturnStatus) {
+      setScreen(homeScreenForRole(currentUser.role));
+    }
+  }, [authLoading, currentUser, paymentReturnStatus]);
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     setSession(null);
@@ -3523,6 +3549,24 @@ export default function App() {
       {authLoading && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 text-sm text-muted-foreground">
           Carregando sessão...
+        </div>
+      )}
+      {paymentReturnStatus && (
+        <div
+          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[calc(100%-2rem)] rounded-xl border px-4 py-3 text-sm shadow-lg flex items-start justify-between gap-3 ${
+            paymentReturnStatus === "success"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+              : paymentReturnStatus === "pending"
+                ? "bg-amber-50 border-amber-200 text-amber-800"
+                : "bg-red-50 border-red-200 text-red-800"
+          }`}
+        >
+          <span>
+            {paymentReturnStatus === "success" && "Pagamento aprovado! Sua consulta está confirmada."}
+            {paymentReturnStatus === "pending" && "Pagamento em processamento. A confirmação chega em instantes."}
+            {paymentReturnStatus === "failure" && "Não foi possível concluir o pagamento. Tente novamente."}
+          </span>
+          <button type="button" onClick={() => setPaymentReturnStatus(null)} className="flex-shrink-0"><X size={16} /></button>
         </div>
       )}
       {screen === "landing" && <LandingPage onNavigate={setScreen} />}

@@ -100,6 +100,7 @@ export interface Database {
           amount: number;
           platform_fee: number;
           provider: string;
+          provider_payment_id: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["payments"]["Row"]> & {
