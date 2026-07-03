@@ -10,6 +10,7 @@ import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { getDailyRoomAccess, type DailyRoomAccess } from "../lib/video";
+import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import type { VerificationStatus } from "../lib/database.types";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
@@ -22,12 +23,6 @@ import {
   ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon
 } from "lucide-react";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-
-type Screen =
-  | "landing" | "directory" | "profile" | "patient-dashboard"
-  | "pro-dashboard" | "calendar" | "ehr" | "ai-assistant"
-  | "video" | "pricing" | "checkout" | "financial" | "admin" | "login"
-  | "reset-password";
 
 type AppUser = {
   id: string;
@@ -194,8 +189,23 @@ function StatCard({ label, value, delta, icon, color = "green" }: { label: strin
 
 // ─── Top Nav ──────────────────────────────────────────────────────────────────
 
-function TopNav({ onScreenChange, current }: { onScreenChange: (s: Screen) => void; current: Screen }) {
+function TopNav({ onScreenChange, current, currentUser, onSignOut }: {
+  onScreenChange: (s: Screen) => void;
+  current: Screen;
+  currentUser: AppUser | null;
+  onSignOut: () => void;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const homeScreen: Screen = currentUser
+    ? currentUser.role === "professional" ? "pro-dashboard" : currentUser.role === "admin" ? "admin" : "patient-dashboard"
+    : "login";
+
+  // Logged-in users get "Meu painel"/"Sair" instead of "Entrar" — otherwise the public nav looks
+  // logged-out even while a session is active (e.g. a patient browsing the public directory).
+  const items = currentUser
+    ? SCREENS.filter(s => s.id !== "login")
+    : SCREENS;
+
   return (
     <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur border-b border-border">
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
@@ -206,7 +216,7 @@ function TopNav({ onScreenChange, current }: { onScreenChange: (s: Screen) => vo
           <span className="text-lg font-display">MindCare</span>
         </button>
         <div className="hidden md:flex items-center gap-1">
-          {SCREENS.map(s => (
+          {items.map(s => (
             <button
               key={s.id}
               onClick={() => onScreenChange(s.id)}
@@ -215,6 +225,16 @@ function TopNav({ onScreenChange, current }: { onScreenChange: (s: Screen) => vo
               {s.label}
             </button>
           ))}
+          {currentUser && (
+            <>
+              <button onClick={() => onScreenChange(homeScreen)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-primary hover:bg-secondary transition-all">
+                Meu painel
+              </button>
+              <button onClick={onSignOut} className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-all">
+                Sair
+              </button>
+            </>
+          )}
         </div>
         <button className="md:hidden p-2 rounded-lg hover:bg-muted" onClick={() => setMenuOpen(!menuOpen)}>
           <Menu size={20} />
@@ -222,12 +242,22 @@ function TopNav({ onScreenChange, current }: { onScreenChange: (s: Screen) => vo
       </div>
       {menuOpen && (
         <div className="md:hidden border-t border-border bg-white p-3 grid grid-cols-2 gap-1">
-          {SCREENS.map(s => (
+          {items.map(s => (
             <button key={s.id} onClick={() => { onScreenChange(s.id); setMenuOpen(false); }}
               className={`px-3 py-2 rounded-lg text-xs font-medium text-left transition-all ${current === s.id ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
               {s.label}
             </button>
           ))}
+          {currentUser && (
+            <>
+              <button onClick={() => { onScreenChange(homeScreen); setMenuOpen(false); }} className="px-3 py-2 rounded-lg text-xs font-medium text-left text-primary hover:bg-muted">
+                Meu painel
+              </button>
+              <button onClick={() => { onSignOut(); setMenuOpen(false); }} className="px-3 py-2 rounded-lg text-xs font-medium text-left text-muted-foreground hover:bg-muted">
+                Sair
+              </button>
+            </>
+          )}
         </div>
       )}
     </nav>
@@ -245,7 +275,7 @@ function AppShell({
 }: {
   children: React.ReactNode;
   title: string;
-  navItems: { icon: React.ReactNode; label: string; active?: boolean }[];
+  navItems: { icon: React.ReactNode; label: string; active?: boolean; onClick?: () => void }[];
   userName: string;
   onSignOut: () => void;
 }) {
@@ -264,9 +294,21 @@ function AppShell({
         </div>
         <nav className="flex-1 p-3 flex flex-col gap-1 overflow-y-auto">
           {navItems.map((item, i) => (
-            <button key={i} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${item.active ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+            <button
+              key={i}
+              disabled={!item.onClick}
+              onClick={item.onClick}
+              title={item.onClick ? undefined : "Em breve"}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                item.active
+                  ? "bg-secondary text-primary"
+                  : item.onClick
+                    ? "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    : "text-muted-foreground/40 cursor-default"
+              }`}
+            >
               {item.icon}
-              {!collapsed && <span>{item.label}</span>}
+              {!collapsed && <span>{item.label}{!item.onClick && !collapsed ? " · em breve" : ""}</span>}
             </button>
           ))}
         </nav>
@@ -1457,8 +1499,8 @@ type PatientAppointment = {
 
 function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
-    { icon: <Home size={18} />, label: "Início", active: true },
-    { icon: <Calendar size={18} />, label: "Consultas" },
+    { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("patient-dashboard") },
+    { icon: <Calendar size={18} />, label: "Consultas", onClick: () => onNavigate("patient-dashboard") },
     { icon: <MessageSquare size={18} />, label: "Mensagens" },
     { icon: <FileText size={18} />, label: "Documentos" },
     { icon: <CreditCard size={18} />, label: "Pagamentos" },
@@ -1622,12 +1664,12 @@ const STATUS_LABELS: Record<string, string> = { scheduled: "Agendadas", complete
 
 function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
-    { icon: <Home size={18} />, label: "Início", active: true },
-    { icon: <Calendar size={18} />, label: "Agenda" },
-    { icon: <Users size={18} />, label: "Pacientes" },
-    { icon: <FileText size={18} />, label: "Prontuários" },
-    { icon: <Brain size={18} />, label: "IA Assistente" },
-    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+    { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
@@ -1894,12 +1936,12 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScr
   const [view, setView] = useState<"week" | "month" | "day">("week");
   const [selectedDay, setSelectedDay] = useState(7);
   const navItems = [
-    { icon: <Home size={18} />, label: "Início" },
-    { icon: <Calendar size={18} />, label: "Agenda", active: true },
-    { icon: <Users size={18} />, label: "Pacientes" },
-    { icon: <FileText size={18} />, label: "Prontuários" },
-    { icon: <Brain size={18} />, label: "IA Assistente" },
-    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
   ];
 
   const hours = Array.from({ length: 10 }, (_, i) => i + 8);
@@ -2000,12 +2042,12 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
   const [patientSearch, setPatientSearch] = useState("");
   const [ehrTab, setEhrTab] = useState<"historico" | "notas">("historico");
   const navItems = [
-    { icon: <Home size={18} />, label: "Início" },
-    { icon: <Calendar size={18} />, label: "Agenda" },
-    { icon: <Users size={18} />, label: "Pacientes" },
-    { icon: <FileText size={18} />, label: "Prontuários", active: true },
-    { icon: <Brain size={18} />, label: "IA Assistente" },
-    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", active: true, onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
   ];
 
   const [patients, setPatients] = useState<EhrPatient[]>([]);
@@ -2262,12 +2304,12 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
   const [consent, setConsent] = useState(false);
 
   const navItems = [
-    { icon: <Home size={18} />, label: "Início" },
-    { icon: <Calendar size={18} />, label: "Agenda" },
-    { icon: <Users size={18} />, label: "Pacientes" },
-    { icon: <FileText size={18} />, label: "Prontuários" },
-    { icon: <Brain size={18} />, label: "IA Assistente", active: true },
-    { icon: <BarChart2 size={18} />, label: "Financeiro" },
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", active: true, onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
   ];
 
   const transcript = [
@@ -3031,12 +3073,12 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
 
 function FinancialDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
   const navItems = [
-    { icon: <Home size={18} />, label: "Início" },
-    { icon: <Calendar size={18} />, label: "Agenda" },
-    { icon: <Users size={18} />, label: "Pacientes" },
-    { icon: <FileText size={18} />, label: "Prontuários" },
-    { icon: <Brain size={18} />, label: "IA Assistente" },
-    { icon: <BarChart2 size={18} />, label: "Financeiro", active: true },
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", active: true, onClick: () => onNavigate("financial") },
   ];
 
   const revenueData = [
@@ -3165,10 +3207,10 @@ type AdminPayment = {
 function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
   const [adminTab, setAdminTab] = useState<"validations" | "users" | "payments">("validations");
   const navItems = [
-    { icon: <Home size={18} />, label: "Visão geral", active: true },
-    { icon: <Shield size={18} />, label: "Validações" },
-    { icon: <Users size={18} />, label: "Usuários" },
-    { icon: <CreditCard size={18} />, label: "Pagamentos" },
+    { icon: <Home size={18} />, label: "Visão geral", active: true, onClick: () => setAdminTab("validations") },
+    { icon: <Shield size={18} />, label: "Validações", onClick: () => setAdminTab("validations") },
+    { icon: <Users size={18} />, label: "Usuários", onClick: () => setAdminTab("users") },
+    { icon: <CreditCard size={18} />, label: "Pagamentos", onClick: () => setAdminTab("payments") },
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
@@ -3424,14 +3466,51 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("landing");
+  const [screen, setScreen] = useState<Screen>(() => pathToScreen(window.location.pathname)?.screen ?? "landing");
   const [session, setSession] = useState<Session | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [selectedProfessionalId, setSelectedProfessionalId] = useState<string | null>(null);
+  const [selectedProfessionalId, setSelectedProfessionalIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.professionalId ?? null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
-  const [activeAppointmentId, setActiveAppointmentId] = useState<string | null>(null);
+  const [activeAppointmentId, setActiveAppointmentIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.appointmentId ?? null);
   const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
+
+  // Refs mirror the two id states synchronously so `navigate()` can read the value a sibling
+  // setter just set in the same click handler (e.g. DirectoryPage calls onSelectProfessional(id)
+  // then onNavigate("profile") — React state wouldn't reflect the new id until the next render).
+  const selectedProfessionalIdRef = useRef(selectedProfessionalId);
+  const activeAppointmentIdRef = useRef(activeAppointmentId);
+
+  const setSelectedProfessionalId = (id: string | null) => {
+    selectedProfessionalIdRef.current = id;
+    setSelectedProfessionalIdState(id);
+  };
+  const setActiveAppointmentId = (id: string | null) => {
+    activeAppointmentIdRef.current = id;
+    setActiveAppointmentIdState(id);
+  };
+
+  const navigate = (next: Screen) => {
+    setScreen(next);
+    const path = screenToPath(next, {
+      professionalId: selectedProfessionalIdRef.current,
+      appointmentId: activeAppointmentIdRef.current,
+    });
+    if (path !== window.location.pathname) {
+      window.history.pushState({}, "", path);
+    }
+  };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const parsed = pathToScreen(window.location.pathname);
+      setScreen(parsed?.screen ?? "landing");
+      if (parsed?.professionalId) setSelectedProfessionalId(parsed.professionalId);
+      if (parsed?.appointmentId) setActiveAppointmentId(parsed.appointmentId);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     const mpStatus = new URLSearchParams(window.location.search).get("mp");
@@ -3502,7 +3581,7 @@ export default function App() {
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === "PASSWORD_RECOVERY") {
-        setScreen("reset-password");
+        navigate("reset-password");
       }
       void loadAppUser(nextSession);
     });
@@ -3517,14 +3596,14 @@ export default function App() {
     if (authLoading) return;
 
     if (protectedScreens.includes(screen) && !currentUser) {
-      setScreen("login");
+      navigate("login");
       return;
     }
 
     if (currentUser) {
       const allowedRoles = screenRoles[screen];
       if (allowedRoles && !allowedRoles.includes(currentUser.role)) {
-        setScreen(homeScreenForRole(currentUser.role));
+        navigate(homeScreenForRole(currentUser.role));
       }
     }
   }, [authLoading, currentUser, screen]);
@@ -3533,7 +3612,7 @@ export default function App() {
   // happened; once the user's session has loaded, send them to their dashboard to see the result.
   useEffect(() => {
     if (!authLoading && currentUser && paymentReturnStatus) {
-      setScreen(homeScreenForRole(currentUser.role));
+      navigate(homeScreenForRole(currentUser.role));
     }
   }, [authLoading, currentUser, paymentReturnStatus]);
 
@@ -3541,12 +3620,12 @@ export default function App() {
     await supabase.auth.signOut();
     setSession(null);
     setCurrentUser(null);
-    setScreen("landing");
+    navigate("landing");
   };
 
   return (
     <div className="min-h-screen bg-background font-sans" style={{ fontFamily: "'Plus Jakarta Sans', 'Inter', system-ui, sans-serif" }}>
-      {showTopNav && <TopNav onScreenChange={setScreen} current={screen} />}
+      {showTopNav && <TopNav onScreenChange={navigate} current={screen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {authLoading && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 text-sm text-muted-foreground">
           Carregando sessão...
@@ -3570,21 +3649,21 @@ export default function App() {
           <button type="button" onClick={() => setPaymentReturnStatus(null)} className="flex-shrink-0"><X size={16} /></button>
         </div>
       )}
-      {screen === "landing" && <LandingPage onNavigate={setScreen} />}
-      {screen === "directory" && <DirectoryPage onNavigate={setScreen} onSelectProfessional={setSelectedProfessionalId} />}
-      {screen === "profile" && <ProfilePage onNavigate={setScreen} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
-      {screen === "login" && <LoginPage onNavigate={setScreen} />}
-      {screen === "reset-password" && <ResetPasswordScreen onNavigate={setScreen} />}
-      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "ehr" && currentUser && <EHRScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "video" && currentUser && <VideoScreen onNavigate={setScreen} currentUser={currentUser} appointmentId={activeAppointmentId} />}
-      {screen === "pricing" && <PricingPage onNavigate={setScreen} />}
-      {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={setScreen} currentUser={currentUser} bookingDraft={bookingDraft} />}
-      {screen === "financial" && currentUser && <FinancialDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "admin" && currentUser && <AdminPanel onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "landing" && <LandingPage onNavigate={navigate} />}
+      {screen === "directory" && <DirectoryPage onNavigate={navigate} onSelectProfessional={setSelectedProfessionalId} />}
+      {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
+      {screen === "login" && <LoginPage onNavigate={navigate} />}
+      {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
+      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
+      {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
+      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}
+      {screen === "pricing" && <PricingPage onNavigate={navigate} />}
+      {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={navigate} currentUser={currentUser} bookingDraft={bookingDraft} />}
+      {screen === "financial" && currentUser && <FinancialDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "admin" && currentUser && <AdminPanel onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
     </div>
   );
 }
