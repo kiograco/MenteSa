@@ -11,6 +11,8 @@ import { termsOfService, privacyPolicy, type LegalDocument } from "../content/le
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
+import { getAISessionSummary, type AISessionSummary } from "../lib/ai";
+import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
 import type { VerificationStatus } from "../lib/database.types";
@@ -2699,10 +2701,6 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
 // ─── SCREEN: AI Assistant ─────────────────────────────────────────────────────
 
 function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
-  const [recording, setRecording] = useState(false);
-  const [phase, setPhase] = useState<"idle" | "recording" | "processing" | "done">("idle");
-  const [consent, setConsent] = useState(false);
-
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -2713,148 +2711,339 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
-  const transcript = [
-    { role: "T", text: "Bom dia, Ana. Como você se sentiu desde nossa última sessão?" },
-    { role: "P", text: "Olá! Tive uma semana bem mais tranquila. Consegui usar a técnica de respiração que você ensinou quando fiquei ansiosa no trabalho." },
-    { role: "T", text: "Que ótimo! Pode me contar mais sobre essa situação? O que aconteceu e como você reagiu?" },
-    { role: "P", text: "Então... meu chefe me chamou numa reunião de última hora e eu já senti aquele nó no estômago. Mas respirei fundo três vezes como você disse, me lembrei que era só uma situação, não uma catástrofe." },
-    { role: "T", text: "Excelente! Isso é exatamente a reestruturação cognitiva que trabalhamos. Como você avalia sua ansiedade naquele momento, de 0 a 10?" },
-    { role: "P", text: "Começou em uns 7, mas depois de respirar caiu pra uns 4. Consegui participar da reunião normalmente." },
-  ];
+  const [patients, setPatients] = useState<EhrPatient[]>([]);
+  const [loadingPatients, setLoadingPatients] = useState(true);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
 
-  const summary = {
-    pontos: ["Melhora significativa no manejo da ansiedade situacional", "Uso bem-sucedido da técnica de respiração diafragmática", "Aplicação da reestruturação cognitiva no ambiente de trabalho", "Redução da ansiedade de 7 para 4 em situação desafiadora"],
-    acoes: ["Praticar diário de pensamentos automáticos (5min/dia)", "Continuar técnica de respiração 3x/dia", "Registrar situações ansiosas e estratégias usadas"],
-    nota: "Paciente demonstra progresso consistente no manejo de sintomas ansiosos. Uso efetivo de técnicas de TCC em contexto real de trabalho. Humor relatado: 7/10. Plano: manter frequência semanal, introduzir técnica de mindfulness na próxima sessão.",
+  const [sessions, setSessions] = useState<EhrSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [notesDraft, setNotesDraft] = useState("");
+
+  const [aiConsent, setAiConsent] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiResult, setAiResult] = useState<AISessionSummary | null>(null);
+
+  const [dictating, setDictating] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoadingPatients(true);
+      const { data } = await supabase
+        .from("appointments")
+        .select("patient_id, profiles(full_name, avatar_url)")
+        .eq("professional_id", currentUser.id);
+
+      if (!active) return;
+
+      const map = new Map<string, EhrPatient>();
+      ((data ?? []) as any[]).forEach(a => {
+        const existing = map.get(a.patient_id);
+        if (existing) existing.sessionsCount += 1;
+        else map.set(a.patient_id, { id: a.patient_id, name: a.profiles?.full_name ?? "Paciente", img: a.profiles?.avatar_url ?? "", sessionsCount: 1 });
+      });
+      const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+      setPatients(list);
+      setSelectedPatientId(prev => prev ?? list[0]?.id ?? null);
+      setLoadingPatients(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setSessions([]);
+      setSelectedSessionId(null);
+      return;
+    }
+
+    let active = true;
+    setLoadingSessions(true);
+    setAiResult(null);
+    setAiError("");
+    setAiConsent(false);
+    setSaveMessage("");
+
+    (async () => {
+      const { data } = await supabase
+        .from("appointments")
+        .select("id, scheduled_at, modality, status, session_notes(notes, ai_summary)")
+        .eq("professional_id", currentUser.id)
+        .eq("patient_id", selectedPatientId)
+        .order("scheduled_at", { ascending: false });
+
+      if (!active) return;
+
+      const rows: EhrSession[] = ((data ?? []) as any[]).map(a => {
+        const note = Array.isArray(a.session_notes) ? a.session_notes[0] : a.session_notes;
+        return {
+          id: a.id,
+          scheduledAt: a.scheduled_at,
+          modality: a.modality,
+          status: a.status,
+          notes: note?.notes ?? "",
+          aiSummary: note?.ai_summary ?? null,
+        };
+      });
+      setSessions(rows);
+      setSelectedSessionId(rows[0]?.id ?? null);
+      setNotesDraft(rows[0]?.notes ?? "");
+      setLoadingSessions(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedPatientId, currentUser.id]);
+
+  const selectSession = (id: string) => {
+    setSelectedSessionId(id);
+    setNotesDraft(sessions.find(s => s.id === id)?.notes ?? "");
+    setAiResult(null);
+    setAiError("");
+    setAiConsent(false);
+    setSaveMessage("");
+  };
+
+  const dictationSupported = typeof window !== "undefined" && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+
+  const toggleDictation = () => {
+    if (!dictationSupported) return;
+    if (dictating) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = "pt-BR";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event: any) => {
+      let text = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) text += event.results[i][0].transcript;
+      if (text) setNotesDraft(prev => (prev ? `${prev} ${text}` : text));
+    };
+    recognition.onend = () => setDictating(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setDictating(true);
+  };
+
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+
+  const handleGenerateSummary = async () => {
+    if (!selectedSessionId || !notesDraft.trim()) return;
+    setAiLoading(true);
+    setAiError("");
+    const result = await getAISessionSummary(selectedSessionId, notesDraft);
+    setAiLoading(false);
+    if (!result) {
+      setAiResult(null);
+      setAiError("IA indisponível no momento. Você pode continuar escrevendo suas notas manualmente.");
+      return;
+    }
+    setAiResult(result);
+  };
+
+  const handleUseSuggestedNote = () => {
+    if (!aiResult) return;
+    setNotesDraft(prev => (prev.trim() ? `${prev}\n\n${aiResult.clinicalNote}` : aiResult.clinicalNote));
+  };
+
+  const handleSaveNotes = async () => {
+    if (!selectedSessionId) return;
+    setSaving(true);
+    setSaveMessage("");
+
+    const aiFields = aiResult && aiConsent
+      ? { ai_summary: formatAiSummaryText(aiResult), ai_summary_generated_at: new Date().toISOString() }
+      : {};
+
+    const { error } = await supabase
+      .from("session_notes")
+      .upsert(
+        { appointment_id: selectedSessionId, professional_id: currentUser.id, notes: notesDraft, ...aiFields },
+        { onConflict: "appointment_id" }
+      );
+
+    setSaving(false);
+
+    if (error) {
+      reportError(error, { flow: "aiAssistant.saveNotes" });
+      setSaveMessage("Não foi possível salvar a nota.");
+      return;
+    }
+
+    setSessions(prev => prev.map(s => (s.id === selectedSessionId ? { ...s, notes: notesDraft } : s)));
+    setSaveMessage("Nota salva com segurança.");
   };
 
   return (
     <AppShell title="IA Assistente Clínico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
-      <div className="grid lg:grid-cols-2 gap-6 h-full">
-        {/* Recording panel */}
-        <div className="space-y-4">
-          {!consent && (
-            <Card className="p-5 border-amber-200 bg-amber-50">
-              <div className="flex items-start gap-3">
-                <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-semibold text-amber-800">Consentimento necessário</p>
-                  <p className="text-xs text-amber-700 mt-1 mb-3">Para gravar e transcrever a sessão, o paciente deve consentir explicitamente. A gravação é armazenada com criptografia AES-256.</p>
-                  <div className="flex gap-2">
-                    <Btn variant="primary" size="sm" onClick={() => setConsent(true)}><Check size={13} />Paciente consentiu</Btn>
-                    <Btn variant="outline" size="sm">Pular gravação</Btn>
-                  </div>
+      {loadingPatients ? (
+        <p className="text-sm text-muted-foreground">Carregando...</p>
+      ) : patients.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-muted-foreground">
+          Você ainda não tem consultas registradas. Assim que tiver pacientes, poderá escrever notas de sessão aqui e gerar um resumo com IA.
+        </Card>
+      ) : (
+        <div className="grid lg:grid-cols-2 gap-6 h-full">
+          {/* Notes panel */}
+          <div className="space-y-4">
+            <Card className="p-5 space-y-3">
+              <h3 className="font-semibold text-foreground font-display">Selecionar sessão</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Paciente</label>
+                  <select
+                    value={selectedPatientId ?? ""}
+                    onChange={e => setSelectedPatientId(e.target.value || null)}
+                    className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  >
+                    {patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Sessão</label>
+                  <select
+                    value={selectedSessionId ?? ""}
+                    onChange={e => selectSession(e.target.value)}
+                    disabled={loadingSessions || sessions.length === 0}
+                    className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  >
+                    {sessions.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {new Date(s.scheduledAt).toLocaleDateString("pt-BR")} · {s.modality === "online" ? "Online" : "Presencial"}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
+              {loadingSessions && <p className="text-xs text-muted-foreground">Carregando sessões...</p>}
+              {!loadingSessions && sessions.length === 0 && <p className="text-xs text-muted-foreground">Este paciente ainda não tem consultas.</p>}
             </Card>
-          )}
 
-          <Card className="p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="font-semibold text-foreground font-display">Sessão: Ana Beatriz</h3>
-                <p className="text-xs text-muted-foreground">07 Jan 2025 · Sessão #24</p>
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-foreground font-display">Notas da sessão</h3>
+                {dictationSupported && (
+                  <button
+                    type="button"
+                    onClick={toggleDictation}
+                    disabled={!selectedSessionId}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${dictating ? "bg-red-500 text-white animate-pulse" : "bg-muted text-foreground hover:bg-secondary"}`}
+                  >
+                    {dictating ? <MicOff size={13} /> : <Mic size={13} />}{dictating ? "Parar ditado" : "Ditar por voz"}
+                  </button>
+                )}
               </div>
-              {phase === "recording" && <Badge variant="danger"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />Gravando</Badge>}
-            </div>
+              <textarea
+                value={notesDraft}
+                onChange={e => setNotesDraft(e.target.value)}
+                disabled={!selectedSessionId}
+                placeholder="Escreva (ou dite) suas anotações sobre a sessão..."
+                className="w-full h-56 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
 
-            <div className="flex flex-col items-center py-8 gap-4">
-              <button
-                onClick={() => {
-                  if (!consent) return;
-                  if (phase === "idle") { setPhase("recording"); setRecording(true); }
-                  else if (phase === "recording") { setPhase("processing"); setRecording(false); setTimeout(() => setPhase("done"), 2000); }
-                }}
-                className={`w-20 h-20 rounded-full flex items-center justify-center transition-all shadow-lg ${!consent ? "bg-muted cursor-not-allowed" : phase === "recording" ? "bg-red-500 hover:bg-red-600 animate-pulse" : "bg-primary hover:bg-[#156038]"}`}
+              <label className="flex items-start gap-2 text-xs text-muted-foreground mt-3">
+                <input type="checkbox" checked={aiConsent} onChange={e => setAiConsent(e.target.checked)} className="mt-0.5" />
+                Autorizo o envio do texto acima (nunca áudio) para a Anthropic (IA) gerar um resumo. O texto pode conter dados identificáveis do paciente se você os escrever.
+              </label>
+
+              <Btn
+                variant="primary"
+                className="w-full justify-center mt-3"
+                disabled={!aiConsent || !notesDraft.trim() || aiLoading || !selectedSessionId}
+                onClick={handleGenerateSummary}
               >
-                {phase === "recording" ? <MicOff size={30} className="text-white" /> : <Mic size={30} className="text-white" />}
-              </button>
-              <p className="text-sm text-muted-foreground">
-                {!consent ? "Obtenha consentimento primeiro" : phase === "idle" ? "Clique para iniciar gravação" : phase === "recording" ? "Gravando… Clique para parar" : phase === "processing" ? "Processando transcrição…" : "Sessão processada ✓"}
-              </p>
-              {phase === "recording" && (
-                <div className="flex gap-1 items-center">
-                  {Array(20).fill(0).map((_, i) => (
-                    <div key={i} className="w-1 bg-primary rounded-full animate-bounce" style={{ height: `${Math.random() * 20 + 8}px`, animationDelay: `${i * 0.05}s` }} />
-                  ))}
-                </div>
+                <Zap size={15} />{aiLoading ? "Analisando com IA..." : "Gerar resumo com IA"}
+              </Btn>
+              {aiError && (
+                <p className="text-xs text-amber-700 mt-2 flex items-start gap-1.5"><AlertCircle size={13} className="flex-shrink-0 mt-0.5" />{aiError}</p>
               )}
-            </div>
-          </Card>
+            </Card>
+          </div>
 
-          {/* Transcript */}
-          <Card className="p-5">
-            <h3 className="font-semibold text-foreground font-display mb-3">Transcrição em tempo real</h3>
-            <div className="space-y-3 max-h-72 overflow-y-auto">
-              {transcript.map((t, i) => (
-                <div key={i} className={`flex gap-2 ${t.role === "T" ? "" : "flex-row-reverse"}`}>
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-1 ${t.role === "T" ? "bg-primary text-white" : "bg-accent text-white"}`}>{t.role}</div>
-                  <div className={`max-w-[85%] px-3 py-2 rounded-xl text-xs leading-relaxed ${t.role === "T" ? "bg-muted text-foreground" : "bg-secondary text-primary"}`}>{t.text}</div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </div>
+          {/* AI review + save panel */}
+          <div className="space-y-4">
+            {aiResult ? (
+              <>
+                <Card className="p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="w-8 h-8 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><Zap size={16} /></div>
+                    <h3 className="font-semibold text-foreground font-display">Resumo sugerido pela IA</h3>
+                  </div>
+                  {aiResult.keyPoints.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pontos-chave</p>
+                      <ul className="space-y-2">
+                        {aiResult.keyPoints.map((p, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-foreground"><Check size={14} className="text-primary flex-shrink-0 mt-0.5" />{p}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {aiResult.actionItems.length > 0 && (
+                    <div className="border-t border-border pt-4">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Itens de ação</p>
+                      <ul className="space-y-2">
+                        {aiResult.actionItems.map((a, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-foreground"><div className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0 mt-1.5" />{a}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {aiResult.keyPoints.length === 0 && aiResult.actionItems.length === 0 && (
+                    <p className="text-sm text-muted-foreground">A IA não identificou pontos-chave ou ações a partir do texto enviado.</p>
+                  )}
+                </Card>
 
-        {/* Summary panel */}
-        <div className="space-y-4">
-          <Card className="p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 bg-primary/10 rounded-xl flex items-center justify-center text-primary"><Zap size={16} /></div>
-              <h3 className="font-semibold text-foreground font-display">Resumo IA da sessão</h3>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Pontos-chave</p>
-                <ul className="space-y-2">
-                  {summary.pontos.map((p, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-foreground"><Check size={14} className="text-primary flex-shrink-0 mt-0.5" />{p}</li>
-                  ))}
-                </ul>
+                <Card className="p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-semibold text-foreground font-display">Nota clínica sugerida</h3>
+                    <Badge variant="success"><Brain size={11} />Gerada por IA</Badge>
+                  </div>
+                  <div className="bg-muted rounded-xl p-4 mb-3">
+                    <p className="text-sm text-muted-foreground leading-relaxed">{aiResult.clinicalNote || "—"}</p>
+                  </div>
+                  <Btn variant="outline" size="sm" className="w-full justify-center" onClick={handleUseSuggestedNote}>
+                    <Edit3 size={13} />Usar nota sugerida (adicionar ao texto)
+                  </Btn>
+                </Card>
+              </>
+            ) : (
+              <Card className="p-8 text-center text-sm text-muted-foreground">
+                <Zap size={22} className="mx-auto mb-2 text-muted-foreground/50" />
+                Escreva suas notas e clique em "Gerar resumo com IA" para ver pontos-chave, itens de ação e uma nota clínica sugerida aqui.
+              </Card>
+            )}
+
+            <Card className="p-5">
+              <h3 className="font-semibold text-foreground font-display mb-3">Salvar no prontuário</h3>
+              <p className="text-xs text-muted-foreground mb-3">
+                Salva o texto acima na nota desta sessão (a mesma exibida no prontuário) — junto com o resumo de IA, se você gerou um e manteve o consentimento marcado.
+              </p>
+              <div className="flex gap-2">
+                <Btn variant="primary" className="flex-1 justify-center" disabled={!selectedSessionId || saving} onClick={handleSaveNotes}>
+                  <FileText size={14} />{saving ? "Salvando..." : "Salvar no prontuário"}
+                </Btn>
+                <Btn variant="outline" onClick={() => onNavigate("ehr")}>Ver prontuário</Btn>
               </div>
-              <div className="border-t border-border pt-4">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Itens de ação</p>
-                <ul className="space-y-2">
-                  {summary.acoes.map((a, i) => (
-                    <li key={i} className="flex items-start gap-2 text-sm text-foreground"><div className="w-5 h-5 rounded border border-border flex-shrink-0 mt-0.5" /></ li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </Card>
-
-          <Card className="p-5">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-foreground font-display">Nota clínica gerada</h3>
-              <Badge variant="success"><Brain size={11} />Gerada por IA</Badge>
-            </div>
-            <div className="bg-muted rounded-xl p-4 mb-3">
-              <p className="text-sm text-muted-foreground leading-relaxed">{summary.nota}</p>
-            </div>
-            <div className="flex gap-2">
-              <Btn variant="outline" size="sm" className="flex-1 justify-center"><Edit3 size={13} />Editar</Btn>
-              <Btn variant="primary" size="sm" className="flex-1 justify-center"><FileText size={13} />Salvar no prontuário</Btn>
-            </div>
-          </Card>
-
-          <Card className="p-5">
-            <h3 className="font-semibold text-foreground font-display mb-3">Identificado pela IA</h3>
-            <div className="space-y-2">
-              {[
-                { label: "Emoção predominante", value: "Ansiedade → Alívio", icon: "🧠" },
-                { label: "Técnica utilizada", value: "Respiração + TCC", icon: "🛠️" },
-                { label: "Nível de engajamento", value: "Alto", icon: "✨" },
-                { label: "Humor final relatado", value: "7/10", icon: "😊" },
-              ].map((s, i) => (
-                <div key={i} className="flex items-center justify-between py-1.5 border-b border-border last:border-0">
-                  <span className="text-sm text-muted-foreground">{s.icon} {s.label}</span>
-                  <span className="text-sm font-medium text-foreground">{s.value}</span>
-                </div>
-              ))}
-            </div>
-          </Card>
+              {saveMessage && <p className="text-xs text-emerald-700 mt-2">{saveMessage}</p>}
+            </Card>
+          </div>
         </div>
-      </div>
+      )}
     </AppShell>
   );
 }
