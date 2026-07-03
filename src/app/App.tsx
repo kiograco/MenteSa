@@ -3226,6 +3226,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   ];
 
   const [loading, setLoading] = useState(true);
+  const [licenseType, setLicenseType] = useState("CRP");
+  const [licenseNumber, setLicenseNumber] = useState("");
   const [bio, setBio] = useState("");
   const [specialties, setSpecialties] = useState("");
   const [approaches, setApproaches] = useState("");
@@ -3239,12 +3241,13 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
 
-  const [availability, setAvailability] = useState<AvailabilitySlotRow[]>([]);
-  const [newWeekday, setNewWeekday] = useState(1);
-  const [newStart, setNewStart] = useState("09:00");
-  const [newEnd, setNewEnd] = useState("12:00");
-  const [availabilityError, setAvailabilityError] = useState("");
-  const [addingSlot, setAddingSlot] = useState(false);
+  // One time range per weekday — simpler to fill than adding slots one at a time. Keyed by the
+  // same weekday numbering as the DB (0=Sunday..6=Saturday).
+  const [week, setWeek] = useState<Record<number, { enabled: boolean; start: string; end: string }>>(() =>
+    Object.fromEntries(WEEKDAY_OPTIONS.map(w => [w.value, { enabled: false, start: "09:00", end: "18:00" }]))
+  );
+  const [savingWeek, setSavingWeek] = useState(false);
+  const [weekMessage, setWeekMessage] = useState("");
 
   const loadAvailability = async () => {
     const { data } = await supabase
@@ -3253,7 +3256,17 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       .eq("professional_id", currentUser.id)
       .not("weekday", "is", null)
       .order("weekday", { ascending: true });
-    setAvailability((data ?? []) as AvailabilitySlotRow[]);
+
+    const rows = (data ?? []) as AvailabilitySlotRow[];
+    setWeek(prev => {
+      const next = { ...prev };
+      // Reset first so a day with its slot deleted elsewhere doesn't stay stuck "enabled".
+      for (const w of WEEKDAY_OPTIONS) next[w.value] = { ...next[w.value], enabled: false };
+      for (const row of rows) {
+        next[row.weekday] = { enabled: true, start: row.start_time.slice(0, 5), end: row.end_time.slice(0, 5) };
+      }
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -3263,13 +3276,15 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience")
         .eq("id", currentUser.id)
         .maybeSingle();
 
       if (!active) return;
 
       if (data) {
+        setLicenseType(data.license_type ?? "CRP");
+        setLicenseNumber(data.license_number ?? "");
         setBio(data.bio ?? "");
         setSpecialties((data.specialties ?? []).join(", "));
         setApproaches((data.approaches ?? []).join(", "));
@@ -3280,6 +3295,12 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setYearsExperience(data.years_experience ? String(data.years_experience) : "");
         setModalityOnline((data.modalities ?? []).includes("online"));
         setModalityPresencial((data.modalities ?? []).includes("presencial"));
+      } else {
+        // This account's professional_profiles row was never created (e.g. it predates the
+        // signup trigger that now creates it automatically). Without it, saving availability
+        // fails with a foreign key violation — create a bare-minimum row now so everything below
+        // works, then the professional can fill in the real details and save over it.
+        await supabase.from("professional_profiles").insert({ id: currentUser.id, license_type: "CRP", license_number: "" });
       }
 
       await loadAvailability();
@@ -3302,6 +3323,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     const { error } = await supabase
       .from("professional_profiles")
       .update({
+        license_type: licenseType.trim() || "CRP",
+        license_number: licenseNumber.trim(),
         bio: bio.trim() || null,
         specialties: specialties.split(",").map(s => s.trim()).filter(Boolean),
         approaches: approaches.split(",").map(s => s.trim()).filter(Boolean),
@@ -3325,35 +3348,74 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     setSaveMessage("Perfil atualizado com sucesso.");
   };
 
-  const handleAddSlot = async () => {
-    setAvailabilityError("");
-
-    if (newStart >= newEnd) {
-      setAvailabilityError("O horário de início deve ser antes do horário de fim.");
-      return;
-    }
-
-    setAddingSlot(true);
-    const { error } = await supabase.from("professional_availability").insert({
-      professional_id: currentUser.id,
-      weekday: newWeekday,
-      start_time: newStart,
-      end_time: newEnd,
-    });
-    setAddingSlot(false);
-
-    if (error) {
-      reportError(error, { flow: "professionalSettings.addSlot" });
-      setAvailabilityError("Não foi possível adicionar esse horário.");
-      return;
-    }
-
-    await loadAvailability();
+  const toggleDay = (weekday: number, enabled: boolean) => {
+    setWeek(prev => ({ ...prev, [weekday]: { ...prev[weekday], enabled } }));
+  };
+  const setDayTime = (weekday: number, field: "start" | "end", value: string) => {
+    setWeek(prev => ({ ...prev, [weekday]: { ...prev[weekday], [field]: value } }));
   };
 
-  const handleDeleteSlot = async (id: string) => {
-    await supabase.from("professional_availability").delete().eq("id", id);
+  /** Copies Monday's time range to every other day currently marked available — the fast path for
+   *  the common "same hours every day I work" case. */
+  const applyMondayToAll = () => {
+    const monday = week[1];
+    setWeek(prev => {
+      const next = { ...prev };
+      for (const w of WEEKDAY_OPTIONS) {
+        if (next[w.value].enabled) next[w.value] = { ...next[w.value], start: monday.start, end: monday.end };
+      }
+      return next;
+    });
+  };
+
+  const handleSaveWeek = async () => {
+    setWeekMessage("");
+
+    const invalidDay = WEEKDAY_OPTIONS.find(w => week[w.value].enabled && week[w.value].start >= week[w.value].end);
+    if (invalidDay) {
+      setWeekMessage(`${invalidDay.label}: o horário de início deve ser antes do horário de fim.`);
+      return;
+    }
+
+    setSavingWeek(true);
+
+    // Replace every recurring slot at once: simpler to reason about than diffing add/remove per
+    // day, and matches the "one range per day" model this editor presents.
+    const { error: deleteError } = await supabase
+      .from("professional_availability")
+      .delete()
+      .eq("professional_id", currentUser.id)
+      .not("weekday", "is", null);
+
+    if (deleteError) {
+      setSavingWeek(false);
+      reportError(deleteError, { flow: "professionalSettings.saveWeek.delete" });
+      setWeekMessage("Não foi possível salvar a agenda. Tente novamente.");
+      return;
+    }
+
+    const rowsToInsert = WEEKDAY_OPTIONS
+      .filter(w => week[w.value].enabled)
+      .map(w => ({
+        professional_id: currentUser.id,
+        weekday: w.value,
+        start_time: week[w.value].start,
+        end_time: week[w.value].end,
+      }));
+
+    if (rowsToInsert.length > 0) {
+      const { error: insertError } = await supabase.from("professional_availability").insert(rowsToInsert);
+      if (insertError) {
+        setSavingWeek(false);
+        reportError(insertError, { flow: "professionalSettings.saveWeek.insert" });
+        setWeekMessage("Não foi possível salvar a agenda. Tente novamente.");
+        return;
+      }
+    }
+
     await loadAvailability();
+    setSavingWeek(false);
+    setWeekMessage("Agenda semanal salva com sucesso.");
   };
 
   if (loading) {
@@ -3372,6 +3434,17 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           <p className="text-xs text-muted-foreground -mt-2">
             Esses dados aparecem no seu perfil público e são usados pelos filtros de busca do diretório (cidade/estado, especialidade, convênio, modalidade).
           </p>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-foreground">Tipo de registro</label>
+              <select value={licenseType} onChange={e => setLicenseType(e.target.value)} className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                <option value="CRP">CRP (Psicólogo)</option>
+                <option value="CRM">CRM (Psiquiatra)</option>
+              </select>
+            </div>
+            <Input label="Número do registro" placeholder="06/12345" value={licenseNumber} onChange={setLicenseNumber} />
+          </div>
 
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-foreground">Sobre mim</label>
@@ -3421,41 +3494,45 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         </Card>
 
         <Card className="p-6 space-y-4">
-          <h2 className="font-semibold text-foreground font-display">Disponibilidade semanal</h2>
-          <p className="text-xs text-muted-foreground -mt-2">
-            Esses horários recorrentes definem quando pacientes podem agendar consultas com você.
-          </p>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-semibold text-foreground font-display">Disponibilidade semanal</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Marque os dias que você atende e o horário de cada um. Isso substitui a agenda inteira ao salvar.
+              </p>
+            </div>
+            <Btn variant="ghost" size="sm" onClick={applyMondayToAll}>
+              Repetir horário de segunda
+            </Btn>
+          </div>
 
-          {availability.length === 0 && <p className="text-sm text-muted-foreground">Nenhum horário cadastrado ainda.</p>}
           <div className="space-y-2">
-            {availability.map(slot => (
-              <div key={slot.id} className="flex items-center justify-between p-3 bg-muted rounded-xl">
-                <span className="text-sm text-foreground">
-                  {WEEKDAY_OPTIONS.find(w => w.value === slot.weekday)?.label ?? slot.weekday} · {slot.start_time.slice(0, 5)} – {slot.end_time.slice(0, 5)}
-                </span>
-                <Btn variant="ghost" size="sm" onClick={() => handleDeleteSlot(slot.id)}><Trash2 size={14} /></Btn>
-              </div>
-            ))}
+            {WEEKDAY_OPTIONS.map(w => {
+              const day = week[w.value];
+              return (
+                <div key={w.value} className={`flex flex-wrap items-center gap-3 p-3 rounded-xl border ${day.enabled ? "bg-secondary/50 border-primary/20" : "bg-muted border-transparent"}`}>
+                  <label className="flex items-center gap-2 text-sm font-medium text-foreground cursor-pointer w-32">
+                    <input type="checkbox" checked={day.enabled} onChange={e => toggleDay(w.value, e.target.checked)} className="accent-primary" />
+                    {w.label}
+                  </label>
+                  {day.enabled ? (
+                    <div className="flex items-center gap-2">
+                      <input type="time" value={day.start} onChange={e => setDayTime(w.value, "start", e.target.value)} className="px-3 py-1.5 bg-white border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                      <span className="text-xs text-muted-foreground">até</span>
+                      <input type="time" value={day.end} onChange={e => setDayTime(w.value, "end", e.target.value)} className="px-3 py-1.5 bg-white border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+                    </div>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Sem atendimento</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
-          <div className="flex flex-wrap items-end gap-3 pt-2 border-t border-border">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-foreground">Dia</label>
-              <select value={newWeekday} onChange={e => setNewWeekday(Number(e.target.value))} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
-                {WEEKDAY_OPTIONS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-foreground">Início</label>
-              <input type="time" value={newStart} onChange={e => setNewStart(e.target.value)} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-foreground">Fim</label>
-              <input type="time" value={newEnd} onChange={e => setNewEnd(e.target.value)} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
-            </div>
-            <Btn variant="outline" onClick={handleAddSlot} disabled={addingSlot}><Plus size={14} />{addingSlot ? "Adicionando..." : "Adicionar horário"}</Btn>
-          </div>
-          {availabilityError && <p className="text-xs text-red-600">{availabilityError}</p>}
+          {weekMessage && (
+            <p className={`text-xs ${weekMessage.includes("não") ? "text-red-600" : "text-emerald-600"}`}>{weekMessage}</p>
+          )}
+          <Btn variant="primary" onClick={handleSaveWeek} disabled={savingWeek}>{savingWeek ? "Salvando..." : "Salvar agenda da semana"}</Btn>
         </Card>
       </div>
     </AppShell>
