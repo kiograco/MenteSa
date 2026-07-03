@@ -53,21 +53,13 @@ type DirectoryProfessional = {
   approaches: string[];
 };
 
+// Only public marketing/auth screens belong in the top nav — authenticated areas are reached via
+// AppShell's sidebar (and the role guard in App() bounces anyone who lands on a screen their role can't use).
 const SCREENS: { id: Screen; label: string; group: string }[] = [
-  { id: "landing", label: "Landing Page", group: "Public" },
-  { id: "directory", label: "Professional Directory", group: "Public" },
-  { id: "profile", label: "Professional Profile", group: "Public" },
-  { id: "login", label: "Login / Register", group: "Auth" },
-  { id: "patient-dashboard", label: "Patient Dashboard", group: "Patient" },
-  { id: "pro-dashboard", label: "Professional Dashboard", group: "Professional" },
-  { id: "calendar", label: "Calendar & Scheduling", group: "Professional" },
-  { id: "ehr", label: "Electronic Health Record", group: "Professional" },
-  { id: "ai-assistant", label: "AI Session Assistant", group: "Professional" },
-  { id: "video", label: "Video Consultation", group: "Professional" },
-  { id: "pricing", label: "Pricing for Professionals", group: "Professional" },
-  { id: "checkout", label: "Secure Checkout", group: "Payments" },
-  { id: "financial", label: "Financial Dashboard", group: "Payments" },
-  { id: "admin", label: "Admin Panel", group: "Admin" },
+  { id: "landing", label: "Início", group: "Public" },
+  { id: "directory", label: "Encontrar terapeuta", group: "Public" },
+  { id: "pricing", label: "Sou profissional", group: "Public" },
+  { id: "login", label: "Entrar", group: "Auth" },
 ];
 
 // ─── Shared Components ────────────────────────────────────────────────────────
@@ -951,9 +943,7 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
     setLoading(true);
 
     try {
-      const typedPassword = password || Array.from(document.querySelectorAll<HTMLInputElement>("input")).find(input =>
-        input.type === "password" || input.placeholder.includes("•") || input.placeholder.includes("â€¢")
-      )?.value || "";
+      const typedPassword = password;
 
       if (mode === "login") {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -1061,7 +1051,13 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-foreground">Senha</label>
               <div className="relative">
-                <input type={showPass ? "text" : "password"} placeholder="••••••••" className="w-full pl-3 pr-10 py-2.5 bg-input-background border border-border rounded-xl text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+                <input
+                  type={showPass ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className="w-full pl-3 pr-10 py-2.5 bg-input-background border border-border rounded-xl text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+                />
                 <button className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground" onClick={() => setShowPass(!showPass)}>
                   {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -2414,6 +2410,19 @@ export default function App() {
 
   const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
   const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
+  // Screens restricted to specific roles; screens absent from this map are open to any authenticated user (e.g. video, shared by patient + professional).
+  const screenRoles: Partial<Record<Screen, UserRole[]>> = {
+    "patient-dashboard": ["patient"],
+    "pro-dashboard": ["professional"],
+    calendar: ["professional"],
+    ehr: ["professional"],
+    "ai-assistant": ["professional"],
+    financial: ["professional"],
+    admin: ["admin"],
+    checkout: ["patient"],
+  };
+  const homeScreenForRole = (role: UserRole): Screen =>
+    role === "professional" ? "pro-dashboard" : role === "admin" ? "admin" : "patient-dashboard";
   const showTopNav = !noTopNavScreens.includes(screen);
 
   const loadAppUser = async (nextSession: Session | null) => {
@@ -2469,8 +2478,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!authLoading && protectedScreens.includes(screen) && !currentUser) {
+    if (authLoading) return;
+
+    if (protectedScreens.includes(screen) && !currentUser) {
       setScreen("login");
+      return;
+    }
+
+    if (currentUser) {
+      const allowedRoles = screenRoles[screen];
+      if (allowedRoles && !allowedRoles.includes(currentUser.role)) {
+        setScreen(homeScreenForRole(currentUser.role));
+      }
     }
   }, [authLoading, currentUser, screen]);
 
