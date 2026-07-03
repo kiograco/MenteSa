@@ -63,7 +63,7 @@
   - [x] Upload de documento para verificação profissional
   - [x] Vídeo real (Daily.co)
   - [x] Pagamento real (Mercado Pago)
-  - [ ] E-mail transacional de confirmação
+  - [x] E-mail transacional de confirmação
   - [ ] Projeto Supabase real (staging/prod) + deploy de migrations via CI
   - [ ] Checagem de responsividade mobile
   - [ ] Revisão de segurança final
@@ -129,6 +129,23 @@
      um JWT que o Mercado Pago nunca vai enviar, e o webhook sempre falharia com 401)
   4. `supabase secrets set MERCADOPAGO_ACCESS_TOKEN=... APP_BASE_URL=https://seu-app.exemplo`
 
+  ### E-mail transacional de confirmação
+
+  `supabase/functions/_shared/email.ts` monta e envia o e-mail de confirmação via
+  [Resend](https://resend.com) (busca o e-mail do paciente com `auth.admin.getUserById`, já que
+  `profiles` não guarda e-mail). É chamado em dois lugares: `send-booking-confirmation` (invocado
+  pelo cliente logo após o pagamento mock) e `mercadopago-webhook` (direto no servidor, assim que
+  um pagamento é confirmado como pago de verdade — só uma vez por pagamento, mesmo se o Mercado
+  Pago reenviar a notificação). Sem `RESEND_API_KEY`, a função simplesmente não envia nada — não
+  quebra o agendamento nem o pagamento.
+
+  Para ativar:
+  1. Crie uma conta em https://resend.com, verifique um domínio (ou use o domínio de teste deles
+     pra começar).
+  2. `supabase functions deploy send-booking-confirmation`
+  3. Redeploy do `mercadopago-webhook` (ele agora importa o mesmo módulo de e-mail).
+  4. `supabase secrets set RESEND_API_KEY=... EMAIL_FROM="MindCare <no-reply@seudominio.com>"`
+
   ### Upload de documentos de verificação
 
   Bucket privado do Supabase Storage `professional-documents` (migration `20260703000001`),
@@ -148,6 +165,7 @@
   | `DAILY_API_KEY` | Secret da função Edge (`supabase secrets set`) | Sala de vídeo real (Daily.co). Sem ela, cai no mock. |
   | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
   | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
+  | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |
   | *(preenchido nas próximas etapas)* | | |
 
   ### Monitoramento de erros

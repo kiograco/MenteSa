@@ -6,6 +6,7 @@
 // Deploy: supabase functions deploy mercadopago-webhook --no-verify-jwt
 // (--no-verify-jwt is required: Mercado Pago calls this without a Supabase auth token)
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { sendBookingConfirmationEmail } from "../_shared/email.ts";
 
 const PLATFORM_FEE_RATE = 0.1;
 
@@ -49,6 +50,13 @@ Deno.serve(async req => {
 
     const amount = Number(payment.transaction_amount ?? 0);
 
+    const { data: existingPayment } = await supabase
+      .from("payments")
+      .select("status")
+      .eq("provider_payment_id", String(payment.id))
+      .maybeSingle();
+    const alreadyPaid = existingPayment?.status === "paid";
+
     const { error } = await supabase.from("payments").upsert(
       {
         appointment_id: appointmentId,
@@ -63,6 +71,12 @@ Deno.serve(async req => {
     );
 
     if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+
+    // Best-effort, and only on the first time this payment is recorded as paid (avoids duplicate
+    // e-mails when Mercado Pago redelivers the same notification).
+    if (status === "paid" && !alreadyPaid) {
+      await sendBookingConfirmationEmail(supabase, appointmentId).catch(() => {});
+    }
 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   } catch (error) {

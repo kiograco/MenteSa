@@ -2864,12 +2864,13 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
       });
 
       const roomId = `room-${appointment.id}`;
-      // Best-effort: the video room is a nice-to-have at booking time, not a reason to fail a paid booking.
+      // Best-effort: neither the video room nor the confirmation e-mail should block a paid booking.
       await supabase.from("video_rooms").insert({
         appointment_id: appointment.id,
         room_url: `https://meet.mindcare.test/${roomId}`,
         provider_room_id: roomId,
       });
+      void supabase.functions.invoke("send-booking-confirmation", { body: { appointmentId: appointment.id } });
 
       setStep(3);
     } catch (error) {
