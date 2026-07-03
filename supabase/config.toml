@@ -43,6 +43,6 @@ pass = "env(RESEND_API_KEY)"
 admin_email = "onboarding@resend.dev"
 sender_name = "MindCare"
 
-[storage]
-enabled = true
-file_size_limit = "10MiB"
+# No [storage] section here on purpose: pushing it hit a "vector buckets require a paid tier"
+# error unrelated to anything we configure — the actual professional-documents bucket already
+# exists via the SQL migration (20260703000001_professional_documents.sql), not via this config.
