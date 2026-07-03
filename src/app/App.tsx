@@ -1757,9 +1757,12 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScr
 
 // ─── SCREEN: EHR ─────────────────────────────────────────────────────────────
 
+type EhrPatient = { id: string; name: string; img: string; sessionsCount: number };
+type EhrSession = { id: string; scheduledAt: string; modality: string; status: string; notes: string; aiSummary: string | null };
+
 function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
-  const [selectedPatient, setSelectedPatient] = useState(0);
-  const [ehrTab, setEhrTab] = useState("historico");
+  const [patientSearch, setPatientSearch] = useState("");
+  const [ehrTab, setEhrTab] = useState<"historico" | "notas">("historico");
   const navItems = [
     { icon: <Home size={18} />, label: "Início" },
     { icon: <Calendar size={18} />, label: "Agenda" },
@@ -1769,20 +1772,121 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
     { icon: <BarChart2 size={18} />, label: "Financeiro" },
   ];
 
-  const patients = [
-    { name: "Ana Beatriz Souza", age: 28, since: "Jun 2024", sessions: 24, diagnosis: "F41.1 Ansiedade Generalizada" },
-    { name: "Carlos Augusto Silva", age: 35, since: "Mar 2024", sessions: 36, diagnosis: "F32.1 Episódio Depressivo Moderado" },
-    { name: "Mariana Roque Lima", age: 22, since: "Nov 2024", sessions: 8, diagnosis: "F43.1 PTSD" },
-    { name: "João Pedro Mendes", age: 42, since: "Jan 2025", sessions: 4, diagnosis: "Em avaliação" },
-  ];
+  const [patients, setPatients] = useState<EhrPatient[]>([]);
+  const [loadingPatients, setLoadingPatients] = useState(true);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
 
-  const sessions = [
-    { date: "07 Jan 2025", duration: "50min", type: "Online", summary: "Paciente relatou melhora na qualidade do sono. Trabalhamos técnicas de respiração diafragmática e reestruturação cognitiva de crenças disfuncionais sobre o trabalho.", mood: 7 },
-    { date: "31 Dez 2024", duration: "50min", type: "Online", summary: "Sessão de encerramento do ano. Revisão de progressos e definição de metas para 2025. Notável avanço na regulação emocional.", mood: 8 },
-    { date: "24 Dez 2024", duration: "50min", type: "Online", summary: "Foco em técnicas de mindfulness para o período natalino. Discussão sobre dinâmicas familiares e estratégias de enfrentamento.", mood: 6 },
-  ];
+  const [sessions, setSessions] = useState<EhrSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
 
-  const p = patients[selectedPatient];
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoadingPatients(true);
+      const { data } = await supabase
+        .from("appointments")
+        .select("patient_id, profiles(full_name, avatar_url)")
+        .eq("professional_id", currentUser.id);
+
+      if (!active) return;
+
+      const map = new Map<string, EhrPatient>();
+      ((data ?? []) as any[]).forEach(a => {
+        const existing = map.get(a.patient_id);
+        if (existing) existing.sessionsCount += 1;
+        else map.set(a.patient_id, { id: a.patient_id, name: a.profiles?.full_name ?? "Paciente", img: a.profiles?.avatar_url ?? "", sessionsCount: 1 });
+      });
+      const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+      setPatients(list);
+      setSelectedPatientId(prev => prev ?? list[0]?.id ?? null);
+      setLoadingPatients(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setSessions([]);
+      setSelectedSessionId(null);
+      return;
+    }
+
+    let active = true;
+    setLoadingSessions(true);
+    setSaveMessage("");
+
+    (async () => {
+      const { data } = await supabase
+        .from("appointments")
+        .select("id, scheduled_at, modality, status, session_notes(notes, ai_summary)")
+        .eq("professional_id", currentUser.id)
+        .eq("patient_id", selectedPatientId)
+        .order("scheduled_at", { ascending: false });
+
+      if (!active) return;
+
+      const rows: EhrSession[] = ((data ?? []) as any[]).map(a => {
+        const note = Array.isArray(a.session_notes) ? a.session_notes[0] : a.session_notes;
+        return {
+          id: a.id,
+          scheduledAt: a.scheduled_at,
+          modality: a.modality,
+          status: a.status,
+          notes: note?.notes ?? "",
+          aiSummary: note?.ai_summary ?? null,
+        };
+      });
+      setSessions(rows);
+      setSelectedSessionId(rows[0]?.id ?? null);
+      setNotesDraft(rows[0]?.notes ?? "");
+      setLoadingSessions(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedPatientId, currentUser.id]);
+
+  const selectSession = (id: string) => {
+    setSelectedSessionId(id);
+    setNotesDraft(sessions.find(s => s.id === id)?.notes ?? "");
+    setSaveMessage("");
+  };
+
+  const handleSaveNotes = async () => {
+    if (!selectedSessionId) return;
+    setSaving(true);
+    setSaveMessage("");
+
+    const { error } = await supabase
+      .from("session_notes")
+      .upsert(
+        { appointment_id: selectedSessionId, professional_id: currentUser.id, notes: notesDraft },
+        { onConflict: "appointment_id" }
+      );
+
+    setSaving(false);
+
+    if (error) {
+      setSaveMessage("Não foi possível salvar a nota.");
+      return;
+    }
+
+    setSessions(prev => prev.map(s => (s.id === selectedSessionId ? { ...s, notes: notesDraft } : s)));
+    setSaveMessage("Nota salva com segurança.");
+  };
+
+  const filteredPatients = patients.filter(p => p.name.toLowerCase().includes(patientSearch.trim().toLowerCase()));
+  const selectedPatient = patients.find(p => p.id === selectedPatientId) ?? null;
+  const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
   return (
     <AppShell title="Prontuário Eletrônico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
@@ -1790,16 +1894,18 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
         {/* Patient list */}
         <div className="w-64 flex-shrink-0">
           <div className="mb-3">
-            <Input placeholder="Buscar paciente..." icon={<Search size={15} />} />
+            <Input placeholder="Buscar paciente..." icon={<Search size={15} />} value={patientSearch} onChange={setPatientSearch} />
           </div>
+          {loadingPatients && <p className="text-xs text-muted-foreground">Carregando pacientes...</p>}
+          {!loadingPatients && filteredPatients.length === 0 && <p className="text-xs text-muted-foreground">Nenhum paciente encontrado.</p>}
           <div className="space-y-2">
-            {patients.map((pt, i) => (
-              <button key={i} onClick={() => setSelectedPatient(i)}
-                className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all ${selectedPatient === i ? "bg-secondary border border-border" : "hover:bg-muted"}`}>
-                <Avatar name={pt.name} size="sm" />
+            {filteredPatients.map(pt => (
+              <button key={pt.id} onClick={() => setSelectedPatientId(pt.id)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all ${selectedPatientId === pt.id ? "bg-secondary border border-border" : "hover:bg-muted"}`}>
+                <Avatar name={pt.name} src={pt.img || undefined} size="sm" />
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-foreground truncate">{pt.name}</p>
-                  <p className="text-xs text-muted-foreground">{pt.sessions} sessões</p>
+                  <p className="text-xs text-muted-foreground">{pt.sessionsCount} sessões</p>
                 </div>
               </button>
             ))}
@@ -1808,94 +1914,103 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
 
         {/* Patient record */}
         <div className="flex-1 space-y-4">
-          <Card className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-4">
-                <Avatar name={p.name} size="lg" />
-                <div>
-                  <h2 className="font-bold text-foreground font-display">{p.name}</h2>
-                  <p className="text-sm text-muted-foreground">{p.age} anos · Paciente desde {p.since}</p>
-                  <Badge variant="accent" className="mt-1"><Clipboard size={11} />{p.diagnosis}</Badge>
+          {!selectedPatient ? (
+            <Card className="p-8 text-center text-sm text-muted-foreground">Você ainda não tem pacientes com consultas registradas.</Card>
+          ) : (
+            <>
+              <Card className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-4">
+                    <Avatar name={selectedPatient.name} src={selectedPatient.img || undefined} size="lg" />
+                    <div>
+                      <h2 className="font-bold text-foreground font-display">{selectedPatient.name}</h2>
+                      <p className="text-sm text-muted-foreground">{selectedPatient.sessionsCount} sessões registradas</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="flex gap-2">
-                <Btn variant="outline" size="sm"><Upload size={14} />Anexar</Btn>
-                <Btn variant="primary" size="sm" onClick={() => onNavigate("ai-assistant")}><Brain size={14} />IA Assistente</Btn>
-              </div>
-            </div>
-            <div className="flex gap-1 border-t border-border pt-3">
-              {["historico", "plano", "receitas", "anexos", "notas"].map(t => (
-                <button key={t} onClick={() => setEhrTab(t)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
-                  {t === "historico" ? "Histórico" : t === "plano" ? "Plano Terapêutico" : t === "receitas" ? "Receituário" : t === "anexos" ? "Anexos" : "Notas Seguras"}
-                </button>
-              ))}
-            </div>
-          </Card>
-
-          {ehrTab === "historico" && (
-            <div className="space-y-3">
-              {sessions.map((s, i) => (
-                <Card key={i} className="p-5">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
-                        {s.type === "Online" ? <Video size={16} /> : <MapPin size={16} />}
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">{s.date} · {s.duration}</p>
-                        <Badge variant="outline">{s.type}</Badge>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">Humor:</span>
-                      <div className="flex gap-0.5">
-                        {Array(10).fill(0).map((_, j) => (
-                          <div key={j} className={`w-2 h-4 rounded-sm ${j < s.mood ? "bg-primary" : "bg-muted"}`} />
-                        ))}
-                      </div>
-                      <span className="text-xs font-mono text-foreground">{s.mood}/10</span>
-                    </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground leading-relaxed">{s.summary}</p>
-                  <div className="flex gap-2 mt-3">
-                    <Btn variant="ghost" size="sm"><Edit3 size={13} />Editar nota</Btn>
-                    <Btn variant="ghost" size="sm"><Brain size={13} />Ver resumo IA</Btn>
-                    <Btn variant="ghost" size="sm"><Download size={13} />PDF</Btn>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          )}
-
-          {ehrTab === "plano" && (
-            <Card className="p-6">
-              <h3 className="font-semibold text-foreground font-display mb-4">Plano Terapêutico</h3>
-              <div className="space-y-4">
-                <div><p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Objetivos</p>
-                  {["Reduzir sintomas de ansiedade generalizada", "Desenvolver estratégias de regulação emocional", "Melhorar qualidade do sono e rotina de autocuidado"].map((o, i) => (
-                    <div key={i} className="flex items-center gap-2 py-2 border-b border-border last:border-0">
-                      <CheckCircle size={15} className="text-primary" /><p className="text-sm text-foreground">{o}</p>
-                    </div>
+                <div className="flex gap-1 border-t border-border pt-3">
+                  {(["historico", "notas"] as const).map(t => (
+                    <button key={t} onClick={() => setEhrTab(t)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
+                      {t === "historico" ? "Histórico" : "Notas Seguras"}
+                    </button>
                   ))}
                 </div>
-                <div><p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Abordagem</p>
-                  <p className="text-sm text-muted-foreground">TCC + ACT com sessões semanais de 50 minutos. Revisão trimestral do plano.</p>
-                </div>
-              </div>
-            </Card>
-          )}
+              </Card>
 
-          {ehrTab === "notas" && (
-            <Card className="p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Lock size={16} className="text-amber-600" />
-                <h3 className="font-semibold text-foreground font-display">Notas Seguras</h3>
-                <Badge variant="warning">Criptografado</Badge>
-              </div>
-              <textarea className="w-full h-40 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground" placeholder="Adicione notas clínicas seguras sobre este paciente...Elas são criptografadas e visíveis apenas por você." />
-              <div className="flex justify-end mt-3"><Btn variant="primary" size="sm"><Lock size={13} />Salvar com segurança</Btn></div>
-            </Card>
+              {ehrTab === "historico" && (
+                <div className="space-y-3">
+                  {loadingSessions && <p className="text-sm text-muted-foreground">Carregando sessões...</p>}
+                  {!loadingSessions && sessions.length === 0 && <Card className="p-6 text-center text-sm text-muted-foreground">Nenhuma sessão registrada com este paciente.</Card>}
+                  {sessions.map(s => (
+                    <Card key={s.id} className="p-5">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary">
+                            {s.modality === "online" ? <Video size={16} /> : <MapPin size={16} />}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">
+                              {new Date(s.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+                            </p>
+                            <Badge variant="outline">{s.modality === "online" ? "Online" : "Presencial"}</Badge>
+                          </div>
+                        </div>
+                        <Badge variant={s.status === "completed" ? "success" : s.status === "cancelled" ? "danger" : "outline"}>
+                          {s.status === "completed" ? "Concluída" : s.status === "cancelled" ? "Cancelada" : "Agendada"}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground leading-relaxed">{s.notes || "Nenhuma nota clínica registrada para esta sessão ainda."}</p>
+                      <div className="flex gap-2 mt-3">
+                        <Btn variant="ghost" size="sm" onClick={() => { selectSession(s.id); setEhrTab("notas"); }}><Edit3 size={13} />Editar nota</Btn>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+
+              {ehrTab === "notas" && (
+                <Card className="p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Lock size={16} className="text-amber-600" />
+                    <h3 className="font-semibold text-foreground font-display">Notas Seguras</h3>
+                    <Badge variant="warning">Visível apenas por você</Badge>
+                  </div>
+                  {sessions.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Este paciente ainda não tem sessões para anotar.</p>
+                  ) : (
+                    <>
+                      <select
+                        value={selectedSessionId ?? ""}
+                        onChange={e => selectSession(e.target.value)}
+                        className="mb-4 px-3 py-2 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      >
+                        {sessions.map(s => (
+                          <option key={s.id} value={s.id}>
+                            {new Date(s.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+                          </option>
+                        ))}
+                      </select>
+                      <textarea
+                        value={notesDraft}
+                        onChange={e => setNotesDraft(e.target.value)}
+                        className="w-full h-40 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground"
+                        placeholder="Adicione notas clínicas seguras sobre esta sessão. Elas são visíveis apenas por você."
+                      />
+                      {selectedSession?.aiSummary && (
+                        <div className="mt-3 p-3 bg-secondary rounded-xl text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">Resumo de IA: </span>{selectedSession.aiSummary}
+                        </div>
+                      )}
+                      {saveMessage && <p className={`text-xs mt-2 ${saveMessage.includes("não") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
+                      <div className="flex justify-end mt-3">
+                        <Btn variant="primary" size="sm" onClick={handleSaveNotes} disabled={saving}><Lock size={13} />{saving ? "Salvando..." : "Salvar com segurança"}</Btn>
+                      </div>
+                    </>
+                  )}
+                </Card>
+              )}
+            </>
           )}
         </div>
       </div>
