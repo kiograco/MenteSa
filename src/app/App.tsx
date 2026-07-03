@@ -3,6 +3,9 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { mockPaymentProvider } from "../lib/payment-provider";
 import type { UserRole } from "../lib/database.types";
+import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
+import { downloadCsv } from "../lib/csv";
+import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
   BarChart2, Users, Settings, Bell, ChevronDown, ChevronRight, ChevronLeft,
@@ -842,38 +845,8 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
     };
   }, [professionalId]);
 
-  const upcomingDays = Array.from({ length: 14 }).map((_, i) => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() + i);
-    return d;
-  }).filter(d => availability.some(a => a.weekday === d.getDay())).slice(0, 5);
-
-  const slotsForDay = (day: Date) => {
-    const dayAvailability = availability.filter(a => a.weekday === day.getDay());
-    const slots: { time: string; iso: string; taken: boolean }[] = [];
-
-    dayAvailability.forEach(a => {
-      const [startH, startM] = a.start_time.split(":").map(Number);
-      const [endH, endM] = a.end_time.split(":").map(Number);
-      let cursorMinutes = startH * 60 + startM;
-      const endMinutes = endH * 60 + endM;
-
-      while (cursorMinutes + 50 <= endMinutes) {
-        const slotDate = new Date(day);
-        slotDate.setHours(Math.floor(cursorMinutes / 60), cursorMinutes % 60, 0, 0);
-        const iso = slotDate.toISOString();
-        slots.push({
-          time: `${String(Math.floor(cursorMinutes / 60)).padStart(2, "0")}:${String(cursorMinutes % 60).padStart(2, "0")}`,
-          iso,
-          taken: bookedTimes.has(iso),
-        });
-        cursorMinutes += 50;
-      }
-    });
-
-    return slots;
-  };
+  const upcomingDays = getUpcomingAvailableDays(availability);
+  const slotsForDay = (day: Date) => generateSlotsForDay(availability, day, bookedTimes);
 
   const handleBook = () => {
     if (!pro || !selectedSlot) return;
@@ -1501,21 +1474,11 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
         patientImg: a.profiles?.avatar_url ?? "",
       })));
 
-      const months = Array.from({ length: 6 }).map((_, i) => {
-        const d = new Date();
-        d.setDate(1);
-        d.setMonth(d.getMonth() - (5 - i));
-        return { key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString("pt-BR", { month: "short" }) };
-      });
-      const totals = new Map(months.map(m => [m.key, 0]));
-      ((paymentRows ?? []) as any[]).forEach(p => {
-        const scheduledAt = p.appointments?.scheduled_at;
-        if (!scheduledAt) return;
-        const d = new Date(scheduledAt);
-        const key = `${d.getFullYear()}-${d.getMonth()}`;
-        if (totals.has(key)) totals.set(key, (totals.get(key) ?? 0) + Number(p.amount));
-      });
-      setRevenueByMonth(months.map(m => ({ month: m.label, receita: totals.get(m.key) ?? 0 })));
+      const months = getLastMonths(6);
+      const paymentEntries = ((paymentRows ?? []) as any[])
+        .filter(p => p.appointments?.scheduled_at)
+        .map(p => ({ amount: Number(p.amount), dateIso: p.appointments.scheduled_at as string }));
+      setRevenueByMonth(bucketAmountsByMonth(paymentEntries, months).map(b => ({ month: b.month, receita: b.total })));
 
       const ratings = ((reviewRows ?? []) as any[]).map(r => r.rating as number);
       setAvgRating(ratings.length ? ratings.reduce((s, r) => s + r, 0) / ratings.length : null);
@@ -2861,17 +2824,6 @@ type AdminPayment = {
   status: string;
   createdAt: string;
 };
-
-function downloadCsv(filename: string, rows: string[][]) {
-  const csv = rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 
 function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
   const [adminTab, setAdminTab] = useState<"validations" | "users" | "payments">("validations");
