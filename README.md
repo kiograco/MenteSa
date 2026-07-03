@@ -59,7 +59,7 @@
   - [x] Código morto removido (shadcn/Figma scaffold não usado) e vendor chunks separados
   - [x] Monitoramento de erros (Sentry, opcional via `VITE_SENTRY_DSN`)
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
-  - [ ] Fluxo de "esqueci minha senha"
+  - [x] Fluxo de "esqueci minha senha"
   - [ ] Upload de documento para verificação profissional
   - [ ] Vídeo real (Daily.co)
   - [ ] Pagamento real (Mercado Pago)
@@ -78,6 +78,15 @@
   ⚠️ **O texto é um rascunho, não é parecer jurídico.** Antes de abrir para usuários reais, peça
   para um advogado (idealmente com experiência em saúde/LGPD) revisar `src/content/legal.ts` —
   principalmente as seções sobre dados sensíveis de saúde (prontuário) e retenção de dados.
+
+  ### Esqueci minha senha
+
+  Usa `supabase.auth.resetPasswordForEmail` + `supabase.auth.updateUser`, ambos nativos do
+  Supabase Auth — não precisa de nenhuma chave nova. O único pré-requisito é que o **envio de
+  e-mail esteja habilitado no projeto Supabase** (Authentication → Emails no dashboard). O Supabase
+  já vem com um serviço de e-mail básico por padrão (bom para testar), mas para produção configure
+  um provedor SMTP próprio lá (Authentication → Settings → SMTP Settings), senão o volume de
+  e-mails transacionais é bem limitado.
 
   ### Chaves de acesso necessárias
 

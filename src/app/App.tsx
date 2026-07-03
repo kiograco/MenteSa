@@ -23,7 +23,8 @@ import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 type Screen =
   | "landing" | "directory" | "profile" | "patient-dashboard"
   | "pro-dashboard" | "calendar" | "ehr" | "ai-assistant"
-  | "video" | "pricing" | "checkout" | "financial" | "admin" | "login";
+  | "video" | "pricing" | "checkout" | "financial" | "admin" | "login"
+  | "reset-password";
 
 type AppUser = {
   id: string;
@@ -1115,6 +1116,33 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [loading, setLoading] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [legalDoc, setLegalDoc] = useState<LegalDocument | null>(null);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotError, setForgotError] = useState("");
+
+  const handleForgotPassword = async () => {
+    setForgotError("");
+
+    if (!forgotEmail.trim()) {
+      setForgotError("Informe seu e-mail para receber o link de recuperação.");
+      return;
+    }
+
+    setForgotLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail.trim(), {
+      redirectTo: window.location.origin,
+    });
+    setForgotLoading(false);
+
+    if (error) {
+      setForgotError(error.message);
+      return;
+    }
+
+    setForgotSent(true);
+  };
 
   const handleAuth = async () => {
     setAuthError("");
@@ -1271,7 +1299,13 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
           {mode === "login" && (
             <div className="text-right mt-2">
-              <a href="#" className="text-xs text-primary hover:underline">Esqueci minha senha</a>
+              <button
+                type="button"
+                onClick={() => { setShowForgotPassword(true); setForgotSent(false); setForgotError(""); setForgotEmail(email); }}
+                className="text-xs text-primary hover:underline"
+              >
+                Esqueci minha senha
+              </button>
             </div>
           )}
 
@@ -1308,6 +1342,102 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         </Card>
       </div>
       <LegalModal document={legalDoc} onClose={() => setLegalDoc(null)} />
+
+      {showForgotPassword && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowForgotPassword(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Recuperar senha</h2>
+              <button type="button" onClick={() => setShowForgotPassword(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            {forgotSent ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                Se houver uma conta com esse e-mail, enviamos um link para redefinir a senha.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">Informe seu e-mail e enviaremos um link para redefinir sua senha.</p>
+                <Input label="E-mail" placeholder="seu@email.com" type="email" icon={<Mail size={15} />} value={forgotEmail} onChange={setForgotEmail} />
+                {forgotError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{forgotError}</div>
+                )}
+                <Btn variant="primary" className="w-full justify-center" onClick={handleForgotPassword} disabled={forgotLoading}>
+                  {forgotLoading ? "Enviando..." : "Enviar link de recuperação"}
+                </Btn>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── SCREEN: Reset Password ───────────────────────────────────────────────────
+
+function ResetPasswordScreen({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const handleSubmit = async () => {
+    setError("");
+
+    if (password.length < 6) {
+      setError("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("As senhas não coincidem.");
+      return;
+    }
+
+    setLoading(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    setLoading(false);
+
+    if (updateError) {
+      reportError(updateError, { flow: "resetPassword.updateUser" });
+      setError(updateError.message);
+      return;
+    }
+
+    setDone(true);
+  };
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="w-12 h-12 bg-primary rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Lock size={22} className="text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-foreground font-display">Definir nova senha</h1>
+        </div>
+        <Card className="p-8">
+          {done ? (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                Senha atualizada com sucesso.
+              </div>
+              <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("login")}>Ir para o login</Btn>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <Input label="Nova senha" placeholder="••••••••" type="password" value={password} onChange={setPassword} />
+              <Input label="Confirmar nova senha" placeholder="••••••••" type="password" value={confirmPassword} onChange={setConfirmPassword} />
+              {error && (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+              )}
+              <Btn variant="primary" className="w-full justify-center" onClick={handleSubmit} disabled={loading}>
+                {loading ? "Salvando..." : "Salvar nova senha"}
+              </Btn>
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
@@ -3190,7 +3320,10 @@ export default function App() {
       if (active) void loadAppUser(data.session);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setScreen("reset-password");
+      }
       void loadAppUser(nextSession);
     });
 
@@ -3235,6 +3368,7 @@ export default function App() {
       {screen === "directory" && <DirectoryPage onNavigate={setScreen} onSelectProfessional={setSelectedProfessionalId} />}
       {screen === "profile" && <ProfilePage onNavigate={setScreen} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
       {screen === "login" && <LoginPage onNavigate={setScreen} />}
+      {screen === "reset-password" && <ResetPasswordScreen onNavigate={setScreen} />}
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "calendar" && currentUser && <CalendarScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
