@@ -1,10 +1,10 @@
 // Turns a professional's typed session notes into a structured AI summary (key points, action
-// items, a polished clinical note) via the Anthropic API. No audio is ever recorded or sent —
-// only text the professional already typed themselves. ANTHROPIC_API_KEY never reaches the
-// browser; only this function talks to Anthropic.
+// items, a polished clinical note) via the Google Gemini API — chosen for its free tier. No audio
+// is ever recorded or sent — only text the professional already typed themselves. GEMINI_API_KEY
+// never reaches the browser; only this function talks to Gemini.
 //
 // Deploy: supabase functions deploy ai-summarize-session
-// Secrets: supabase secrets set ANTHROPIC_API_KEY=... (optional: ANTHROPIC_MODEL=claude-...)
+// Secrets: supabase secrets set GEMINI_API_KEY=... (optional: GEMINI_MODEL=gemini-...)
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const CORS_HEADERS = {
@@ -19,18 +19,30 @@ function json(body: unknown, status = 200) {
 function buildPrompt(notes: string): string {
   return `Você está ajudando um psicólogo(a) ou psiquiatra licenciado a organizar as notas que ele mesmo digitou sobre uma sessão clínica. Nenhum áudio foi gravado — o texto abaixo foi escrito pelo profissional.
 
-A partir das notas, produza APENAS um objeto JSON (sem markdown, sem crases, sem texto antes ou depois) com exatamente estas chaves:
-- "keyPoints": array de strings curtas com os pontos-chave clínicos observados
-- "actionItems": array de strings curtas com ações/tarefas combinadas para o paciente ou plano de acompanhamento
-- "clinicalNote": uma única string em português, um parágrafo de nota clínica objetiva e profissional, adequada para o prontuário
+A partir das notas, produza um resumo estruturado com:
+- pontos-chave clínicos observados
+- ações/tarefas combinadas para o paciente ou plano de acompanhamento
+- uma nota clínica objetiva e profissional em português, adequada para o prontuário
 
-Se as notas forem muito curtas para extrair algo, ainda assim devolva o JSON com os melhores campos possíveis (arrays vazios se não houver nada aplicável).
+Se as notas forem muito curtas para extrair algo, devolva os melhores campos possíveis (listas vazias se não houver nada aplicável).
 
 Notas do profissional:
 <<<
 ${notes}
 >>>`;
 }
+
+// Gemini's responseSchema forces the model to return exactly this shape — no markdown-fence
+// stripping or best-effort JSON.parse needed, unlike a plain prompt-only approach.
+const RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    keyPoints: { type: "ARRAY", items: { type: "STRING" } },
+    actionItems: { type: "ARRAY", items: { type: "STRING" } },
+    clinicalNote: { type: "STRING" },
+  },
+  required: ["keyPoints", "actionItems", "clinicalNote"],
+};
 
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
@@ -44,7 +56,7 @@ Deno.serve(async req => {
       return json({ error: "appointmentId e notes são obrigatórios." }, 400);
     }
 
-    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) return json({ error: "IA não configurada nos secrets da função." }, 500);
 
     const supabase = createClient(
@@ -69,34 +81,36 @@ Deno.serve(async req => {
     // here (unlike livekit-room-access, which intentionally allows either participant).
     if (appointment.professional_id !== userData.user.id) return json({ error: "Acesso negado." }, 403);
 
-    const model = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-5";
+    const model = Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
 
-    const anthropicResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1500,
-        messages: [{ role: "user", content: buildPrompt(notes) }],
-      }),
-    });
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": apiKey,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: buildPrompt(notes) }] }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: RESPONSE_SCHEMA,
+          },
+        }),
+      }
+    );
 
-    if (!anthropicResponse.ok) {
-      return json({ error: `Falha ao gerar resumo: ${await anthropicResponse.text()}` }, 502);
+    if (!geminiResponse.ok) {
+      return json({ error: `Falha ao gerar resumo: ${await geminiResponse.text()}` }, 502);
     }
 
-    const result = await anthropicResponse.json();
-    const rawText: string = result?.content?.[0]?.text ?? "";
-    // Claude may still wrap the JSON in markdown fences despite instructions — strip defensively.
-    const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    const result = await geminiResponse.json();
+    const rawText: string = result?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = JSON.parse(rawText);
     } catch {
       return json({ error: "Resposta da IA em formato inesperado." }, 502);
     }

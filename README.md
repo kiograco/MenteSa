@@ -48,7 +48,7 @@
         e sincronização opcional com o Google Agenda
   - [x] Build limpo (`npm run build`), typecheck limpo (`npm run typecheck`) e testes unitários básicos (`npm run test`)
   - [x] IA Assistente: resumo de sessão (pontos-chave, itens de ação, nota clínica) a partir do texto
-        digitado/ditado pelo profissional, via Anthropic Claude (`AIAssistantScreen`)
+        digitado/ditado pelo profissional, via Google Gemini (`AIAssistantScreen`)
 
   Fora do escopo do MVP (ficou como mock/placeholder de propósito): receituário digital.
 
@@ -67,7 +67,7 @@
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
   - [x] Vídeo real (LiveKit)
-  - [x] Resumo de sessão com IA (Anthropic Claude)
+  - [x] Resumo de sessão com IA (Google Gemini)
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
@@ -136,26 +136,32 @@
   sem Mercado Pago configurado, o checkout mock (`mockPaymentProvider`) já grava esse registro, então
   basta completar um agendamento normalmente pra testar o vídeo real.
 
-  ### Resumo de IA da sessão (Anthropic Claude)
+  ### Resumo de IA da sessão (Google Gemini)
 
   `supabase/functions/ai-summarize-session` recebe o texto que o profissional digitou (ou ditou
   via Web Speech API do navegador — 100% local, nenhum áudio é gravado ou enviado) sobre uma
-  sessão e pede pra Anthropic (Claude) gerar pontos-chave, itens de ação e uma nota clínica
-  polida, em JSON. **Nunca é gravado ou enviado áudio** — só o texto que o profissional já
-  escreveu, a mesma informação que ele já poderia digitar direto na aba "Notas Seguras" do
-  prontuário. É preciso marcar um consentimento explícito antes de gerar o resumo, e o resultado
-  só é salvo no prontuário (`session_notes.ai_summary` + `ai_summary_generated_at`) se o
+  sessão e pede pro Gemini (Google) gerar pontos-chave, itens de ação e uma nota clínica polida —
+  usando `responseSchema` da própria API do Gemini pra forçar o formato JSON exato, em vez de só
+  confiar em instrução de prompt. **Nunca é gravado ou enviado áudio** — só o texto que o
+  profissional já escreveu, a mesma informação que ele já poderia digitar direto na aba "Notas
+  Seguras" do prontuário. É preciso marcar um consentimento explícito antes de gerar o resumo, e o
+  resultado só é salvo no prontuário (`session_notes.ai_summary` + `ai_summary_generated_at`) se o
   profissional clicar em "Salvar no prontuário" — nunca automaticamente.
 
-  Se `ANTHROPIC_API_KEY` não estiver configurado (ou a função não estiver implantada), a tela de
-  IA cai de volta pro fluxo manual — o profissional continua escrevendo/editando notas
-  normalmente, só não tem o botão "Gerar resumo com IA" funcional.
+  Escolhido especificamente pelo tier gratuito (suficiente pro volume de uso esperado no MVP) —
+  antes de ativar em produção com dados reais de pacientes, vale conferir a política de retenção/
+  uso de dados do Google para a API do Gemini (se o conteúdo enviado é usado pra treinar modelo),
+  dado que notas de sessão são dado de saúde sensível.
+
+  Se `GEMINI_API_KEY` não estiver configurado (ou a função não estiver implantada), a tela de IA
+  cai de volta pro fluxo manual — o profissional continua escrevendo/editando notas normalmente,
+  só não tem o botão "Gerar resumo com IA" funcional.
 
   Para ativar:
-  1. Crie uma conta em https://console.anthropic.com e gere uma API key.
+  1. Crie uma API key gratuita em https://aistudio.google.com/apikey.
   2. `supabase functions deploy ai-summarize-session`
-  3. `supabase secrets set ANTHROPIC_API_KEY=sk-ant-...` (opcional: `ANTHROPIC_MODEL=claude-...`
-     pra trocar o modelo — o padrão é `claude-sonnet-5`)
+  3. `supabase secrets set GEMINI_API_KEY=...` (opcional: `GEMINI_MODEL=gemini-...` pra trocar o
+     modelo — o padrão é `gemini-2.5-flash`)
 
   ### Pagamento real (Mercado Pago)
 
@@ -362,7 +368,7 @@
   | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
   | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
   | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_URL` | Secrets da função Edge (`supabase secrets set`) | Sala de vídeo real (LiveKit). Sem eles, cai no mock. |
-  | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` (opcional) | Secret da função Edge (`supabase secrets set`) | Resumo de IA da sessão (Claude). Sem ela, o botão "Gerar resumo com IA" fica indisponível e o profissional segue escrevendo notas manualmente. |
+  | `GEMINI_API_KEY` / `GEMINI_MODEL` (opcional) | Secret da função Edge (`supabase secrets set`) | Resumo de IA da sessão (Google Gemini, gratuito). Sem ela, o botão "Gerar resumo com IA" fica indisponível e o profissional segue escrevendo notas manualmente. |
   | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
   | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
   | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |

@@ -2957,7 +2957,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
 
               <label className="flex items-start gap-2 text-xs text-muted-foreground mt-3">
                 <input type="checkbox" checked={aiConsent} onChange={e => setAiConsent(e.target.checked)} className="mt-0.5" />
-                Autorizo o envio do texto acima (nunca áudio) para a Anthropic (IA) gerar um resumo. O texto pode conter dados identificáveis do paciente se você os escrever.
+                Autorizo o envio do texto acima (nunca áudio) para o Google (Gemini, IA) gerar um resumo. O texto pode conter dados identificáveis do paciente se você os escrever.
               </label>
 
               <Btn
