@@ -20,12 +20,28 @@ port = 54323
 
 [auth]
 enabled = true
-# Set to your real app URL once deployed (e.g. https://mindcare.example.com) — used to build
-# confirmation/recovery e-mail links (resetPasswordForEmail's redirectTo, signUp confirmation, etc.).
-site_url = "http://localhost:5173"
-additional_redirect_urls = ["http://localhost:5173"]
+# Used to build confirmation/recovery e-mail links (resetPasswordForEmail's redirectTo, signUp
+# confirmation, etc.) and to validate OAuth/redirect callbacks.
+site_url = "https://mente-sa-woad.vercel.app"
+additional_redirect_urls = ["https://mente-sa-woad.vercel.app", "http://localhost:5173"]
 jwt_expiry = 3600
 enable_signup = true
+
+# Routes Auth e-mails (confirmation, password recovery, etc.) through Resend's SMTP relay instead
+# of Supabase's shared low-volume sender. Reuses the same RESEND_API_KEY already used by the
+# booking-confirmation Edge Functions — set it in your shell before running `supabase config push`
+# (never hardcode the actual key here; `env(...)` reads it from the environment at push time).
+[auth.email.smtp]
+enabled = true
+host = "smtp.resend.com"
+port = 465
+user = "resend"
+pass = "env(RESEND_API_KEY)"
+# Must be a sender Resend has verified for your account — the same address you set as EMAIL_FROM
+# for the Edge Functions (Resend's sandbox domain onboarding@resend.dev works if you haven't
+# verified your own domain yet). Update this to match.
+admin_email = "onboarding@resend.dev"
+sender_name = "MindCare"
 
 [storage]
 enabled = true
