@@ -83,10 +83,24 @@
 
   Usa `supabase.auth.resetPasswordForEmail` + `supabase.auth.updateUser`, ambos nativos do
   Supabase Auth — não precisa de nenhuma chave nova. O único pré-requisito é que o **envio de
-  e-mail esteja habilitado no projeto Supabase** (Authentication → Emails no dashboard). O Supabase
-  já vem com um serviço de e-mail básico por padrão (bom para testar), mas para produção configure
-  um provedor SMTP próprio lá (Authentication → Settings → SMTP Settings), senão o volume de
-  e-mails transacionais é bem limitado.
+  e-mail esteja habilitado no projeto Supabase** (Authentication → Emails no dashboard). Sem SMTP
+  próprio configurado (veja abaixo), o Supabase usa um serviço de e-mail compartilhado com limite
+  bem baixo — cadastro/recuperação de senha passam a falhar com "email rate limit exceeded" depois
+  de poucos envios.
+
+  ### SMTP próprio (Resend)
+
+  `supabase/config.toml` já tem `[auth.email.smtp]` configurado pra usar o Resend (mesma
+  `RESEND_API_KEY` das Edge Functions, via `env()` — nunca hardcoded no arquivo). Isso tira os
+  e-mails do Auth (confirmação de cadastro, recuperação de senha) do limite baixo do serviço
+  padrão do Supabase.
+
+  Para ativar:
+  1. Crie uma conta em https://resend.com e gere uma API key (Sending access basta).
+  2. `export RESEND_API_KEY=re_sua_chave` no seu terminal.
+  3. `npx supabase config push` — aplica `site_url`, `additional_redirect_urls` e o SMTP de uma vez.
+  4. Se você verificar um domínio próprio no Resend, atualize `admin_email` em
+     `supabase/config.toml` (está usando o domínio de teste `onboarding@resend.dev` por padrão).
 
   ### Vídeo real (Daily.co)
 
