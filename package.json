@@ -13,9 +13,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@daily-co/daily-js": "^0.68.0",
     "@sentry/react": "^8.55.2",
     "@supabase/supabase-js": "2.110.0",
+    "livekit-client": "^2.20.0",
     "lucide-react": "0.487.0",
     "recharts": "2.15.2",
     "tw-animate-css": "1.3.8"

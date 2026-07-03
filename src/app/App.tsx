@@ -9,7 +9,7 @@ import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
-import { getDailyRoomAccess, type DailyRoomAccess } from "../lib/video";
+import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
 import type { VerificationStatus } from "../lib/database.types";
@@ -2850,34 +2850,215 @@ type VideoAppointment = {
   roomUrl: string | null;
 };
 
-function DailyCallFrame({ roomUrl, token, onLeave }: { roomUrl: string; token: string; onLeave: () => void }) {
-  const containerRef = useRef<HTMLDivElement>(null);
+function LiveKitCallFrame({ serverUrl, token, currentUserName, otherPartyName, onLeave }: {
+  serverUrl: string;
+  token: string;
+  currentUserName: string;
+  otherPartyName: string;
+  onLeave: () => void;
+}) {
+  const roomRef = useRef<import("livekit-client").Room | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+
+  const [micOn, setMicOn] = useState(true);
+  const [camOn, setCamOn] = useState(true);
+  const [screenOn, setScreenOn] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [msg, setMsg] = useState("");
+  const [messages, setMessages] = useState<{ from: string; text: string; time: string }[]>([]);
+  const [remoteJoined, setRemoteJoined] = useState(false);
+  const [connectError, setConnectError] = useState("");
+
+  const nowLabel = () => new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
   useEffect(() => {
-    if (!containerRef.current) return;
     let destroyed = false;
-    let callFrame: Awaited<ReturnType<typeof import("@daily-co/daily-js").default.createFrame>> | null = null;
 
-    // Loaded on demand — daily-js is a sizable dependency only ever needed on this screen.
-    void import("@daily-co/daily-js").then(({ default: DailyIframe }) => {
-      if (destroyed || !containerRef.current) return;
+    // Loaded on demand — livekit-client is a sizable dependency only ever needed on this screen.
+    void (async () => {
+      const { Room, RoomEvent, Track } = await import("livekit-client");
+      if (destroyed) return;
 
-      callFrame = DailyIframe.createFrame(containerRef.current, {
-        showLeaveButton: true,
-        iframeStyle: { width: "100%", height: "100%", border: "0" },
+      const room = new Room({ adaptiveStream: true, dynacast: true });
+      roomRef.current = room;
+
+      room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+        if (participant.isLocal) return;
+        if (track.kind === Track.Kind.Video && remoteVideoRef.current) track.attach(remoteVideoRef.current);
+        if (track.kind === Track.Kind.Audio && remoteAudioRef.current) track.attach(remoteAudioRef.current);
+        setRemoteJoined(true);
       });
 
-      void callFrame.join({ url: roomUrl, token });
-      callFrame.on("left-meeting", onLeave);
-    });
+      room.on(RoomEvent.TrackUnsubscribed, track => track.detach());
+      room.on(RoomEvent.ParticipantDisconnected, () => setRemoteJoined(false));
+
+      room.on(RoomEvent.DataReceived, (payload, participant) => {
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload));
+          setMessages(prev => [...prev, { from: participant?.name || otherPartyName, text: data.text, time: nowLabel() }]);
+        } catch {
+          // Ignore malformed data-channel payloads — chat is a nice-to-have, not worth crashing the call.
+        }
+      });
+
+      room.on(RoomEvent.Disconnected, () => { if (!destroyed) onLeave(); });
+
+      try {
+        await room.connect(serverUrl, token);
+        if (destroyed) { room.disconnect(); return; }
+        await room.localParticipant.setMicrophoneEnabled(true);
+        const camPub = await room.localParticipant.setCameraEnabled(true);
+        if (camPub?.track && localVideoRef.current) camPub.track.attach(localVideoRef.current);
+        setRemoteJoined(room.remoteParticipants.size > 0);
+      } catch (error) {
+        if (!destroyed) setConnectError(error instanceof Error ? error.message : "Não foi possível conectar à sala.");
+      }
+    })();
 
     return () => {
       destroyed = true;
-      callFrame?.destroy();
+      roomRef.current?.disconnect();
+      roomRef.current = null;
     };
-  }, [roomUrl, token]);
+  }, [serverUrl, token]);
 
-  return <div ref={containerRef} className="flex-1" />;
+  const toggleMic = async () => {
+    const next = !micOn;
+    setMicOn(next);
+    await roomRef.current?.localParticipant.setMicrophoneEnabled(next);
+  };
+
+  const toggleCam = async () => {
+    const next = !camOn;
+    setCamOn(next);
+    const pub = await roomRef.current?.localParticipant.setCameraEnabled(next);
+    if (next && pub?.track && localVideoRef.current) pub.track.attach(localVideoRef.current);
+  };
+
+  const toggleScreenShare = async () => {
+    const next = !screenOn;
+    setScreenOn(next);
+    await roomRef.current?.localParticipant.setScreenShareEnabled(next);
+  };
+
+  const sendMessage = () => {
+    if (!msg.trim() || !roomRef.current) return;
+    const payload = new TextEncoder().encode(JSON.stringify({ text: msg.trim() }));
+    void roomRef.current.localParticipant.publishData(payload, { reliable: true });
+    setMessages(prev => [...prev, { from: "Você", text: msg.trim(), time: nowLabel() }]);
+    setMsg("");
+  };
+
+  const handleLeave = () => {
+    roomRef.current?.disconnect();
+    onLeave();
+  };
+
+  if (connectError) {
+    return (
+      <div className="h-screen bg-[#0D1117] flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Não foi possível entrar na sala</h2>
+          <p className="text-sm text-muted-foreground mb-4">{connectError}</p>
+          <Btn variant="primary" onClick={onLeave}>Voltar</Btn>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-3 bg-[#161B22] border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center"><Brain size={14} className="text-white" /></div>
+          <span className="text-white font-semibold text-sm font-display">MindCare · Videoconsulta</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className={`w-2 h-2 rounded-full ${remoteJoined ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+          <span className={`text-xs font-medium ${remoteJoined ? "text-green-400" : "text-amber-400"}`}>
+            {remoteJoined ? `Sala com ${otherPartyName}` : `Aguardando ${otherPartyName}...`}
+          </span>
+        </div>
+        <Badge variant="success">Criptografado</Badge>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 relative flex items-center justify-center p-6">
+          <div className="w-full max-w-4xl aspect-video bg-[#1C2128] rounded-3xl overflow-hidden relative">
+            <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
+            <audio ref={remoteAudioRef} autoPlay />
+            {!remoteJoined && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <p className="text-white/50 text-sm">Aguardando {otherPartyName} entrar...</p>
+              </div>
+            )}
+            <div className="absolute bottom-4 left-4 bg-black/50 backdrop-blur-sm rounded-xl px-3 py-1.5 flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${remoteJoined ? "bg-emerald-400" : "bg-white/30"}`} />
+              <span className="text-white text-xs font-medium">{otherPartyName}</span>
+            </div>
+          </div>
+
+          <div className="absolute bottom-10 right-10 w-44 aspect-video bg-[#1C2128] rounded-2xl overflow-hidden border-2 border-white/20 shadow-xl">
+            {camOn ? (
+              <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center"><Avatar name={currentUserName} size="md" /></div>
+            )}
+            <div className="absolute bottom-2 left-2 bg-black/50 rounded-lg px-2 py-0.5">
+              <span className="text-white text-xs">Você</span>
+            </div>
+          </div>
+        </div>
+
+        {chatOpen && (
+          <div className="w-72 bg-[#161B22] border-l border-white/10 flex flex-col">
+            <div className="p-4 border-b border-white/10">
+              <h3 className="text-white text-sm font-semibold">Chat da sessão</h3>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {messages.length === 0 && <p className="text-xs text-white/30">Nenhuma mensagem ainda.</p>}
+              {messages.map((m, i) => (
+                <div key={i}>
+                  <p className="text-xs text-white/40 mb-1">{m.from} · {m.time}</p>
+                  <div className={`rounded-xl px-3 py-2 text-xs text-white leading-relaxed ${m.from === "Você" ? "bg-primary ml-4" : "bg-white/10"}`}>{m.text}</div>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-white/10">
+              <div className="flex gap-2">
+                <input
+                  value={msg}
+                  onChange={e => setMsg(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") sendMessage(); }}
+                  placeholder="Mensagem..."
+                  className="flex-1 bg-white/10 text-white text-xs rounded-xl px-3 py-2 placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <button onClick={sendMessage} className="w-8 h-8 bg-primary rounded-xl flex items-center justify-center"><Send size={14} className="text-white" /></button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-center gap-4 py-5 bg-[#161B22] border-t border-white/10">
+        <button onClick={() => void toggleMic()} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${micOn ? "bg-white/10 hover:bg-white/20" : "bg-red-500/80"}`}>
+          {micOn ? <Mic size={20} className="text-white" /> : <MicOff size={20} className="text-white" />}
+        </button>
+        <button onClick={() => void toggleCam()} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${camOn ? "bg-white/10 hover:bg-white/20" : "bg-red-500/80"}`}>
+          {camOn ? <Camera size={20} className="text-white" /> : <X size={20} className="text-white" />}
+        </button>
+        <button className="w-14 h-14 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center shadow-lg transition-all" onClick={handleLeave}>
+          <PhoneOff size={22} className="text-white" />
+        </button>
+        <button onClick={() => void toggleScreenShare()} className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${screenOn ? "bg-primary" : "bg-white/10 hover:bg-white/20"}`}>
+          <Monitor size={20} className="text-white" />
+        </button>
+        <button onClick={() => setChatOpen(!chatOpen)} className="w-12 h-12 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center"><MessageSquare size={20} className="text-white" /></button>
+      </div>
+    </div>
+  );
 }
 
 function VideoScreen({ onNavigate, currentUser, appointmentId }: {
@@ -2892,7 +3073,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
   const [appointment, setAppointment] = useState<VideoAppointment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [dailyAccess, setDailyAccess] = useState<DailyRoomAccess | null>(null);
+  const [liveKitAccess, setLiveKitAccess] = useState<LiveKitRoomAccess | null>(null);
 
   const exitScreen: Screen = currentUser.role === "professional" ? "pro-dashboard" : "patient-dashboard";
 
@@ -2926,10 +3107,10 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
         ? item.profiles?.full_name ?? "Paciente"
         : item.professional_profiles?.profiles?.full_name ?? "Profissional";
 
-      // Tries Daily.co first (real video); falls back to the mock room below if it's not configured.
-      const access = await getDailyRoomAccess(appointmentId);
+      // Tries LiveKit first (real video); falls back to the mock room below if it's not configured.
+      const access = await getLiveKitRoomAccess(appointmentId);
       if (!active) return;
-      setDailyAccess(access);
+      setLiveKitAccess(access);
 
       let { data: room } = await supabase
         .from("video_rooms")
@@ -2937,7 +3118,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
         .eq("appointment_id", appointmentId)
         .maybeSingle();
 
-      if (!room) {
+      if (!room && !access) {
         const roomId = `room-${appointmentId}`;
         const { data: createdRoom } = await supabase
           .from("video_rooms")
@@ -2948,7 +3129,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
       }
 
       if (!active) return;
-      setAppointment({ otherPartyName, scheduledAt: item.scheduled_at, roomUrl: access?.roomUrl ?? room?.room_url ?? null });
+      setAppointment({ otherPartyName, scheduledAt: item.scheduled_at, roomUrl: room?.room_url ?? null });
       setLoading(false);
     })();
 
@@ -2989,19 +3170,15 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
     );
   }
 
-  if (dailyAccess) {
+  if (liveKitAccess) {
     return (
-      <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-3 bg-[#161B22] border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center"><Brain size={14} className="text-white" /></div>
-            <span className="text-white font-semibold text-sm font-display">MindCare · Videoconsulta</span>
-          </div>
-          <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" /><span className="text-green-400 text-xs font-medium">Sala com {appointment.otherPartyName}</span></div>
-          <Badge variant="success">Criptografado</Badge>
-        </div>
-        <DailyCallFrame roomUrl={dailyAccess.roomUrl} token={dailyAccess.token} onLeave={() => onNavigate(exitScreen)} />
-      </div>
+      <LiveKitCallFrame
+        serverUrl={liveKitAccess.serverUrl}
+        token={liveKitAccess.token}
+        currentUserName={currentUser.fullName}
+        otherPartyName={appointment.otherPartyName}
+        onLeave={() => onNavigate(exitScreen)}
+      />
     );
   }
 

@@ -65,7 +65,7 @@
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
-  - [x] Vídeo real (Daily.co)
+  - [x] Vídeo real (LiveKit)
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
@@ -106,20 +106,33 @@
   4. Se você verificar um domínio próprio no Resend, atualize `admin_email` em
      `supabase/config.toml` (está usando o domínio de teste `onboarding@resend.dev` por padrão).
 
-  ### Vídeo real (Daily.co)
+  ### Vídeo real (LiveKit)
 
-  `supabase/functions/daily-room-access` cria (ou reaproveita) uma sala privada no Daily.co por
-  consulta e emite um token de acesso de curta duração (4h) para quem está chamando — o
-  `DAILY_API_KEY` nunca chega ao navegador. No cliente, `VideoScreen` chama essa função ao entrar
-  na sala; se der certo, embute o iframe do Daily (`@daily-co/daily-js`, carregado sob demanda só
-  nessa tela) com a UI completa deles (câmera, mic, chat, compartilhar tela). **Se a função não
-  estiver implantada ou a chave não estiver configurada, a tela cai de volta pro mock anterior**
-  (imagem estática + sala fake) — nada quebra, só não tem vídeo real.
+  `supabase/functions/livekit-room-access` gera um token de acesso assinado (JWT HS256, feito à
+  mão em `_shared/livekitToken.ts` — evita depender do `livekit-server-sdk`, pensado pra Node,
+  dentro do runtime Deno das Edge Functions) de curta duração (4h) por consulta; `LIVEKIT_API_SECRET`
+  nunca chega ao navegador. Diferente do provedor anterior, o LiveKit não precisa de uma chamada
+  separada pra "criar a sala" — o próprio token com a grant `roomCreate` deixa o servidor do
+  LiveKit criar a sala na hora que o primeiro participante entra.
+
+  No cliente, `VideoScreen` chama essa função ao entrar na sala; se der certo, `LiveKitCallFrame`
+  conecta com `livekit-client` (carregado sob demanda só nessa tela) e renderiza uma UI própria
+  (câmera local/remota, mic, câmera, compartilhar tela e chat de verdade via canal de dados do
+  LiveKit) em vez de um iframe de terceiro — mantém a identidade visual do app. **Se a função não
+  estiver implantada ou os secrets não estiverem configurados, a tela cai de volta pro mock
+  anterior** (imagem estática + sala fake) — nada quebra, só não tem vídeo real.
 
   Para ativar:
-  1. Crie uma conta em https://daily.co e pegue a API key.
-  2. `supabase functions deploy daily-room-access`
-  3. `supabase secrets set DAILY_API_KEY=...`
+  1. Crie uma conta em https://livekit.io/cloud (tem tier gratuito) e pegue a **API Key**, o
+     **API Secret** e a **URL do projeto** (formato `wss://seu-projeto.livekit.cloud`).
+  2. `supabase functions deploy livekit-room-access`
+  3. `supabase secrets set LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=... LIVEKIT_URL=wss://seu-projeto.livekit.cloud`
+
+  **Pré-requisito pra testar de ponta a ponta:** a função só emite token se a consulta já tiver um
+  registro em `payments` com `status = 'paid'` (mesma trava que existia com o provedor anterior,
+  ver "Revisão de segurança final") — sem isso, cai no mock mesmo com o LiveKit configurado. No MVP
+  sem Mercado Pago configurado, o checkout mock (`mockPaymentProvider`) já grava esse registro, então
+  basta completar um agendamento normalmente pra testar o vídeo real.
 
   ### Pagamento real (Mercado Pago)
 
@@ -313,7 +326,7 @@
   |---|---|---|
   | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
   | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
-  | `DAILY_API_KEY` | Secret da função Edge (`supabase secrets set`) | Sala de vídeo real (Daily.co). Sem ela, cai no mock. |
+  | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_URL` | Secrets da função Edge (`supabase secrets set`) | Sala de vídeo real (LiveKit). Sem eles, cai no mock. |
   | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
   | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
   | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |

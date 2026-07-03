@@ -37,7 +37,7 @@ jobs:
 
       - name: Deploy Edge Functions
         run: |
-          supabase functions deploy daily-room-access
+          supabase functions deploy livekit-room-access
           supabase functions deploy create-mp-preference
           supabase functions deploy mercadopago-webhook --no-verify-jwt
           supabase functions deploy send-booking-confirmation

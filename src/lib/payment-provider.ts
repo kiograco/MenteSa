@@ -47,7 +47,7 @@ export const mockPaymentProvider: PaymentProvider = {
  * Real payment path: asks the create-mp-preference Edge Function for a Mercado Pago Checkout Pro
  * URL and returns it so the caller can redirect the browser there. Returns null (never throws)
  * when the function isn't deployed/configured yet, so CheckoutScreen can fall back to the mock
- * flow — same graceful-degradation pattern used for Daily.co video.
+ * flow — same graceful-degradation pattern used for LiveKit video.
  */
 export async function createMercadoPagoCheckout(appointmentId: string): Promise<string | null> {
   const { data, error } = await supabase.functions.invoke<{ initPoint?: string }>("create-mp-preference", {

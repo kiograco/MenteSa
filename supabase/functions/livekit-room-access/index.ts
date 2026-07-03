@@ -1,10 +1,12 @@
-// Supabase Edge Function: creates (or reuses) a private Daily.co room for an appointment and
-// issues a short-lived meeting token for the calling participant. DAILY_API_KEY never reaches
-// the browser — only this function talks to Daily's API.
+// Supabase Edge Function: issues a short-lived LiveKit access token for a participant of a paid
+// appointment. LIVEKIT_API_SECRET never reaches the browser — only this function signs tokens.
+// Unlike Daily.co, LiveKit doesn't need a separate "create room" call: the token's roomCreate
+// grant lets the room server auto-create the room on first join.
 //
-// Deploy: supabase functions deploy daily-room-access
-// Secret:  supabase secrets set DAILY_API_KEY=...
+// Deploy: supabase functions deploy livekit-room-access
+// Secrets: supabase secrets set LIVEKIT_API_KEY=... LIVEKIT_API_SECRET=... LIVEKIT_URL=wss://your-project.livekit.cloud
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { createLiveKitToken } from "../_shared/livekitToken.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -28,8 +30,12 @@ Deno.serve(async req => {
     const { appointmentId } = await req.json();
     if (!appointmentId) return json({ error: "appointmentId is required." }, 400);
 
-    const dailyApiKey = Deno.env.get("DAILY_API_KEY");
-    if (!dailyApiKey) return json({ error: "DAILY_API_KEY não configurada nos secrets da função." }, 500);
+    const apiKey = Deno.env.get("LIVEKIT_API_KEY");
+    const apiSecret = Deno.env.get("LIVEKIT_API_SECRET");
+    const serverUrl = Deno.env.get("LIVEKIT_URL");
+    if (!apiKey || !apiSecret || !serverUrl) {
+      return json({ error: "LiveKit não configurado nos secrets da função." }, 500);
+    }
 
     // Forwards the caller's own JWT so RLS decides whether they're actually a participant.
     const supabase = createClient(
@@ -50,8 +56,8 @@ Deno.serve(async req => {
     if (apptError || !appointment) return json({ error: "Consulta não encontrada ou acesso negado." }, 404);
 
     // A real video room/token must never be handed out for an unpaid appointment — appointments
-    // are created (status "scheduled") before the patient finishes Mercado Pago checkout, so
-    // "the appointment exists" alone is not proof of payment.
+    // are created (status "scheduled") before the patient finishes checkout, so "the appointment
+    // exists" alone is not proof of payment.
     const { data: payment } = await supabase
       .from("payments")
       .select("id")
@@ -66,65 +72,34 @@ Deno.serve(async req => {
       ? item.profiles?.full_name ?? "Paciente"
       : item.professional_profiles?.profiles?.full_name ?? "Profissional";
 
+    const roomName = `mindcare-${appointmentId}`;
+
+    // Recorded for consistency with the rest of the schema (video_rooms already existed for the
+    // previous provider) — not required for LiveKit to work, but keeps an audit trail per consulta.
     const { data: existingRoom } = await supabase
       .from("video_rooms")
-      .select("room_url, provider_room_id")
+      .select("id")
       .eq("appointment_id", appointmentId)
       .maybeSingle();
 
-    let roomUrl = existingRoom?.room_url;
-    let roomName = existingRoom?.provider_room_id;
-
-    if (!roomUrl) {
-      const roomResponse = await fetch("https://api.daily.co/v1/rooms", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${dailyApiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `mindcare-${appointmentId}`,
-          privacy: "private",
-          properties: {
-            exp: Math.floor(Date.now() / 1000) + 60 * 60 * 4, // room usable for 4h
-            enable_chat: true,
-            enable_screenshare: true,
-          },
-        }),
-      });
-
-      if (!roomResponse.ok) {
-        return json({ error: `Falha ao criar sala no Daily.co: ${await roomResponse.text()}` }, 502);
-      }
-
-      const room = await roomResponse.json();
-      roomUrl = room.url;
-      roomName = room.name;
-
-      const { error: insertError } = await supabase.from("video_rooms").insert({
+    if (!existingRoom) {
+      await supabase.from("video_rooms").insert({
         appointment_id: appointmentId,
-        room_url: roomUrl,
+        room_url: serverUrl,
         provider_room_id: roomName,
       });
-      if (insertError) return json({ error: insertError.message }, 500);
     }
 
-    const tokenResponse = await fetch("https://api.daily.co/v1/meeting-tokens", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${dailyApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        properties: {
-          room_name: roomName,
-          user_name: displayName,
-          exp: Math.floor(Date.now() / 1000) + 60 * 60 * 4,
-        },
-      }),
+    const token = await createLiveKitToken({
+      apiKey,
+      apiSecret,
+      identity: userData.user.id,
+      name: displayName,
+      room: roomName,
+      ttlSeconds: 60 * 60 * 4, // 4h, matches the appointment's expected max duration
     });
 
-    if (!tokenResponse.ok) {
-      return json({ error: `Falha ao gerar token de acesso: ${await tokenResponse.text()}` }, 502);
-    }
-
-    const { token } = await tokenResponse.json();
-
-    return json({ roomUrl, token });
+    return json({ serverUrl, token, roomName });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "Erro desconhecido." }, 500);
   }
