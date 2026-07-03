@@ -13,7 +13,7 @@
 
   Copy `.env.example` to `.env` and fill `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 
-  Apply `supabase/migrations/20260702000000_init_schema.sql`, then run `supabase/seed.sql` to create fake demo users and verified professionals.
+  Apply the migrations in `supabase/migrations/` in order, then run `supabase/seed.sql` to create fake demo users and verified professionals.
 
   Demo users:
 

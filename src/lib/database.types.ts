@@ -25,6 +25,7 @@ export interface Database {
           full_name: string;
         };
         Update: Partial<Database["public"]["Tables"]["profiles"]["Row"]>;
+        Relationships: [];
       };
       professional_profiles: {
         Row: {
@@ -48,6 +49,7 @@ export interface Database {
           license_number: string;
         };
         Update: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]>;
+        Relationships: [];
       };
       professional_availability: {
         Row: {
@@ -65,6 +67,7 @@ export interface Database {
           end_time: string;
         };
         Update: Partial<Database["public"]["Tables"]["professional_availability"]["Row"]>;
+        Relationships: [];
       };
       appointments: {
         Row: {
@@ -85,6 +88,7 @@ export interface Database {
           price: number;
         };
         Update: Partial<Database["public"]["Tables"]["appointments"]["Row"]>;
+        Relationships: [];
       };
       payments: {
         Row: {
@@ -102,6 +106,7 @@ export interface Database {
           amount: number;
         };
         Update: Partial<Database["public"]["Tables"]["payments"]["Row"]>;
+        Relationships: [];
       };
       session_notes: {
         Row: {
@@ -118,6 +123,7 @@ export interface Database {
           professional_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["session_notes"]["Row"]>;
+        Relationships: [];
       };
       video_rooms: {
         Row: {
@@ -133,6 +139,7 @@ export interface Database {
           provider_room_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["video_rooms"]["Row"]>;
+        Relationships: [];
       };
       reviews: {
         Row: {
@@ -151,7 +158,12 @@ export interface Database {
           rating: number;
         };
         Update: Partial<Database["public"]["Tables"]["reviews"]["Row"]>;
+        Relationships: [];
       };
     };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
   };
 }

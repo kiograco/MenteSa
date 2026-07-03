@@ -33,6 +33,15 @@ type AuthenticatedScreenProps = {
   onSignOut: () => void;
 };
 
+type BookingDraft = {
+  professionalId: string;
+  professionalName: string;
+  professionalRole: string;
+  professionalImg: string;
+  price: number;
+  scheduledAt: string; // ISO timestamp
+};
+
 type DirectoryProfessional = {
   id?: string;
   name: string;
@@ -520,7 +529,7 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
 // ─── SCREEN: Directory ────────────────────────────────────────────────────────
 
-function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: Screen) => void; onSelectProfessional: (id: string) => void }) {
   const [search, setSearch] = useState("");
   const [citySearch, setCitySearch] = useState("");
   const [modality, setModality] = useState("all");
@@ -529,15 +538,6 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [dbProfessionals, setDbProfessionals] = useState<DirectoryProfessional[]>([]);
   const [loadingProfessionals, setLoadingProfessionals] = useState(false);
   const [professionalsError, setProfessionalsError] = useState("");
-
-  const professionals = [
-    { name: "Dra. Fernanda Costa", role: "Psicóloga Clínica", crp: "CRP 06/12345", img: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=200&h=200&fit=crop&auto=format", rating: 4.9, reviews: 134, price: 180, modalities: ["Online", "Presencial"], specialties: ["Ansiedade", "Depressão", "TCC"], city: "São Paulo, SP", wait: "Disponível hoje", approaches: ["TCC", "ACT"] },
-    { name: "Dr. Rafael Mendes", role: "Psiquiatra", crm: "CRM 35/87654", img: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=200&h=200&fit=crop&auto=format", rating: 4.8, reviews: 89, price: 350, modalities: ["Online", "Presencial"], specialties: ["TDAH", "Transtorno Bipolar"], city: "Rio de Janeiro, RJ", wait: "Amanhã", approaches: ["Farmacoterapia"] },
-    { name: "Dra. Lara Viana", role: "Psicóloga", crp: "CRP 08/45678", img: "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format", rating: 5.0, reviews: 203, price: 150, modalities: ["Online"], specialties: ["Trauma", "EMDR", "Luto"], city: "Online", wait: "Disponível hoje", approaches: ["EMDR", "Psicanálise"] },
-    { name: "Dr. Carlos Rocha", role: "Psicólogo Organizacional", crp: "CRP 04/98765", img: "https://images.unsplash.com/photo-1582750433449-648ed127bb54?w=200&h=200&fit=crop&auto=format", rating: 4.7, reviews: 67, price: 200, modalities: ["Presencial"], specialties: ["Burnout", "Carreira"], city: "Belo Horizonte, MG", wait: "Esta semana", approaches: ["Cognitivo-Comportamental"] },
-    { name: "Dra. Priya Sharma", role: "Psicóloga Infantil", crp: "CRP 06/33344", img: "https://images.unsplash.com/photo-1594824476967-48c8b964273f?w=200&h=200&fit=crop&auto=format", rating: 4.9, reviews: 112, price: 170, modalities: ["Online", "Presencial"], specialties: ["Autismo", "TDAH infantil"], city: "São Paulo, SP", wait: "Disponível hoje", approaches: ["ABA", "TCC"] },
-    { name: "Dr. André Lima", role: "Psiquiatra", crm: "CRM 26/11223", img: "https://images.unsplash.com/photo-1607990281513-2c110a25bd8c?w=200&h=200&fit=crop&auto=format", rating: 4.6, reviews: 45, price: 400, modalities: ["Online"], specialties: ["Esquizofrenia", "TOC"], city: "Online", wait: "Próxima semana", approaches: ["Farmacoterapia", "Psicoeducação"] },
-  ];
 
   useEffect(() => {
     let active = true;
@@ -679,7 +679,7 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         )}
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
           {filtered.map((p, i) => (
-            <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => onNavigate("profile")}>
+            <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => { if (p.id) { onSelectProfessional(p.id); onNavigate("profile"); } }}>
               <div className="flex gap-4 mb-4">
                 <img src={p.img} alt={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -728,12 +728,197 @@ function DirectoryPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
 // ─── SCREEN: Professional Profile ─────────────────────────────────────────────
 
-function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+type ProfileData = {
+  id: string;
+  name: string;
+  role: string;
+  license: string;
+  bio: string;
+  specialties: string[];
+  approaches: string[];
+  insurances: string[];
+  city: string;
+  yearsExperience: number;
+  price: number;
+  modalities: string[];
+  img: string;
+};
+
+const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+
+function ProfilePage({ onNavigate, professionalId, onBook }: {
+  onNavigate: (s: Screen) => void;
+  professionalId: string | null;
+  onBook: (draft: BookingDraft) => void;
+}) {
   const [tab, setTab] = useState("sobre");
+  const [pro, setPro] = useState<ProfileData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [availability, setAvailability] = useState<{ weekday: number | null; start_time: string; end_time: string }[]>([]);
+  const [bookedTimes, setBookedTimes] = useState<Set<string>>(new Set());
+  const [reviews, setReviews] = useState<{ name: string; rating: number; comment: string | null }[]>([]);
+  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
 
-  const slots = ["08:00", "09:00", "11:00", "14:00", "15:00", "16:00", "17:00"];
-  const days = ["Seg 07", "Ter 08", "Qua 09", "Qui 10", "Sex 11"];
+  useEffect(() => {
+    setPro(null);
+    setSelectedDay(null);
+    setSelectedSlot(null);
+
+    if (!professionalId) {
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+    setLoadError("");
+
+    (async () => {
+      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }] = await Promise.all([
+        supabase
+          .from("professional_profiles")
+          .select("id, bio, specialties, approaches, license_type, license_number, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
+          .eq("id", professionalId)
+          .maybeSingle(),
+        supabase
+          .from("professional_availability")
+          .select("weekday, start_time, end_time")
+          .eq("professional_id", professionalId)
+          .not("weekday", "is", null),
+        supabase
+          .from("reviews")
+          .select("rating, comment, profiles(full_name)")
+          .eq("professional_id", professionalId)
+          .order("created_at", { ascending: false })
+          .limit(10),
+      ]);
+
+      if (!active) return;
+
+      if (proError || !proData) {
+        setLoadError("Não foi possível carregar este profissional.");
+        setLoading(false);
+        return;
+      }
+
+      const item: any = proData;
+      setPro({
+        id: item.id,
+        name: item.profiles?.full_name ?? "Profissional verificado",
+        role: item.license_type === "CRM" ? "Psiquiatra" : "Psicólogo(a)",
+        license: `${item.license_type ?? "CRP"} ${item.license_number}`,
+        bio: item.bio ?? "Este profissional ainda não adicionou uma biografia.",
+        specialties: item.specialties?.length ? item.specialties : ["Psicoterapia"],
+        approaches: item.approaches ?? [],
+        insurances: item.insurances?.length ? item.insurances : ["Particular"],
+        city: item.city && item.state ? `${item.city}, ${item.state}` : item.city ?? "Online",
+        yearsExperience: Number(item.years_experience ?? 0),
+        price: Number(item.session_price ?? 0),
+        modalities: (item.modalities ?? []).map((v: string) => (v === "online" ? "Online" : "Presencial")),
+        img: item.profiles?.avatar_url ?? "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?w=200&h=200&fit=crop&auto=format",
+      });
+      setAvailability((availData ?? []) as any);
+      setReviews(((reviewData ?? []) as any[]).map(r => ({ name: r.profiles?.full_name ?? "Paciente", rating: r.rating, comment: r.comment })));
+
+      const now = new Date();
+      const in14Days = new Date();
+      in14Days.setDate(now.getDate() + 14);
+      const { data: existing } = await supabase
+        .from("appointments")
+        .select("scheduled_at")
+        .eq("professional_id", professionalId)
+        .eq("status", "scheduled")
+        .gte("scheduled_at", now.toISOString())
+        .lte("scheduled_at", in14Days.toISOString());
+
+      if (active) setBookedTimes(new Set((existing ?? []).map(a => a.scheduled_at)));
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [professionalId]);
+
+  const upcomingDays = Array.from({ length: 14 }).map((_, i) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + i);
+    return d;
+  }).filter(d => availability.some(a => a.weekday === d.getDay())).slice(0, 5);
+
+  const slotsForDay = (day: Date) => {
+    const dayAvailability = availability.filter(a => a.weekday === day.getDay());
+    const slots: { time: string; iso: string; taken: boolean }[] = [];
+
+    dayAvailability.forEach(a => {
+      const [startH, startM] = a.start_time.split(":").map(Number);
+      const [endH, endM] = a.end_time.split(":").map(Number);
+      let cursorMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+
+      while (cursorMinutes + 50 <= endMinutes) {
+        const slotDate = new Date(day);
+        slotDate.setHours(Math.floor(cursorMinutes / 60), cursorMinutes % 60, 0, 0);
+        const iso = slotDate.toISOString();
+        slots.push({
+          time: `${String(Math.floor(cursorMinutes / 60)).padStart(2, "0")}:${String(cursorMinutes % 60).padStart(2, "0")}`,
+          iso,
+          taken: bookedTimes.has(iso),
+        });
+        cursorMinutes += 50;
+      }
+    });
+
+    return slots;
+  };
+
+  const handleBook = () => {
+    if (!pro || !selectedSlot) return;
+    onBook({
+      professionalId: pro.id,
+      professionalName: pro.name,
+      professionalRole: pro.role,
+      professionalImg: pro.img,
+      price: pro.price,
+      scheduledAt: selectedSlot,
+    });
+    onNavigate("checkout");
+  };
+
+  const goToAvailability = () => setTab("disponibilidade");
+
+  if (!professionalId) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Nenhum profissional selecionado</h2>
+          <p className="text-sm text-muted-foreground mb-4">Volte ao diretório e escolha um profissional verificado para ver o perfil.</p>
+          <Btn variant="primary" onClick={() => onNavigate("directory")}>Ver diretório</Btn>
+        </Card>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return <div className="min-h-screen bg-background flex items-center justify-center text-sm text-muted-foreground">Carregando perfil...</div>;
+  }
+
+  if (loadError || !pro) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Profissional não encontrado</h2>
+          <p className="text-sm text-muted-foreground mb-4">{loadError || "Este perfil pode não estar mais disponível."}</p>
+          <Btn variant="primary" onClick={() => onNavigate("directory")}>Ver diretório</Btn>
+        </Card>
+      </div>
+    );
+  }
+
+  const avgRating = reviews.length ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length : null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -742,32 +927,29 @@ function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <div className="max-w-5xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row gap-8">
             <div className="flex-shrink-0">
-              <img
-                src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=200&h=200&fit=crop&auto=format"
-                alt="Dra. Fernanda Costa"
-                className="w-32 h-32 rounded-3xl object-cover shadow-lg bg-secondary"
-              />
+              <img src={pro.img} alt={pro.name} className="w-32 h-32 rounded-3xl object-cover shadow-lg bg-secondary" />
             </div>
             <div className="flex-1">
               <div className="flex flex-wrap items-start gap-3 mb-2">
-                <h1 className="text-2xl font-bold text-foreground font-display">Dra. Fernanda Costa</h1>
-                <Badge variant="success"><Shield size={12} />CRP 06/12345 Verificado</Badge>
+                <h1 className="text-2xl font-bold text-foreground font-display">{pro.name}</h1>
+                <Badge variant="success"><Shield size={12} />{pro.license} Verificado</Badge>
               </div>
-              <p className="text-muted-foreground mb-3">Psicóloga Clínica · 12 anos de experiência · São Paulo, SP</p>
+              <p className="text-muted-foreground mb-3">{pro.role} · {pro.yearsExperience} anos de experiência · {pro.city}</p>
               <div className="flex flex-wrap gap-2 mb-4">
-                {["Ansiedade", "Depressão", "TCC", "ACT", "Relacionamentos", "Autoestima"].map(s => (
-                  <Badge key={s} variant="outline">{s}</Badge>
-                ))}
+                {pro.specialties.map(s => <Badge key={s} variant="outline">{s}</Badge>)}
               </div>
-              <div className="flex items-center gap-6 text-sm">
-                <span className="flex items-center gap-1.5 font-semibold text-foreground"><Star size={15} className="text-amber-400 fill-amber-400" />4.9 <span className="font-normal text-muted-foreground">(134 avaliações)</span></span>
-                <span className="flex items-center gap-1.5 text-muted-foreground"><Video size={15} className="text-primary" />Online</span>
-                <span className="flex items-center gap-1.5 text-muted-foreground"><MapPin size={15} className="text-primary" />Presencial</span>
-                <span className="font-bold text-foreground font-display">R$180/sessão</span>
+              <div className="flex items-center gap-6 text-sm flex-wrap">
+                <span className="flex items-center gap-1.5 font-semibold text-foreground">
+                  <Star size={15} className="text-amber-400 fill-amber-400" />
+                  {avgRating ? avgRating.toFixed(1) : "Novo"} <span className="font-normal text-muted-foreground">({reviews.length} avaliações)</span>
+                </span>
+                {pro.modalities.includes("Online") && <span className="flex items-center gap-1.5 text-muted-foreground"><Video size={15} className="text-primary" />Online</span>}
+                {pro.modalities.includes("Presencial") && <span className="flex items-center gap-1.5 text-muted-foreground"><MapPin size={15} className="text-primary" />Presencial</span>}
+                <span className="font-bold text-foreground font-display">R${pro.price}/sessão</span>
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <Btn variant="primary" size="lg" onClick={() => onNavigate("checkout")}><Calendar size={16} />Agendar sessão</Btn>
+              <Btn variant="primary" size="lg" onClick={goToAvailability}><Calendar size={16} />Agendar sessão</Btn>
               <Btn variant="outline"><MessageSquare size={16} />Enviar mensagem</Btn>
             </div>
           </div>
@@ -786,68 +968,43 @@ function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         {/* Main content */}
         <div className="lg:col-span-2 space-y-6">
           {tab === "sobre" && (
-            <>
-              <Card className="p-6">
-                <h2 className="font-semibold text-foreground font-display mb-3">Sobre mim</h2>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  Sou psicóloga clínica com mais de 12 anos de experiência atendendo adultos e adolescentes. Me especializo em transtornos de ansiedade, depressão, burnout e questões relacionais. Utilizo principalmente a Terapia Cognitivo-Comportamental (TCC) e a Terapia de Aceitação e Compromisso (ACT).
-                </p>
-                <p className="text-sm text-muted-foreground leading-relaxed mt-3">
-                  Acredito que a terapia é um espaço de acolhimento e crescimento. Meu objetivo é ajudar cada paciente a desenvolver ferramentas práticas para lidar com os desafios da vida e construir uma existência mais plena e significativa.
-                </p>
-              </Card>
-              <Card className="p-6">
-                <h2 className="font-semibold text-foreground font-display mb-4">Formação e Credenciais</h2>
-                <div className="space-y-4">
-                  {[
-                    { icon: <Award size={16} />, title: "Doutorado em Psicologia Clínica", sub: "USP · 2016" },
-                    { icon: <BookOpen size={16} />, title: "Especialização em TCC", sub: "FMUSP · 2013" },
-                    { icon: <Shield size={16} />, title: "CRP 06/12345", sub: "Ativo · Verificado pelo MindCare" },
-                  ].map((c, i) => (
-                    <div key={i} className="flex items-start gap-3">
-                      <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center text-primary flex-shrink-0">{c.icon}</div>
-                      <div><p className="text-sm font-medium text-foreground">{c.title}</p><p className="text-xs text-muted-foreground">{c.sub}</p></div>
-                    </div>
-                  ))}
+            <Card className="p-6">
+              <h2 className="font-semibold text-foreground font-display mb-3">Sobre mim</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{pro.bio}</p>
+            </Card>
+          )}
+
+          {tab === "abordagens" && (
+            <Card className="p-6">
+              <h2 className="font-semibold text-foreground font-display mb-4">Abordagens terapêuticas</h2>
+              {pro.approaches.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {pro.approaches.map(a => <Badge key={a} variant="accent">{a}</Badge>)}
                 </div>
-              </Card>
-            </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Nenhuma abordagem cadastrada ainda.</p>
+              )}
+            </Card>
           )}
 
           {tab === "avaliações" && (
             <Card className="p-6">
               <div className="flex items-center gap-4 mb-6 pb-6 border-b border-border">
                 <div className="text-center">
-                  <p className="text-5xl font-bold text-foreground font-display">4.9</p>
-                  <div className="flex">{Array(5).fill(0).map((_, i) => <Star key={i} size={16} className="text-amber-400 fill-amber-400" />)}</div>
-                  <p className="text-xs text-muted-foreground mt-1">134 avaliações</p>
-                </div>
-                <div className="flex-1 space-y-2">
-                  {[5, 4, 3, 2, 1].map(n => (
-                    <div key={n} className="flex items-center gap-2">
-                      <span className="text-xs w-3 text-muted-foreground">{n}</span>
-                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div className="h-full bg-amber-400 rounded-full" style={{ width: `${[92, 6, 1, 1, 0][5 - n]}%` }} />
-                      </div>
-                    </div>
-                  ))}
+                  <p className="text-5xl font-bold text-foreground font-display">{avgRating ? avgRating.toFixed(1) : "—"}</p>
+                  <div className="flex">{Array(5).fill(0).map((_, i) => <Star key={i} size={16} className={`text-amber-400 ${avgRating && i < Math.round(avgRating) ? "fill-amber-400" : ""}`} />)}</div>
+                  <p className="text-xs text-muted-foreground mt-1">{reviews.length} avaliações</p>
                 </div>
               </div>
-              {[
-                { name: "Mariana S.", date: "Há 2 dias", text: "Atendimento excelente. Fernanda é muito acolhedora e profissional. Recomendo demais!", rating: 5 },
-                { name: "João P.", date: "Há 1 semana", text: "Três meses de terapia e já sinto uma diferença enorme na minha qualidade de vida.", rating: 5 },
-                { name: "Camila R.", date: "Há 2 semanas", text: "Muito competente e empática. A plataforma também facilita muito o agendamento.", rating: 5 },
-              ].map((r, i) => (
+              {reviews.length === 0 && <p className="text-sm text-muted-foreground">Ainda não há avaliações para este profissional.</p>}
+              {reviews.map((r, i) => (
                 <div key={i} className="py-4 border-b border-border last:border-0">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Avatar name={r.name} size="sm" />
-                      <span className="text-sm font-medium text-foreground">{r.name}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground">{r.date}</span>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Avatar name={r.name} size="sm" />
+                    <span className="text-sm font-medium text-foreground">{r.name}</span>
                   </div>
                   <div className="flex mb-2">{Array(r.rating).fill(0).map((_, j) => <Star key={j} size={12} className="text-amber-400 fill-amber-400" />)}</div>
-                  <p className="text-sm text-muted-foreground">{r.text}</p>
+                  {r.comment && <p className="text-sm text-muted-foreground">{r.comment}</p>}
                 </div>
               ))}
             </Card>
@@ -856,24 +1013,45 @@ function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
           {tab === "disponibilidade" && (
             <Card className="p-6">
               <h2 className="font-semibold text-foreground font-display mb-4">Selecione data e horário</h2>
-              <div className="grid grid-cols-5 gap-2 mb-6">
-                {days.map(d => (
-                  <button key={d} className="py-3 rounded-xl text-xs font-medium bg-muted hover:bg-secondary hover:text-primary transition-all text-center">{d}</button>
-                ))}
-              </div>
-              <div className="grid grid-cols-4 gap-2">
-                {slots.map(s => (
-                  <button key={s} onClick={() => setSelectedSlot(s)}
-                    className={`py-2.5 rounded-xl text-xs font-medium transition-all ${selectedSlot === s ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-              {selectedSlot && (
-                <div className="mt-4 p-4 bg-secondary rounded-xl flex items-center justify-between">
-                  <p className="text-sm font-medium text-foreground">Seg 07 · {selectedSlot} · R$180</p>
-                  <Btn variant="primary" size="sm" onClick={() => onNavigate("checkout")}>Confirmar</Btn>
-                </div>
+              {upcomingDays.length === 0 && (
+                <p className="text-sm text-muted-foreground">Este profissional ainda não configurou horários disponíveis.</p>
+              )}
+              {upcomingDays.length > 0 && (
+                <>
+                  <div className="grid grid-cols-5 gap-2 mb-6">
+                    {upcomingDays.map(d => (
+                      <button
+                        key={d.toISOString()}
+                        onClick={() => { setSelectedDay(d); setSelectedSlot(null); }}
+                        className={`py-3 rounded-xl text-xs font-medium text-center transition-all ${selectedDay?.getTime() === d.getTime() ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}
+                      >
+                        {WEEKDAY_LABELS[d.getDay()]} {String(d.getDate()).padStart(2, "0")}
+                      </button>
+                    ))}
+                  </div>
+                  {selectedDay && (
+                    <div className="grid grid-cols-4 gap-2">
+                      {slotsForDay(selectedDay).map(s => (
+                        <button
+                          key={s.iso}
+                          disabled={s.taken}
+                          onClick={() => setSelectedSlot(s.iso)}
+                          className={`py-2.5 rounded-xl text-xs font-medium transition-all ${s.taken ? "bg-muted text-muted-foreground/40 line-through cursor-not-allowed" : selectedSlot === s.iso ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}
+                        >
+                          {s.time}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {selectedDay && selectedSlot && (
+                    <div className="mt-4 p-4 bg-secondary rounded-xl flex items-center justify-between">
+                      <p className="text-sm font-medium text-foreground">
+                        {WEEKDAY_LABELS[selectedDay.getDay()]} {String(selectedDay.getDate()).padStart(2, "0")} · {new Date(selectedSlot).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} · R${pro.price}
+                      </p>
+                      <Btn variant="primary" size="sm" onClick={handleBook}>Confirmar</Btn>
+                    </div>
+                  )}
+                </>
               )}
             </Card>
           )}
@@ -886,34 +1064,27 @@ function ProfilePage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
             <div className="space-y-3 mb-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Sessão individual</span>
-                <span className="font-bold font-display">R$180</span>
+                <span className="font-bold font-display">R${pro.price}</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Modalidade</span>
                 <div className="flex gap-1">
-                  <Badge variant="success">Online</Badge>
-                  <Badge variant="outline">Presencial</Badge>
+                  {pro.modalities.map(m => <Badge key={m} variant={m === "Online" ? "success" : "outline"}>{m}</Badge>)}
                 </div>
               </div>
               <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Disponível</span>
-                <span className="text-emerald-600 font-medium flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full" />Hoje</span>
+                <span className="text-muted-foreground">Horários</span>
+                <span className="text-emerald-600 font-medium flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full" />{upcomingDays.length > 0 ? "Agenda aberta" : "Sem horários"}</span>
               </div>
             </div>
-            <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("checkout")}>
+            <Btn variant="primary" className="w-full justify-center" onClick={goToAvailability}>
               <Calendar size={16} />Agendar agora
             </Btn>
           </Card>
           <Card className="p-5">
             <h3 className="text-sm font-semibold text-foreground mb-3">Convênios aceitos</h3>
             <div className="flex flex-wrap gap-2">
-              {["Particular", "Unimed", "Amil", "SulAmérica"].map(p => <Badge key={p} variant="outline">{p}</Badge>)}
-            </div>
-          </Card>
-          <Card className="p-5">
-            <h3 className="text-sm font-semibold text-foreground mb-3">Idiomas</h3>
-            <div className="flex flex-wrap gap-2">
-              {["Português", "Inglês", "Espanhol"].map(l => <Badge key={l} variant="outline"><Globe size={10} />{l}</Badge>)}
+              {pro.insurances.map(p => <Badge key={p} variant="outline">{p}</Badge>)}
             </div>
           </Card>
         </div>
@@ -1933,40 +2104,69 @@ function PricingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
 
 // ─── SCREEN: Checkout ─────────────────────────────────────────────────────────
 
-function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) => void; currentUser: AppUser }) {
+function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
+  onNavigate: (s: Screen) => void;
+  currentUser: AppUser;
+  bookingDraft: BookingDraft | null;
+}) {
   const [payMethod, setPayMethod] = useState<"pix" | "card" | "sub">("card");
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [checkoutError, setCheckoutError] = useState("");
   const [processingPayment, setProcessingPayment] = useState(false);
+  const [fullName, setFullName] = useState(currentUser.fullName);
+  const [cpf, setCpf] = useState("");
+  const [email, setEmail] = useState(currentUser.email);
+  const [phone, setPhone] = useState("");
+
+  if (!bookingDraft) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <Card className="p-8 text-center max-w-md">
+          <h2 className="font-semibold text-foreground font-display mb-2">Nenhuma sessão selecionada</h2>
+          <p className="text-sm text-muted-foreground mb-4">Escolha um profissional e um horário disponível antes de ir ao checkout.</p>
+          <Btn variant="primary" onClick={() => onNavigate("directory")}>Ver diretório</Btn>
+        </Card>
+      </div>
+    );
+  }
+
+  const scheduledDate = new Date(bookingDraft.scheduledAt);
+  const scheduledLabel = `${scheduledDate.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · ${scheduledDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+
+  const handlePersonalDataSubmit = () => {
+    if (!fullName.trim() || !cpf.trim() || !email.trim() || !phone.trim()) {
+      setCheckoutError("Preencha todos os campos para continuar.");
+      return;
+    }
+    setCheckoutError("");
+    setStep(2);
+  };
 
   const handlePayment = async () => {
     setCheckoutError("");
     setProcessingPayment(true);
 
     try {
-      const { data: professional, error: professionalError } = await supabase
-        .from("professional_profiles")
-        .select("id, session_price")
-        .eq("verification_status", "verified")
-        .limit(1)
+      const { data: conflict } = await supabase
+        .from("appointments")
+        .select("id")
+        .eq("professional_id", bookingDraft.professionalId)
+        .eq("scheduled_at", bookingDraft.scheduledAt)
+        .eq("status", "scheduled")
         .maybeSingle();
 
-      if (professionalError) throw professionalError;
-      if (!professional) throw new Error("Nenhum profissional verificado disponível para agendamento.");
-
-      const amount = Number(professional.session_price || 180);
-      const scheduledAt = new Date();
-      scheduledAt.setDate(scheduledAt.getDate() + 1);
-      scheduledAt.setHours(16, 0, 0, 0);
+      if (conflict) {
+        throw new Error("Esse horário acabou de ser reservado por outro paciente. Volte ao perfil e escolha outro horário.");
+      }
 
       const { data: appointment, error: appointmentError } = await supabase
         .from("appointments")
         .insert({
           patient_id: currentUser.id,
-          professional_id: professional.id,
-          scheduled_at: scheduledAt.toISOString(),
+          professional_id: bookingDraft.professionalId,
+          scheduled_at: bookingDraft.scheduledAt,
           modality: "online",
-          price: amount,
+          price: bookingDraft.price,
         })
         .select("id")
         .single();
@@ -1975,8 +2175,16 @@ function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) =
 
       await mockPaymentProvider.charge({
         appointmentId: appointment.id,
-        amount,
+        amount: bookingDraft.price,
         method: payMethod === "pix" ? "pix" : "card",
+      });
+
+      const roomId = `room-${appointment.id}`;
+      // Best-effort: the video room is a nice-to-have at booking time, not a reason to fail a paid booking.
+      await supabase.from("video_rooms").insert({
+        appointment_id: appointment.id,
+        room_url: `https://meet.mindcare.test/${roomId}`,
+        provider_room_id: roomId,
       });
 
       setStep(3);
@@ -2017,12 +2225,17 @@ function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) =
               <Card className="p-6 space-y-4">
                 <h2 className="font-semibold text-foreground font-display">Seus dados</h2>
                 <div className="grid grid-cols-2 gap-4">
-                  <Input label="Nome completo" placeholder="Ana Beatriz" />
-                  <Input label="CPF" placeholder="000.000.000-00" />
+                  <Input label="Nome completo" placeholder="Ana Beatriz" value={fullName} onChange={setFullName} />
+                  <Input label="CPF" placeholder="000.000.000-00" value={cpf} onChange={setCpf} />
                 </div>
-                <Input label="E-mail" placeholder="ana@email.com" type="email" />
-                <Input label="Telefone" placeholder="(11) 99999-9999" icon={<PhoneIcon size={15} />} />
-                <Btn variant="primary" className="w-full justify-center" onClick={() => setStep(2)}>Continuar <ChevronRight size={16} /></Btn>
+                <Input label="E-mail" placeholder="ana@email.com" type="email" value={email} onChange={setEmail} />
+                <Input label="Telefone" placeholder="(11) 99999-9999" icon={<PhoneIcon size={15} />} value={phone} onChange={setPhone} />
+                {checkoutError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {checkoutError}
+                  </div>
+                )}
+                <Btn variant="primary" className="w-full justify-center" onClick={handlePersonalDataSubmit}>Continuar <ChevronRight size={16} /></Btn>
               </Card>
             )}
 
@@ -2091,9 +2304,9 @@ function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) =
                 <h2 className="text-xl font-bold text-foreground font-display mb-2">Pagamento confirmado!</h2>
                 <p className="text-muted-foreground text-sm mb-6">Sua sessão foi agendada com sucesso. Você receberá um e-mail de confirmação.</p>
                 <div className="bg-muted rounded-xl p-4 w-full text-left mb-6">
-                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Profissional</span><span className="font-medium">Dra. Fernanda Costa</span></div>
-                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Data e hora</span><span className="font-medium">Seg 07 Jan · 16:00</span></div>
-                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">Valor pago</span><span className="font-bold font-display">R$180,00</span></div>
+                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Profissional</span><span className="font-medium">{bookingDraft.professionalName}</span></div>
+                  <div className="flex justify-between text-sm mb-2"><span className="text-muted-foreground">Data e hora</span><span className="font-medium">{scheduledLabel}</span></div>
+                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">Valor pago</span><span className="font-bold font-display">R${bookingDraft.price.toFixed(2).replace(".", ",")}</span></div>
                 </div>
                 <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("patient-dashboard")}>
                   Ir para meu painel
@@ -2107,17 +2320,16 @@ function CheckoutScreen({ onNavigate, currentUser }: { onNavigate: (s: Screen) =
             <Card className="p-6">
               <h2 className="font-semibold text-foreground font-display mb-4">Resumo</h2>
               <div className="flex items-center gap-3 mb-4 pb-4 border-b border-border">
-                <img src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format" alt="Dra. Fernanda" className="w-12 h-12 rounded-2xl object-cover" />
+                <img src={bookingDraft.professionalImg} alt={bookingDraft.professionalName} className="w-12 h-12 rounded-2xl object-cover" />
                 <div>
-                  <p className="text-sm font-semibold text-foreground">Dra. Fernanda Costa</p>
-                  <p className="text-xs text-muted-foreground">Psicóloga Clínica</p>
-                  <p className="text-xs text-muted-foreground">Seg 07 Jan · 16:00 · Online</p>
+                  <p className="text-sm font-semibold text-foreground">{bookingDraft.professionalName}</p>
+                  <p className="text-xs text-muted-foreground">{bookingDraft.professionalRole}</p>
+                  <p className="text-xs text-muted-foreground">{scheduledLabel} · Online</p>
                 </div>
               </div>
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-muted-foreground">Sessão individual</span><span>R$180,00</span></div>
-                <div className="flex justify-between text-emerald-600"><span>Desconto pacote 4x</span><span>-R$0,00</span></div>
-                <div className="flex justify-between font-bold text-foreground border-t border-border pt-2 mt-2"><span>Total</span><span className="font-display">R$180,00</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Sessão individual</span><span>R${bookingDraft.price.toFixed(2).replace(".", ",")}</span></div>
+                <div className="flex justify-between font-bold text-foreground border-t border-border pt-2 mt-2"><span>Total</span><span className="font-display">R${bookingDraft.price.toFixed(2).replace(".", ",")}</span></div>
               </div>
               <div className="mt-4 p-3 bg-primary/5 rounded-xl flex items-start gap-2">
                 <Shield size={14} className="text-primary flex-shrink-0 mt-0.5" />
@@ -2407,6 +2619,8 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [selectedProfessionalId, setSelectedProfessionalId] = useState<string | null>(null);
+  const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
 
   const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
   const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
@@ -2509,8 +2723,8 @@ export default function App() {
         </div>
       )}
       {screen === "landing" && <LandingPage onNavigate={setScreen} />}
-      {screen === "directory" && <DirectoryPage onNavigate={setScreen} />}
-      {screen === "profile" && <ProfilePage onNavigate={setScreen} />}
+      {screen === "directory" && <DirectoryPage onNavigate={setScreen} onSelectProfessional={setSelectedProfessionalId} />}
+      {screen === "profile" && <ProfilePage onNavigate={setScreen} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
       {screen === "login" && <LoginPage onNavigate={setScreen} />}
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
@@ -2519,7 +2733,7 @@ export default function App() {
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={setScreen} />}
       {screen === "pricing" && <PricingPage onNavigate={setScreen} />}
-      {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={setScreen} currentUser={currentUser} />}
+      {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={setScreen} currentUser={currentUser} bookingDraft={bookingDraft} />}
       {screen === "financial" && currentUser && <FinancialDashboard onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "admin" && currentUser && <AdminPanel onNavigate={setScreen} currentUser={currentUser} onSignOut={handleSignOut} />}
     </div>
