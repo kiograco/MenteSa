@@ -2838,66 +2838,175 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
 
 // ─── SCREEN: Admin Panel ──────────────────────────────────────────────────────
 
+type PendingProfessional = {
+  id: string;
+  name: string;
+  img: string;
+  license: string;
+  createdAt: string;
+};
+
+type AdminUserRow = {
+  id: string;
+  name: string;
+  role: UserRole;
+  phone: string | null;
+  createdAt: string;
+};
+
+type AdminPayment = {
+  id: string;
+  amount: number;
+  platformFee: number;
+  status: string;
+  createdAt: string;
+};
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
-  const [adminTab, setAdminTab] = useState("validations");
+  const [adminTab, setAdminTab] = useState<"validations" | "users" | "payments">("validations");
   const navItems = [
     { icon: <Home size={18} />, label: "Visão geral", active: true },
     { icon: <Shield size={18} />, label: "Validações" },
     { icon: <Users size={18} />, label: "Usuários" },
     { icon: <CreditCard size={18} />, label: "Pagamentos" },
-    { icon: <BarChart2 size={18} />, label: "Relatórios" },
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
-  const pending = [
-    { name: "Dr. Marcelo Faria", role: "Psiquiatra", crm: "CRM 35/44123", date: "2h atrás", docs: 3 },
-    { name: "Dra. Giovana Luz", role: "Psicóloga", crp: "CRP 06/78901", date: "5h atrás", docs: 4 },
-    { name: "Dr. Paulo Meireles", role: "Neuropsicologo", crp: "CRP 08/33221", date: "1 dia", docs: 2 },
-  ];
+  const [pending, setPending] = useState<PendingProfessional[]>([]);
+  const [loadingPending, setLoadingPending] = useState(true);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [userSearch, setUserSearch] = useState("");
+  const [userTypeFilter, setUserTypeFilter] = useState<"all" | UserRole>("all");
+
+  const [payments, setPayments] = useState<AdminPayment[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(true);
+
+  const [verifiedCount, setVerifiedCount] = useState(0);
+
+  const loadPending = async () => {
+    setLoadingPending(true);
+    const { data } = await supabase
+      .from("professional_profiles")
+      .select("id, license_type, license_number, created_at, profiles(full_name, avatar_url)")
+      .eq("verification_status", "pending")
+      .order("created_at", { ascending: true });
+
+    setPending(((data ?? []) as any[]).map(p => ({
+      id: p.id,
+      name: p.profiles?.full_name ?? "Profissional",
+      img: p.profiles?.avatar_url ?? "",
+      license: `${p.license_type} ${p.license_number}`,
+      createdAt: p.created_at,
+    })));
+    setLoadingPending(false);
+  };
+
+  useEffect(() => {
+    void loadPending();
+
+    (async () => {
+      const { count } = await supabase
+        .from("professional_profiles")
+        .select("id", { count: "exact", head: true })
+        .eq("verification_status", "verified");
+      setVerifiedCount(count ?? 0);
+    })();
+
+    (async () => {
+      setLoadingUsers(true);
+      const { data } = await supabase.from("profiles").select("id, full_name, role, phone, created_at").order("created_at", { ascending: false });
+      setUsers((data ?? []).map(u => ({ id: u.id, name: u.full_name, role: u.role, phone: u.phone, createdAt: u.created_at })));
+      setLoadingUsers(false);
+    })();
+
+    (async () => {
+      setLoadingPayments(true);
+      const { data } = await supabase.from("payments").select("id, amount, platform_fee, status, created_at").order("created_at", { ascending: false });
+      setPayments((data ?? []).map(p => ({ id: p.id, amount: Number(p.amount), platformFee: Number(p.platform_fee), status: p.status, createdAt: p.created_at })));
+      setLoadingPayments(false);
+    })();
+  }, []);
+
+  const handleVerification = async (id: string, status: "verified" | "rejected") => {
+    setUpdatingId(id);
+    const { error } = await supabase.from("professional_profiles").update({ verification_status: status }).eq("id", id);
+    setUpdatingId(null);
+    if (!error) {
+      setPending(prev => prev.filter(p => p.id !== id));
+      if (status === "verified") setVerifiedCount(prev => prev + 1);
+    }
+  };
+
+  const patientCount = users.filter(u => u.role === "patient").length;
+  const gmv = payments.filter(p => p.status === "paid").reduce((sum, p) => sum + p.amount, 0);
+  const platformRevenue = payments.filter(p => p.status === "paid").reduce((sum, p) => sum + p.platformFee, 0);
 
   const statsData = [
-    { label: "Profissionais ativos", value: "2.418", delta: "+34 este mês", color: "green" },
-    { label: "Pacientes cadastrados", value: "18.743", delta: "+1.2k este mês", color: "blue" },
-    { label: "Sessões realizadas (Jan)", value: "12.390", delta: "+18%", color: "purple" },
-    { label: "GMV (Jan)", value: "R$2.23M", delta: "+22%", color: "amber" },
+    { label: "Profissionais verificados", value: String(verifiedCount), icon: <Users size={18} />, color: "green" as const },
+    { label: "Pacientes cadastrados", value: String(patientCount), icon: <Heart size={18} />, color: "blue" as const },
+    { label: "Validações pendentes", value: String(pending.length), icon: <Clock size={18} />, color: "purple" as const },
+    { label: "GMV total (pago)", value: `R$${gmv.toFixed(2).replace(".", ",")}`, icon: <DollarSign size={18} />, color: "amber" as const },
   ];
+
+  const filteredUsers = users.filter(u => {
+    const matchSearch = !userSearch.trim() || u.name.toLowerCase().includes(userSearch.trim().toLowerCase());
+    const matchType = userTypeFilter === "all" || u.role === userTypeFilter;
+    return matchSearch && matchType;
+  });
+
+  const roleLabel = (role: UserRole) => role === "professional" ? "Profissional" : role === "admin" ? "Admin" : "Paciente";
 
   return (
     <AppShell title="Painel Administrativo" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {statsData.map((s, i) => (
-            <StatCard key={i} label={s.label} value={s.value} delta={s.delta} icon={[<Users size={18} />, <Heart size={18} />, <Calendar size={18} />, <DollarSign size={18} />][i]} color={s.color as "green" | "blue" | "purple" | "amber"} />
+          {statsData.map(s => (
+            <StatCard key={s.label} label={s.label} value={s.value} icon={s.icon} color={s.color} />
           ))}
         </div>
 
         <div className="flex gap-2 border-b border-border">
-          {[{ id: "validations", label: "Validações pendentes" }, { id: "users", label: "Usuários" }, { id: "payments", label: "Pagamentos" }, { id: "reports", label: "Relatórios" }].map(t => (
+          {[{ id: "validations" as const, label: "Validações pendentes" }, { id: "users" as const, label: "Usuários" }, { id: "payments" as const, label: "Pagamentos" }].map(t => (
             <button key={t.id} onClick={() => setAdminTab(t.id)}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-all ${adminTab === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
               {t.label}
-              {t.id === "validations" && <span className="ml-1.5 bg-amber-100 text-amber-700 text-xs px-1.5 py-0.5 rounded-full">3</span>}
+              {t.id === "validations" && pending.length > 0 && <span className="ml-1.5 bg-amber-100 text-amber-700 text-xs px-1.5 py-0.5 rounded-full">{pending.length}</span>}
             </button>
           ))}
         </div>
 
         {adminTab === "validations" && (
           <div className="space-y-4">
-            {pending.map((p, i) => (
-              <Card key={i} className="p-5">
+            {loadingPending && <p className="text-sm text-muted-foreground">Carregando validações...</p>}
+            {!loadingPending && pending.length === 0 && <Card className="p-8 text-center text-sm text-muted-foreground">Nenhuma validação pendente no momento.</Card>}
+            {pending.map(p => (
+              <Card key={p.id} className="p-5">
                 <div className="flex items-center gap-4">
-                  <Avatar name={p.name} size="md" />
+                  <Avatar name={p.name} src={p.img || undefined} size="md" />
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
                       <h3 className="font-semibold text-foreground text-sm">{p.name}</h3>
-                      <Badge variant="outline">{p.crm || (p as any).crp}</Badge>
+                      <Badge variant="outline">{p.license}</Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground">{p.role} · Enviado {p.date} · {p.docs} documentos</p>
+                    <p className="text-xs text-muted-foreground">Enviado em {new Date(p.createdAt).toLocaleDateString("pt-BR")}</p>
                   </div>
                   <div className="flex gap-2">
-                    <Btn variant="outline" size="sm"><Eye size={14} />Revisar docs</Btn>
-                    <Btn variant="danger" size="sm"><X size={14} />Rejeitar</Btn>
-                    <Btn variant="primary" size="sm"><Check size={14} />Aprovar</Btn>
+                    <Btn variant="danger" size="sm" disabled={updatingId === p.id} onClick={() => handleVerification(p.id, "rejected")}><X size={14} />Rejeitar</Btn>
+                    <Btn variant="primary" size="sm" disabled={updatingId === p.id} onClick={() => handleVerification(p.id, "verified")}><Check size={14} />Aprovar</Btn>
                   </div>
                 </div>
               </Card>
@@ -2908,88 +3017,86 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
         {adminTab === "users" && (
           <Card className="overflow-hidden">
             <div className="p-4 flex items-center justify-between border-b border-border">
-              <Input placeholder="Buscar usuário..." icon={<Search size={15} />} className="w-64" />
+              <Input placeholder="Buscar usuário..." icon={<Search size={15} />} className="w-64" value={userSearch} onChange={setUserSearch} />
               <div className="flex gap-2">
-                <select className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-foreground focus:outline-none"><option>Todos os tipos</option><option>Pacientes</option><option>Profissionais</option></select>
-                <Btn variant="outline" size="sm"><Download size={14} />Exportar</Btn>
+                <select
+                  value={userTypeFilter}
+                  onChange={e => setUserTypeFilter(e.target.value as "all" | UserRole)}
+                  className="px-3 py-2 bg-muted border border-border rounded-xl text-xs text-foreground focus:outline-none"
+                >
+                  <option value="all">Todos os tipos</option>
+                  <option value="patient">Pacientes</option>
+                  <option value="professional">Profissionais</option>
+                  <option value="admin">Admins</option>
+                </select>
+                <Btn
+                  variant="outline"
+                  size="sm"
+                  onClick={() => downloadCsv("usuarios-mindcare.csv", [
+                    ["Nome", "Tipo", "Telefone", "Cadastro"],
+                    ...filteredUsers.map(u => [u.name, roleLabel(u.role), u.phone ?? "", new Date(u.createdAt).toLocaleDateString("pt-BR")]),
+                  ])}
+                >
+                  <Download size={14} />Exportar
+                </Btn>
               </div>
             </div>
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Plano", "Cadastro", "Status", "Ações"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
-              <tbody>
-                {[
-                  { name: "Ana Beatriz Souza", email: "ana@email.com", type: "Paciente", plan: "—", date: "Jun 2024", status: "Ativo" },
-                  { name: "Dra. Fernanda Costa", email: "fernanda@email.com", type: "Profissional", plan: "Profissional", date: "Mar 2024", status: "Ativo" },
-                  { name: "Carlos Augusto", email: "carlos@email.com", type: "Paciente", plan: "—", date: "Nov 2024", status: "Ativo" },
-                  { name: "Dr. Rafael Mendes", email: "rafael@email.com", type: "Profissional", plan: "Essencial", date: "Jan 2024", status: "Ativo" },
-                  { name: "João Pedro", email: "joao@email.com", type: "Paciente", plan: "—", date: "Jan 2025", status: "Pendente" },
-                ].map((u, i) => (
-                  <tr key={i} className="border-t border-border hover:bg-muted/30 transition-colors">
-                    <td className="py-3 px-4"><div><p className="font-medium text-foreground">{u.name}</p><p className="text-xs text-muted-foreground">{u.email}</p></div></td>
-                    <td className="py-3 px-4"><Badge variant={u.type === "Profissional" ? "accent" : "outline"}>{u.type}</Badge></td>
-                    <td className="py-3 px-4 text-muted-foreground">{u.plan}</td>
-                    <td className="py-3 px-4 text-muted-foreground text-xs">{u.date}</td>
-                    <td className="py-3 px-4"><Badge variant={u.status === "Ativo" ? "success" : "warning"}>{u.status}</Badge></td>
-                    <td className="py-3 px-4">
-                      <div className="flex gap-1">
-                        <Btn variant="ghost" size="sm"><Eye size={13} /></Btn>
-                        <Btn variant="ghost" size="sm"><Edit3 size={13} /></Btn>
-                        <Btn variant="ghost" size="sm"><Trash2 size={13} /></Btn>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {loadingUsers && <p className="text-sm text-muted-foreground p-4">Carregando usuários...</p>}
+            {!loadingUsers && (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Telefone", "Cadastro"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
+                <tbody>
+                  {filteredUsers.map(u => (
+                    <tr key={u.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                      <td className="py-3 px-4"><p className="font-medium text-foreground">{u.name}</p></td>
+                      <td className="py-3 px-4"><Badge variant={u.role === "professional" ? "accent" : u.role === "admin" ? "warning" : "outline"}>{roleLabel(u.role)}</Badge></td>
+                      <td className="py-3 px-4 text-muted-foreground">{u.phone ?? "—"}</td>
+                      <td className="py-3 px-4 text-muted-foreground text-xs">{new Date(u.createdAt).toLocaleDateString("pt-BR")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </Card>
         )}
 
         {adminTab === "payments" && (
           <div className="grid lg:grid-cols-2 gap-6">
             <Card className="p-6">
-              <h3 className="font-semibold text-foreground font-display mb-4">Volume de pagamentos</h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={[
-                  { month: "Out", gmv: 1800000 }, { month: "Nov", gmv: 2100000 }, { month: "Dez", gmv: 1950000 }, { month: "Jan", gmv: 2230000 },
-                ]}>
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v / 1000000).toFixed(1)}M`} />
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" vertical={false} />
-                  <Tooltip formatter={(v: number) => [`R$${(v / 1000).toFixed(0)}k`, "GMV"]} contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
-                  <Bar dataKey="gmv" fill="#1B7A48" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <h3 className="font-semibold text-foreground font-display mb-4">Pagamentos recentes</h3>
+              {loadingPayments && <p className="text-sm text-muted-foreground">Carregando pagamentos...</p>}
+              {!loadingPayments && payments.length === 0 && <p className="text-sm text-muted-foreground">Nenhum pagamento registrado ainda.</p>}
+              <div className="divide-y divide-border">
+                {payments.slice(0, 10).map(p => (
+                  <div key={p.id} className="py-3 flex items-center justify-between text-sm">
+                    <div>
+                      <p className="font-medium text-foreground">R${p.amount.toFixed(2).replace(".", ",")}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleDateString("pt-BR")}</p>
+                    </div>
+                    <Badge variant={p.status === "paid" ? "success" : p.status === "refunded" ? "danger" : "outline"}>
+                      {p.status === "paid" ? "Pago" : p.status === "refunded" ? "Reembolsado" : "Pendente"}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
             </Card>
             <Card className="p-6">
               <h3 className="font-semibold text-foreground font-display mb-4">Métricas de comissão</h3>
               <div className="space-y-3">
-                {[["GMV total (Jan)", "R$2.230.000"], ["Comissão plataforma (10%)", "R$223.000"], ["Repasses a profissionais", "R$2.007.000"], ["Transações processadas", "12.389"], ["Chargeback rate", "0.02%"], ["Taxa de sucesso", "99.8%"]].map(([l, v], i) => (
-                  <div key={i} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
+                {[
+                  ["GMV total (pago)", `R$${gmv.toFixed(2).replace(".", ",")}`],
+                  ["Comissão da plataforma", `R$${platformRevenue.toFixed(2).replace(".", ",")}`],
+                  ["Repasses a profissionais", `R$${(gmv - platformRevenue).toFixed(2).replace(".", ",")}`],
+                  ["Transações pagas", String(payments.filter(p => p.status === "paid").length)],
+                  ["Transações pendentes", String(payments.filter(p => p.status === "pending").length)],
+                  ["Reembolsos", String(payments.filter(p => p.status === "refunded").length)],
+                ].map(([l, v]) => (
+                  <div key={l} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
                     <span className="text-muted-foreground">{l}</span><span className="font-medium text-foreground">{v}</span>
                   </div>
                 ))}
               </div>
             </Card>
-          </div>
-        )}
-
-        {adminTab === "reports" && (
-          <div className="grid grid-cols-2 gap-4">
-            {[
-              { title: "Relatório de usuários", desc: "Cadastros, churn, retenção", icon: <Users size={20} /> },
-              { title: "Relatório financeiro", desc: "GMV, comissões, repasses", icon: <DollarSign size={20} /> },
-              { title: "Relatório de sessões", desc: "Volume, cancelamentos, NPS", icon: <Calendar size={20} /> },
-              { title: "Relatório de profissionais", desc: "Ativos, planos, avaliações", icon: <Award size={20} /> },
-            ].map((r, i) => (
-              <Card key={i} className="p-5 flex items-center gap-4 hover:border-primary/30 cursor-pointer transition-all">
-                <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">{r.icon}</div>
-                <div className="flex-1">
-                  <p className="font-semibold text-foreground text-sm">{r.title}</p>
-                  <p className="text-xs text-muted-foreground">{r.desc}</p>
-                </div>
-                <Btn variant="outline" size="sm"><Download size={13} />PDF</Btn>
-              </Card>
-            ))}
           </div>
         )}
       </div>
