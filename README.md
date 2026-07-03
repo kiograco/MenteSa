@@ -58,4 +58,13 @@
   | Variável | Onde configurar | Para quê |
   |---|---|---|
   | `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` | `.env` (frontend) | Projeto Supabase real |
+  | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
   | *(preenchido nas próximas etapas)* | | |
+
+  ### Monitoramento de erros
+
+  `src/lib/monitoring.ts` inicializa o Sentry só se `VITE_SENTRY_DSN` estiver definida. Um
+  `Sentry.ErrorBoundary` em `main.tsx` captura qualquer crash de render da UI, e os fluxos mais
+  críticos (pagamento no checkout, carregamento do diretório) chamam `reportError` explicitamente
+  nos `catch`, para o erro chegar no Sentry mesmo quando a tela já mostra uma mensagem amigável pro
+  usuário. Crie um projeto React em https://sentry.io e cole o DSN em `.env` para ativar.

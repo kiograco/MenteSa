@@ -6,6 +6,7 @@ import type { UserRole } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
+import { reportError } from "../lib/monitoring";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
   BarChart2, Users, Settings, Bell, ChevronDown, ChevronRight, ChevronLeft,
@@ -558,6 +559,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
       if (!active) return;
 
       if (error) {
+        reportError(error, { flow: "directory.loadProfessionals" });
         setProfessionalsError("Não foi possível carregar os profissionais verificados.");
         setDbProfessionals([]);
       } else if (data?.length) {
@@ -2537,6 +2539,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
 
       setStep(3);
     } catch (error) {
+      reportError(error, { flow: "checkout.handlePayment", professionalId: bookingDraft.professionalId });
       setCheckoutError(error instanceof Error ? error.message : "Não foi possível concluir o pagamento.");
     } finally {
       setProcessingPayment(false);
