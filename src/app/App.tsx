@@ -1187,21 +1187,19 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
           data: {
             full_name: fullName,
             role: userType,
+            // Consumed by the handle_new_user() trigger, not inserted client-side: signUp()
+            // returns no session until the e-mail is confirmed, so an authenticated insert here
+            // would be rejected by RLS. The trigger runs security definer, at account-creation
+            // time, regardless of confirmation status.
+            ...(userType === "professional" && {
+              license_type: licenseNumber.toUpperCase().includes("CRM") ? "CRM" : "CRP",
+              license_number: licenseNumber.trim(),
+            }),
           },
         },
       });
 
       if (error) throw error;
-
-      if (userType === "professional" && data.user) {
-        const { error: profileError } = await supabase.from("professional_profiles").insert({
-          id: data.user.id,
-          license_type: licenseNumber.toUpperCase().includes("CRM") ? "CRM" : "CRP",
-          license_number: licenseNumber.trim(),
-        });
-
-        if (profileError) throw profileError;
-      }
 
       if (!data.session) {
         setAuthInfo("Cadastro criado. Confirme seu e-mail antes de entrar.");

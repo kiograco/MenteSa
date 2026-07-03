@@ -57,7 +57,7 @@
 
   - [x] Node 22 alinhado (`.nvmrc`/`engines`) e CI no GitHub Actions (`.github/workflows/ci.yml`)
   - [x] Código morto removido (shadcn/Figma scaffold não usado) e vendor chunks separados
-  - [x] Monitoramento de erros (Sentry, opcional via `VITE_SENTRY_DSN`)
+  - [x] Monitoramento de erros (Sentry, opciconal via `VITE_SENTRY_DSN`)
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
