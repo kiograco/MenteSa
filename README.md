@@ -41,7 +41,7 @@
   - [x] Dashboard profissional (agenda, pacientes, receita mensal)
   - [x] Prontuário: notas clínicas por sessão (`session_notes`, RLS só para o profissional)
   - [x] Sala de vídeo mock vinculada à consulta (`video_rooms`)
-  - [x] Painel admin: aprovar/rejeitar profissionais, listar usuários e pagamentos
+  - [x] Painel admin: aprovar/rejeitar profissionais, listar/suspender/excluir usuários e pagamentos
   - [x] Autoatendimento do profissional: editar bio/especialidades/preço/cidade/modalidades/convênios
         e gerenciar a própria disponibilidade semanal (tela "Configurações" do dashboard profissional)
   - [x] Agenda do profissional com consultas reais (semana/dia/mês), criação de consulta de retorno
@@ -174,6 +174,67 @@
   antes de aprovar ou rejeitar. Não precisa de nenhuma chave nova — só de o bucket existir no
   projeto Supabase real (a migration já cria).
 
+  ### Verificação de registro profissional (CRP/CRM)
+
+  Fluxo completo de ponta a ponta:
+
+  1. **Envio**: no dashboard profissional, enquanto a verificação estiver "pendente" ou
+     "rejeitada", aparece um banner explicando exatamente o que enviar — foto ou PDF legível da
+     carteira do CRP/CRM (ou o comprovante de inscrição emitido no site do conselho).
+  2. **Armazenamento**: o arquivo vai para o bucket privado `professional-documents` (ver seção
+     "Upload de documentos de verificação" acima), path `{professional_id}/{timestamp}-{arquivo}`.
+     Só o próprio profissional e quem tem `role = 'admin'` conseguem abrir esse arquivo (RLS no
+     Storage + na tabela `professional_documents`).
+  3. **Notificação**: assim que o upload termina, o cliente chama a Edge Function
+     `notify-admin-document` (best-effort — se falhar, não afeta o upload), que busca todos os
+     `profiles` com `role = 'admin'` e manda um e-mail via Resend avisando qual profissional
+     enviou um documento novo. Sem `RESEND_API_KEY`, a função simplesmente não envia nada.
+  4. **Confirmação de validade**: **não existe API pública de verificação do CFP/CFM** — só páginas
+     de busca manual voltadas a humanos (confirmado antes de construir isso). Por isso, na aba
+     "Validações pendentes" do painel admin, cada profissional pendente tem um link direto
+     "Consultar {CRP/CRM} {número} no {CFP/CFM} (site oficial)" que abre a busca oficial já com o
+     número em mãos. Quem aprova é sempre uma pessoa da equipe, comparando o documento enviado com
+     o resultado da consulta oficial — não é automático, e não deveria ser (evita fraude por
+     documento falsificado que "bateria" com uma checagem só de formato/regex).
+
+  Para ativar a notificação por e-mail: `supabase functions deploy notify-admin-document` (já
+  reaproveita o `RESEND_API_KEY`/`EMAIL_FROM` configurado para o e-mail de confirmação de consulta).
+
+  ### Painel administrativo: controle de usuários e conta admin
+
+  A aba "Usuários" do painel admin (`/admin`) já lista todos os pacientes/profissionais/admins com
+  busca, filtro por tipo e exportação CSV. Além disso, cada linha (exceto outros admins) tem ações
+  de **Suspender/Reativar** e **Excluir**:
+
+  - **Suspender**: chama a Edge Function `admin-manage-user`, que usa
+    `auth.admin.updateUserById(..., { ban_duration })` (só funciona com a service role key, por
+    isso precisa de uma função — o painel não pode chamar isso direto do navegador). A pessoa não
+    consegue mais fazer login; `profiles.suspended_at` (migration `20260703000007`) fica marcado
+    para a UI mostrar o status, e profissionais suspensos somem do diretório público na hora
+    (a busca de profissionais agora filtra `profiles.suspended_at is null`).
+  - **Excluir**: chama `auth.admin.deleteUser`, que remove a conta do Supabase Auth; `profiles` (e
+    tudo que referencia ela em cascata — `professional_profiles`, `appointments`, etc., via
+    `on delete cascade`) é apagado junto. Ação irreversível, com confirmação antes de executar.
+  - Por segurança, ninguém consegue suspender/excluir a própria conta nem a de outro admin pela UI
+    (a função rejeita esses dois casos mesmo que o request seja forjado).
+
+  **Limitação conhecida:** o ban bloqueia login/renovação de sessão, mas uma sessão já aberta no
+  navegador da pessoa continua válida até o token expirar sozinho (não há revogação imediata de
+  sessões ativas nesta versão).
+
+  Para ativar: `supabase functions deploy admin-manage-user` (não precisa de nenhuma chave nova).
+
+  **Criar a primeira conta admin:** não existe cadastro público como admin (por segurança). Depois
+  que alguém já criou uma conta normal (paciente ou profissional) pelo app, promova-a rodando uma
+  vez, com a service role/senha do banco:
+
+  ```bash
+  supabase db query --linked "update public.profiles set role = 'admin' where id = (select id from auth.users where email = 'a-conta@exemplo.com') returning id, role;"
+  ```
+
+  Depois disso, o próprio painel admin passa a bastar para promover ninguém mais — a intenção é que
+  isso só rode manualmente, uma vez, pra "plantar" o primeiro admin.
+
   ### Agenda do profissional (`/profissional/agenda`)
 
   Consultas reais, filtradas por `professional_id`, nas visões semana/dia/mês. Clicar numa consulta
@@ -226,7 +287,7 @@
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
   linkado a nada real). `.github/workflows/deploy-supabase.yml` roda depois que o CI passa em
   `main` (ou manualmente via "Run workflow") e aplica as migrations (`supabase db push`) + faz
-  deploy de todas as 4 Edge Functions. O job usa o GitHub Environment `production` — configure uma
+  deploy de todas as Edge Functions. O job usa o GitHub Environment `production` — configure uma
   regra de "required reviewers" nele (Settings → Environments → production) se quiser um aprovador
   manual antes de qualquer deploy tocar o banco real; sem essa regra, o deploy roda direto depois
   do CI verde.
@@ -256,7 +317,7 @@
   | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
   | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
   | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |
-  | *(preenchido nas próximas etapas)* | | |
+  | *(nenhuma chave nova)* | `notify-admin-document` / `admin-manage-user` reaproveitam `RESEND_API_KEY`/`EMAIL_FROM` e a service role key (injetada automaticamente pelo runtime das Edge Functions) | Notificação de documento novo e suspensão/exclusão de contas |
 
   ### Monitoramento de erros
 

@@ -41,5 +41,7 @@ jobs:
           supabase functions deploy create-mp-preference
           supabase functions deploy mercadopago-webhook --no-verify-jwt
           supabase functions deploy send-booking-confirmation
+          supabase functions deploy notify-admin-document
+          supabase functions deploy admin-manage-user
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

@@ -20,6 +20,7 @@ export interface Database {
           avatar_url: string | null;
           created_at: string;
           terms_accepted_at: string;
+          suspended_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["profiles"]["Row"]> & {
           id: string;

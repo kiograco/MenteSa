@@ -607,8 +607,9 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
 
       const { data, error } = await supabase
         .from("professional_profiles")
-        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
+        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, profiles!inner(full_name, avatar_url)")
         .eq("verification_status", "verified")
+        .is("profiles.suspended_at", null)
         .order("created_at", { ascending: false });
 
       if (!active) return;
@@ -1720,6 +1721,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     try {
       await uploadProfessionalDocument(currentUser.id, file);
       await refreshDocuments();
+      void supabase.functions.invoke("notify-admin-document", { body: { professionalId: currentUser.id, fileName: file.name } });
     } catch (error) {
       reportError(error, { flow: "professionalDashboard.uploadDocument" });
       setUploadError(error instanceof Error ? error.message : "Não foi possível enviar o documento.");
@@ -1827,7 +1829,13 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
                   {verificationStatus === "rejected" ? "Verificação rejeitada" : "Verificação pendente"}
                 </p>
                 <p className={`text-xs mt-1 ${verificationStatus === "rejected" ? "text-red-700" : "text-amber-700"}`}>
-                  Envie documentos que comprovem seu registro (CRP/CRM) para aparecer no diretório público.
+                  Envie uma foto ou PDF legível da sua carteira do {"{CRP/CRM}"} (ou do comprovante de
+                  inscrição no conselho, emitido no site do seu conselho regional) para aparecer no
+                  diretório público. O arquivo fica guardado num espaço privado — só você e a equipe
+                  MindCare que analisa cadastros conseguem abri-lo. Uma pessoa da equipe confere o
+                  documento e confirma seu registro na consulta pública oficial do
+                  {" "}{verificationStatus === "rejected" ? "conselho" : "CFP/CFM"} antes de aprovar;
+                  isso costuma levar até 48h.
                 </p>
               </div>
             </div>
@@ -3902,9 +3910,19 @@ type PendingProfessional = {
   name: string;
   img: string;
   license: string;
+  licenseType: string;
+  licenseNumber: string;
   createdAt: string;
   documents: ProfessionalDocument[];
 };
+
+/** Official public registry lookup — there is no API for this, only these human-facing search
+ *  pages (confirmed before building this: CFP/CFM don't expose a public verification API). The
+ *  admin still has to search manually and compare against the uploaded document/license number;
+ *  this just gets them to the right site with the number in hand instead of starting from scratch. */
+function officialLicenseLookupUrl(licenseType: string): string {
+  return licenseType === "CRM" ? "https://portal.cfm.org.br/busca-medicos/" : "https://cadastro.cfp.org.br/";
+}
 
 type AdminUserRow = {
   id: string;
@@ -3912,6 +3930,7 @@ type AdminUserRow = {
   role: UserRole;
   phone: string | null;
   createdAt: string;
+  suspendedAt: string | null;
 };
 
 type AdminPayment = {
@@ -3962,6 +3981,8 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
       name: p.profiles?.full_name ?? "Profissional",
       img: p.profiles?.avatar_url ?? "",
       license: `${p.license_type} ${p.license_number}`,
+      licenseType: p.license_type,
+      licenseNumber: p.license_number,
       createdAt: p.created_at,
       documents: documentsByProfessional[i],
     })));
@@ -3977,6 +3998,36 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
     }
   };
 
+  const loadUsers = async () => {
+    setLoadingUsers(true);
+    const { data } = await supabase.from("profiles").select("id, full_name, role, phone, created_at, suspended_at").order("created_at", { ascending: false });
+    setUsers((data ?? []).map(u => ({ id: u.id, name: u.full_name, role: u.role, phone: u.phone, createdAt: u.created_at, suspendedAt: u.suspended_at })));
+    setLoadingUsers(false);
+  };
+
+  const [userActionId, setUserActionId] = useState<string | null>(null);
+
+  const handleUserAction = async (id: string, action: "suspend" | "unsuspend" | "delete") => {
+    if (action === "suspend" && !window.confirm("Suspender esta conta? A pessoa não conseguirá mais entrar até ser reativada.")) return;
+    if (action === "delete" && !window.confirm("Excluir esta conta permanentemente? Essa ação não pode ser desfeita.")) return;
+
+    setUserActionId(id);
+    const { data, error } = await supabase.functions.invoke("admin-manage-user", { body: { action, userId: id } });
+    setUserActionId(null);
+
+    if (error || (data as any)?.error) {
+      reportError(error ?? new Error((data as any)?.error), { flow: "adminPanel.userAction" });
+      window.alert((data as any)?.error ?? "Não foi possível completar a ação.");
+      return;
+    }
+
+    if (action === "delete") {
+      setUsers(prev => prev.filter(u => u.id !== id));
+    } else {
+      await loadUsers();
+    }
+  };
+
   useEffect(() => {
     void loadPending();
 
@@ -3988,12 +4039,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
       setVerifiedCount(count ?? 0);
     })();
 
-    (async () => {
-      setLoadingUsers(true);
-      const { data } = await supabase.from("profiles").select("id, full_name, role, phone, created_at").order("created_at", { ascending: false });
-      setUsers((data ?? []).map(u => ({ id: u.id, name: u.full_name, role: u.role, phone: u.phone, createdAt: u.created_at })));
-      setLoadingUsers(false);
-    })();
+    void loadUsers();
 
     (async () => {
       setLoadingPayments(true);
@@ -4071,8 +4117,9 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
                     <Btn variant="primary" size="sm" disabled={updatingId === p.id} onClick={() => handleVerification(p.id, "verified")}><Check size={14} />Aprovar</Btn>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border">
-                  {p.documents.length === 0 && <span className="text-xs text-muted-foreground">Nenhum documento enviado ainda.</span>}
+                <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-border">
+                  <span className="text-xs text-muted-foreground">Documentos:</span>
+                  {p.documents.length === 0 && <span className="text-xs text-muted-foreground">nenhum enviado ainda</span>}
                   {p.documents.map(doc => (
                     <button
                       key={doc.id}
@@ -4083,6 +4130,18 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
                       <Eye size={11} />{doc.fileName}
                     </button>
                   ))}
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs text-muted-foreground">Confirmar registro:</span>
+                  <a
+                    href={officialLicenseLookupUrl(p.licenseType)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-primary hover:bg-secondary transition-all"
+                  >
+                    <Shield size={11} />
+                    Consultar {p.licenseType} {p.licenseNumber} no {p.licenseType === "CRM" ? "CFM" : "CFP"} (site oficial)
+                  </a>
                 </div>
               </Card>
             ))}
@@ -4119,8 +4178,8 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
             {loadingUsers && <p className="text-sm text-muted-foreground p-4">Carregando usuários...</p>}
             {!loadingUsers && (
               <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px] text-sm">
-                <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Telefone", "Cadastro"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
+              <table className="w-full min-w-[640px] text-sm">
+                <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Telefone", "Cadastro", "Status", "Ações"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
                 <tbody>
                   {filteredUsers.map(u => (
                     <tr key={u.id} className="border-t border-border hover:bg-muted/30 transition-colors">
@@ -4128,6 +4187,25 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
                       <td className="py-3 px-4"><Badge variant={u.role === "professional" ? "accent" : u.role === "admin" ? "warning" : "outline"}>{roleLabel(u.role)}</Badge></td>
                       <td className="py-3 px-4 text-muted-foreground">{u.phone ?? "—"}</td>
                       <td className="py-3 px-4 text-muted-foreground text-xs">{new Date(u.createdAt).toLocaleDateString("pt-BR")}</td>
+                      <td className="py-3 px-4">
+                        {u.suspendedAt
+                          ? <Badge variant="danger">Suspenso</Badge>
+                          : <Badge variant="success">Ativo</Badge>}
+                      </td>
+                      <td className="py-3 px-4">
+                        {u.role === "admin" ? (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        ) : (
+                          <div className="flex gap-2">
+                            {u.suspendedAt ? (
+                              <Btn variant="outline" size="sm" disabled={userActionId === u.id} onClick={() => handleUserAction(u.id, "unsuspend")}>Reativar</Btn>
+                            ) : (
+                              <Btn variant="outline" size="sm" disabled={userActionId === u.id} onClick={() => handleUserAction(u.id, "suspend")}>Suspender</Btn>
+                            )}
+                            <Btn variant="danger" size="sm" disabled={userActionId === u.id} onClick={() => handleUserAction(u.id, "delete")}>Excluir</Btn>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
