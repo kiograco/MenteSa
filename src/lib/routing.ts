@@ -2,7 +2,7 @@ export type Screen =
   | "landing" | "directory" | "profile" | "patient-dashboard"
   | "pro-dashboard" | "calendar" | "ehr" | "ai-assistant"
   | "video" | "pricing" | "checkout" | "financial" | "admin" | "login"
-  | "reset-password";
+  | "reset-password" | "professional-settings";
 
 export type RouteParams = {
   professionalId?: string | null;
@@ -21,6 +21,7 @@ const SCREEN_TO_PATH: Record<Screen, string> = {
   ehr: "/profissional/prontuarios",
   "ai-assistant": "/profissional/ia",
   financial: "/profissional/financeiro",
+  "professional-settings": "/profissional/configuracoes",
   video: "/video",
   pricing: "/precos",
   checkout: "/checkout",
@@ -46,6 +47,7 @@ export function pathToScreen(pathname: string): { screen: Screen; professionalId
   if (segments[0] === "profissional" && segments[1] === "prontuarios") return { screen: "ehr" };
   if (segments[0] === "profissional" && segments[1] === "ia") return { screen: "ai-assistant" };
   if (segments[0] === "profissional" && segments[1] === "financeiro") return { screen: "financial" };
+  if (segments[0] === "profissional" && segments[1] === "configuracoes") return { screen: "professional-settings" };
 
   const entry = (Object.entries(SCREEN_TO_PATH) as [Screen, string][]).find(([, path]) => path === `/${segments.join("/")}`);
   return entry ? { screen: entry[0] } : null;

@@ -39,6 +39,7 @@ describe("pathToScreen", () => {
     expect(pathToScreen("/profissional/prontuarios")).toEqual({ screen: "ehr" });
     expect(pathToScreen("/profissional/ia")).toEqual({ screen: "ai-assistant" });
     expect(pathToScreen("/profissional/financeiro")).toEqual({ screen: "financial" });
+    expect(pathToScreen("/profissional/configuracoes")).toEqual({ screen: "professional-settings" });
   });
 
   it("returns null for an unrecognized path", () => {

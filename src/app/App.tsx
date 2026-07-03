@@ -1670,7 +1670,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
-    { icon: <Settings size={18} />, label: "Configurações" },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
   const [appointments, setAppointments] = useState<ProAppointment[]>([]);
@@ -1678,6 +1678,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [verificationStatus, setVerificationStatus] = useState<VerificationStatus | null>(null);
+  const [profileIncomplete, setProfileIncomplete] = useState(false);
   const [documents, setDocuments] = useState<ProfessionalDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
@@ -1696,10 +1697,13 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     (async () => {
       const { data } = await supabase
         .from("professional_profiles")
-        .select("verification_status")
+        .select("verification_status, city, bio, session_price, modalities")
         .eq("id", currentUser.id)
         .maybeSingle();
-      if (active) setVerificationStatus(data?.verification_status ?? null);
+
+      if (!active) return;
+      setVerificationStatus(data?.verification_status ?? null);
+      setProfileIncomplete(!data?.city || !data?.bio || !data?.session_price || !data?.modalities?.length);
     })();
 
     void refreshDocuments();
@@ -1798,6 +1802,21 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
   return (
     <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
+        {profileIncomplete && (
+          <Card className="p-5 border-blue-200 bg-blue-50">
+            <div className="flex items-start gap-3">
+              <Info size={18} className="text-blue-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-blue-800">Complete seu perfil</p>
+                <p className="text-xs text-blue-700 mt-1">
+                  Cidade, bio, valor da sessão e modalidade de atendimento ainda estão faltando. Sem esses dados, você não aparece corretamente na busca do diretório (a busca por cidade/estado depende disso).
+                </p>
+              </div>
+              <Btn variant="primary" size="sm" onClick={() => onNavigate("professional-settings")}>Completar agora</Btn>
+            </div>
+          </Card>
+        )}
+
         {verificationStatus && verificationStatus !== "verified" && (
           <Card className={`p-5 ${verificationStatus === "rejected" ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
             <div className="flex items-start gap-3 mb-3">
@@ -1942,6 +1961,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScr
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
   const hours = Array.from({ length: 10 }, (_, i) => i + 8);
@@ -2048,6 +2068,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
     { icon: <FileText size={18} />, label: "Prontuários", active: true, onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
   const [patients, setPatients] = useState<EhrPatient[]>([]);
@@ -2310,6 +2331,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", active: true, onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
   const transcript = [
@@ -3079,6 +3101,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", active: true, onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
   const revenueData = [
@@ -3172,6 +3195,268 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
             <Btn variant="outline" size="sm" className="w-full justify-center"><Download size={14} />Exportar DRE (PDF)</Btn>
           </Card>
         </div>
+      </div>
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Professional Settings (profile + availability) ──────────────────
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "Segunda" },
+  { value: 2, label: "Terça" },
+  { value: 3, label: "Quarta" },
+  { value: 4, label: "Quinta" },
+  { value: 5, label: "Sexta" },
+  { value: 6, label: "Sábado" },
+  { value: 0, label: "Domingo" },
+];
+
+type AvailabilitySlotRow = { id: string; weekday: number; start_time: string; end_time: string };
+
+function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", active: true, onClick: () => onNavigate("professional-settings") },
+  ];
+
+  const [loading, setLoading] = useState(true);
+  const [bio, setBio] = useState("");
+  const [specialties, setSpecialties] = useState("");
+  const [approaches, setApproaches] = useState("");
+  const [sessionPrice, setSessionPrice] = useState("");
+  const [city, setCity] = useState("");
+  const [region, setRegion] = useState("");
+  const [insurances, setInsurances] = useState("");
+  const [yearsExperience, setYearsExperience] = useState("");
+  const [modalityOnline, setModalityOnline] = useState(false);
+  const [modalityPresencial, setModalityPresencial] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  const [availability, setAvailability] = useState<AvailabilitySlotRow[]>([]);
+  const [newWeekday, setNewWeekday] = useState(1);
+  const [newStart, setNewStart] = useState("09:00");
+  const [newEnd, setNewEnd] = useState("12:00");
+  const [availabilityError, setAvailabilityError] = useState("");
+  const [addingSlot, setAddingSlot] = useState(false);
+
+  const loadAvailability = async () => {
+    const { data } = await supabase
+      .from("professional_availability")
+      .select("id, weekday, start_time, end_time")
+      .eq("professional_id", currentUser.id)
+      .not("weekday", "is", null)
+      .order("weekday", { ascending: true });
+    setAvailability((data ?? []) as AvailabilitySlotRow[]);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase
+        .from("professional_profiles")
+        .select("bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience")
+        .eq("id", currentUser.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (data) {
+        setBio(data.bio ?? "");
+        setSpecialties((data.specialties ?? []).join(", "));
+        setApproaches((data.approaches ?? []).join(", "));
+        setSessionPrice(data.session_price ? String(data.session_price) : "");
+        setCity(data.city ?? "");
+        setRegion(data.state ?? "");
+        setInsurances((data.insurances ?? []).join(", "));
+        setYearsExperience(data.years_experience ? String(data.years_experience) : "");
+        setModalityOnline((data.modalities ?? []).includes("online"));
+        setModalityPresencial((data.modalities ?? []).includes("presencial"));
+      }
+
+      await loadAvailability();
+      if (active) setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const handleSaveProfile = async () => {
+    setSaving(true);
+    setSaveMessage("");
+
+    const modalities: string[] = [];
+    if (modalityOnline) modalities.push("online");
+    if (modalityPresencial) modalities.push("presencial");
+
+    const { error } = await supabase
+      .from("professional_profiles")
+      .update({
+        bio: bio.trim() || null,
+        specialties: specialties.split(",").map(s => s.trim()).filter(Boolean),
+        approaches: approaches.split(",").map(s => s.trim()).filter(Boolean),
+        session_price: Number(sessionPrice) || 0,
+        modalities: modalities as any,
+        city: city.trim() || null,
+        state: region.trim() || null,
+        insurances: insurances.split(",").map(s => s.trim()).filter(Boolean),
+        years_experience: Number(yearsExperience) || 0,
+      })
+      .eq("id", currentUser.id);
+
+    setSaving(false);
+
+    if (error) {
+      reportError(error, { flow: "professionalSettings.saveProfile" });
+      setSaveMessage("Não foi possível salvar. Tente novamente.");
+      return;
+    }
+
+    setSaveMessage("Perfil atualizado com sucesso.");
+  };
+
+  const handleAddSlot = async () => {
+    setAvailabilityError("");
+
+    if (newStart >= newEnd) {
+      setAvailabilityError("O horário de início deve ser antes do horário de fim.");
+      return;
+    }
+
+    setAddingSlot(true);
+    const { error } = await supabase.from("professional_availability").insert({
+      professional_id: currentUser.id,
+      weekday: newWeekday,
+      start_time: newStart,
+      end_time: newEnd,
+    });
+    setAddingSlot(false);
+
+    if (error) {
+      reportError(error, { flow: "professionalSettings.addSlot" });
+      setAvailabilityError("Não foi possível adicionar esse horário.");
+      return;
+    }
+
+    await loadAvailability();
+  };
+
+  const handleDeleteSlot = async (id: string) => {
+    await supabase.from("professional_availability").delete().eq("id", id);
+    await loadAvailability();
+  };
+
+  if (loading) {
+    return (
+      <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+        <p className="text-sm text-muted-foreground">Carregando...</p>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <div className="space-y-6 max-w-3xl">
+        <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Meu perfil profissional</h2>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Esses dados aparecem no seu perfil público e são usados pelos filtros de busca do diretório (cidade/estado, especialidade, convênio, modalidade).
+          </p>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-foreground">Sobre mim</label>
+            <textarea
+              value={bio}
+              onChange={e => setBio(e.target.value)}
+              placeholder="Conte um pouco sobre sua formação e forma de atendimento..."
+              className="w-full h-28 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Cidade" placeholder="São Paulo" value={city} onChange={setCity} />
+            <Input label="Estado (UF)" placeholder="SP" value={region} onChange={setRegion} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Especialidades (separadas por vírgula)" placeholder="Ansiedade, Depressão, TCC" value={specialties} onChange={setSpecialties} />
+            <Input label="Abordagens (separadas por vírgula)" placeholder="TCC, ACT" value={approaches} onChange={setApproaches} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Valor da sessão (R$)" placeholder="180" value={sessionPrice} onChange={setSessionPrice} />
+            <Input label="Anos de experiência" placeholder="8" value={yearsExperience} onChange={setYearsExperience} />
+          </div>
+
+          <Input label="Convênios aceitos (separados por vírgula)" placeholder="Particular, Unimed" value={insurances} onChange={setInsurances} />
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-foreground">Modalidade de atendimento</label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+                <input type="checkbox" checked={modalityOnline} onChange={e => setModalityOnline(e.target.checked)} className="accent-primary" />
+                Online
+              </label>
+              <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+                <input type="checkbox" checked={modalityPresencial} onChange={e => setModalityPresencial(e.target.checked)} className="accent-primary" />
+                Presencial
+              </label>
+            </div>
+          </div>
+
+          {saveMessage && (
+            <p className={`text-xs ${saveMessage.includes("não") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>
+          )}
+          <Btn variant="primary" onClick={handleSaveProfile} disabled={saving}>{saving ? "Salvando..." : "Salvar perfil"}</Btn>
+        </Card>
+
+        <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Disponibilidade semanal</h2>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Esses horários recorrentes definem quando pacientes podem agendar consultas com você.
+          </p>
+
+          {availability.length === 0 && <p className="text-sm text-muted-foreground">Nenhum horário cadastrado ainda.</p>}
+          <div className="space-y-2">
+            {availability.map(slot => (
+              <div key={slot.id} className="flex items-center justify-between p-3 bg-muted rounded-xl">
+                <span className="text-sm text-foreground">
+                  {WEEKDAY_OPTIONS.find(w => w.value === slot.weekday)?.label ?? slot.weekday} · {slot.start_time.slice(0, 5)} – {slot.end_time.slice(0, 5)}
+                </span>
+                <Btn variant="ghost" size="sm" onClick={() => handleDeleteSlot(slot.id)}><Trash2 size={14} /></Btn>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3 pt-2 border-t border-border">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-foreground">Dia</label>
+              <select value={newWeekday} onChange={e => setNewWeekday(Number(e.target.value))} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30">
+                {WEEKDAY_OPTIONS.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-foreground">Início</label>
+              <input type="time" value={newStart} onChange={e => setNewStart(e.target.value)} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-foreground">Fim</label>
+              <input type="time" value={newEnd} onChange={e => setNewEnd(e.target.value)} className="px-3 py-2 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            </div>
+            <Btn variant="outline" onClick={handleAddSlot} disabled={addingSlot}><Plus size={14} />{addingSlot ? "Adicionando..." : "Adicionar horário"}</Btn>
+          </div>
+          {availabilityError && <p className="text-xs text-red-600">{availabilityError}</p>}
+        </Card>
       </div>
     </AppShell>
   );
@@ -3520,8 +3805,8 @@ export default function App() {
     }
   }, []);
 
-  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin"];
-  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin"];
+  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin", "professional-settings"];
+  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin", "professional-settings"];
   // Screens restricted to specific roles; screens absent from this map are open to any authenticated user (e.g. video, shared by patient + professional).
   const screenRoles: Partial<Record<Screen, UserRole[]>> = {
     "patient-dashboard": ["patient"],
@@ -3530,6 +3815,7 @@ export default function App() {
     ehr: ["professional"],
     "ai-assistant": ["professional"],
     financial: ["professional"],
+    "professional-settings": ["professional"],
     admin: ["admin"],
     checkout: ["patient"],
   };
@@ -3663,6 +3949,7 @@ export default function App() {
       {screen === "pricing" && <PricingPage onNavigate={navigate} />}
       {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={navigate} currentUser={currentUser} bookingDraft={bookingDraft} />}
       {screen === "financial" && currentUser && <FinancialDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "professional-settings" && currentUser && <ProfessionalSettingsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "admin" && currentUser && <AdminPanel onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
     </div>
   );

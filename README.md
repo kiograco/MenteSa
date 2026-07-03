@@ -42,6 +42,8 @@
   - [x] Prontuário: notas clínicas por sessão (`session_notes`, RLS só para o profissional)
   - [x] Sala de vídeo mock vinculada à consulta (`video_rooms`)
   - [x] Painel admin: aprovar/rejeitar profissionais, listar usuários e pagamentos
+  - [x] Autoatendimento do profissional: editar bio/especialidades/preço/cidade/modalidades/convênios
+        e gerenciar a própria disponibilidade semanal (tela "Configurações" do dashboard profissional)
   - [x] Build limpo (`npm run build`), typecheck limpo (`npm run typecheck`) e testes unitários básicos (`npm run test`)
 
   Fora do escopo do MVP (ficou como mock/placeholder de propósito): IA de transcrição de sessão
