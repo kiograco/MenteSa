@@ -50,8 +50,34 @@
   ## Indo para produção
 
   Checklist do que falta para o app sair do MVP e virar algo usável com dinheiro/dados reais.
-  Todo o código já está pronto — o que falta é você criar as contas nos provedores abaixo e
-  preencher as chaves (nenhuma chave real está no repositório).
+  Todo o código já está pronto — o que falta, na maioria dos itens, é você criar as contas nos
+  provedores e preencher as chaves (nenhuma chave real está no repositório).
+
+  ### Progresso
+
+  - [x] Node 22 alinhado (`.nvmrc`/`engines`) e CI no GitHub Actions (`.github/workflows/ci.yml`)
+  - [x] Código morto removido (shadcn/Figma scaffold não usado) e vendor chunks separados
+  - [x] Monitoramento de erros (Sentry, opcional via `VITE_SENTRY_DSN`)
+  - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
+  - [ ] Fluxo de "esqueci minha senha"
+  - [ ] Upload de documento para verificação profissional
+  - [ ] Vídeo real (Daily.co)
+  - [ ] Pagamento real (Mercado Pago)
+  - [ ] E-mail transacional de confirmação
+  - [ ] Projeto Supabase real (staging/prod) + deploy de migrations via CI
+  - [ ] Checagem de responsividade mobile
+  - [ ] Revisão de segurança final
+
+  ### Termos de Uso e Privacidade
+
+  `src/content/legal.ts` tem o rascunho de Termos de Uso e Política de Privacidade, exibido em
+  modal (`LegalModal`) no rodapé da landing page e no cadastro. O cadastro (e-mail ou Google) fica
+  bloqueado até o usuário marcar a caixa de aceite; a data de aceite é gravada em
+  `profiles.terms_accepted_at` (migration `20260703000000_terms_acceptance.sql`).
+
+  ⚠️ **O texto é um rascunho, não é parecer jurídico.** Antes de abrir para usuários reais, peça
+  para um advogado (idealmente com experiência em saúde/LGPD) revisar `src/content/legal.ts` —
+  principalmente as seções sobre dados sensíveis de saúde (prontuário) e retenção de dados.
 
   ### Chaves de acesso necessárias
 

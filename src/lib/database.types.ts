@@ -19,6 +19,7 @@ export interface Database {
           phone: string | null;
           avatar_url: string | null;
           created_at: string;
+          terms_accepted_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["profiles"]["Row"]> & {
           id: string;
