@@ -65,7 +65,7 @@
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
-  - [ ] Checagem de responsividade mobile
+  - [x] Checagem de responsividade mobile
   - [ ] Revisão de segurança final
 
   ### Termos de Uso e Privacidade

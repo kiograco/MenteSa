@@ -2740,7 +2740,7 @@ function PricingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <Card className="p-8">
           <h2 className="text-xl font-bold text-foreground font-display mb-6 text-center">Compare todos os recursos</h2>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[560px] text-sm">
               <thead>
                 <tr className="border-b border-border">
                   <th className="text-left py-3 font-medium text-muted-foreground w-1/2">Recurso</th>
@@ -3360,7 +3360,8 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
             </div>
             {loadingUsers && <p className="text-sm text-muted-foreground p-4">Carregando usuários...</p>}
             {!loadingUsers && (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[480px] text-sm">
                 <thead className="bg-muted/50"><tr>{["Usuário", "Tipo", "Telefone", "Cadastro"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr></thead>
                 <tbody>
                   {filteredUsers.map(u => (
@@ -3373,6 +3374,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </Card>
         )}
