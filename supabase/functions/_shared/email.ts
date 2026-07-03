@@ -4,6 +4,18 @@
 // (profiles has no email column — that lives on auth.users).
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
+// profiles.full_name is user-controlled (anyone can sign up as "professional" with any name) and
+// gets embedded in this HTML e-mail, so it must be escaped — otherwise a malicious display name
+// becomes stored HTML injection served from MindCare's own confirmation e-mails.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function sendBookingConfirmationEmail(supabaseAdmin: SupabaseClient, appointmentId: string): Promise<void> {
   const resendApiKey = Deno.env.get("RESEND_API_KEY");
   if (!resendApiKey) return; // Not configured — silently skip, this is a nice-to-have, not a booking blocker.
@@ -20,8 +32,8 @@ export async function sendBookingConfirmationEmail(supabaseAdmin: SupabaseClient
   const { data: userData, error: userError } = await supabaseAdmin.auth.admin.getUserById(item.patient_id);
   if (userError || !userData.user?.email) return;
 
-  const patientName = item.profiles?.full_name ?? "Paciente";
-  const professionalName = item.professional_profiles?.profiles?.full_name ?? "seu profissional";
+  const patientName = escapeHtml(item.profiles?.full_name ?? "Paciente");
+  const professionalName = escapeHtml(item.professional_profiles?.profiles?.full_name ?? "seu profissional");
   const scheduledLabel = new Date(item.scheduled_at).toLocaleString("pt-BR", {
     weekday: "long",
     day: "2-digit",

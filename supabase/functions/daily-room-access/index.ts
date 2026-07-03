@@ -49,6 +49,18 @@ Deno.serve(async req => {
 
     if (apptError || !appointment) return json({ error: "Consulta não encontrada ou acesso negado." }, 404);
 
+    // A real video room/token must never be handed out for an unpaid appointment — appointments
+    // are created (status "scheduled") before the patient finishes Mercado Pago checkout, so
+    // "the appointment exists" alone is not proof of payment.
+    const { data: payment } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("appointment_id", appointmentId)
+      .eq("status", "paid")
+      .maybeSingle();
+
+    if (!payment) return json({ error: "Pagamento da consulta ainda não confirmado." }, 402);
+
     const item = appointment as any;
     const displayName = userData.user.id === item.patient_id
       ? item.profiles?.full_name ?? "Paciente"
