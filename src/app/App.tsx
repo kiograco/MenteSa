@@ -2866,7 +2866,11 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
     setSaving(true);
     setSaveMessage("");
 
-    const aiFields = aiResult && aiConsent
+    // Consent already gated sending the text to Gemini when the summary was generated — re-requiring
+    // it here too just meant the AI content silently vanished from the save if the checkbox state
+    // changed (or was simply unchecked) by the time "Salvar" was clicked, with no warning shown.
+    // Persisting a result we already generated needs no second consent check.
+    const aiFields = aiResult
       ? { ai_summary: formatAiSummaryText(aiResult), ai_summary_generated_at: new Date().toISOString() }
       : {};
 
@@ -2885,7 +2889,11 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
       return;
     }
 
-    setSessions(prev => prev.map(s => (s.id === selectedSessionId ? { ...s, notes: notesDraft } : s)));
+    setSessions(prev => prev.map(s => (s.id === selectedSessionId ? {
+      ...s,
+      notes: notesDraft,
+      aiSummary: aiResult ? formatAiSummaryText(aiResult) : s.aiSummary,
+    } : s)));
     setSaveMessage("Nota salva com segurança.");
   };
 
@@ -3032,7 +3040,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
             <Card className="p-5">
               <h3 className="font-semibold text-foreground font-display mb-3">Salvar no prontuário</h3>
               <p className="text-xs text-muted-foreground mb-3">
-                Salva o texto acima na nota desta sessão (a mesma exibida no prontuário) — junto com o resumo de IA, se você gerou um e manteve o consentimento marcado.
+                Salva o texto acima na nota desta sessão (a mesma exibida no prontuário) — junto com o resumo de IA, se você gerou um nesta sessão de edição.
               </p>
               <div className="flex gap-2">
                 <Btn variant="primary" className="flex-1 justify-center" disabled={!selectedSessionId || saving} onClick={handleSaveNotes}>
