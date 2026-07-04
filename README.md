@@ -299,6 +299,33 @@
   Para ativar a notificação por e-mail: `supabase functions deploy notify-admin-document` (já
   reaproveita o `RESEND_API_KEY`/`EMAIL_FROM` configurado para o e-mail de confirmação de consulta).
 
+  ### Conformidade com o Código de Ética do Psicólogo (CFP)
+
+  - **Declaração de registro no e-Psi** (Resolução CFP nº 11/2018): atendimento psicológico
+    mediado por tecnologia exige que o psicólogo (CRP) registre essa modalidade no sistema e-Psi
+    do CFP antes de atender remotamente — uma obrigação pessoal do profissional, que a plataforma
+    não tem como verificar automaticamente (não existe API pública pra isso, mesma situação do
+    CRP/CRM). No cadastro profissional, se o registro for CRP, um checkbox obrigatório declara
+    isso (`professional_profiles.epsi_declared_at`), gravado pelo mesmo trigger que já cria o
+    perfil profissional no cadastro. Não se aplica a CRM (psiquiatria segue as regras de
+    telemedicina do CFM, não o e-Psi do CFP).
+  - **Admin não lê mais o conteúdo de notas clínicas.** A RLS de `session_notes` tinha um bypass
+    pra `is_admin()` que contradizia o que a própria Política de Privacidade já prometia ("visíveis
+    apenas para o profissional responsável... nunca para outros usuários"). Removido — agora só o
+    profissional dono da nota tem acesso à tabela. Pra alguma visibilidade administrativa básica
+    (quantas notas existem, se usaram IA) sem tocar no texto clínico, existe
+    `admin_session_notes_overview()`, uma função `security definer` que só devolve metadados
+    (datas, booleanos `has_notes`/`has_ai_summary`) — o texto da nota nunca sai do banco pra
+    responder essa pergunta.
+  - **Estatísticas da landing page deixaram de ser inventadas.** "+2.400 profissionais
+    verificados", "4.9 avaliação média" e "98% satisfação" eram números fixos no código, sem
+    relação com dado real nenhum — problemático pra um serviço de saúde por ser publicidade
+    enganosa, além de esbarrar nas restrições éticas de publicidade profissional. Agora: contagem
+    real de `professional_profiles` verificados, média real de `reviews.rating`, e % real de
+    avaliações ≥ 4 estrelas — todos crescem sozinhos conforme profissionais se cadastram e
+    pacientes avaliam. "24h suporte" continua estático por ser um compromisso de atendimento, não
+    uma estatística medida.
+
   ### Painel administrativo: controle de usuários e conta admin
 
   A aba "Usuários" do painel admin (`/admin`) já lista todos os pacientes/profissionais/admins com

@@ -377,6 +377,31 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [annual, setAnnual] = useState(false);
   const [legalDoc, setLegalDoc] = useState<LegalDocument | null>(null);
 
+  const [verifiedCount, setVerifiedCount] = useState<number | null>(null);
+  const [avgRating, setAvgRating] = useState<number | null>(null);
+  const [positivePct, setPositivePct] = useState<number | null>(null);
+
+  // Real counts, not invented marketing numbers — grows on its own as professionals are verified
+  // and patients leave reviews, instead of a hardcoded "+2.400 profissionais verificados" that
+  // never actually reflected the platform's real numbers.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const [{ count }, { data: reviewRows }] = await Promise.all([
+        supabase.from("professional_profiles").select("id", { count: "exact", head: true }).eq("verification_status", "verified"),
+        supabase.from("reviews").select("rating"),
+      ]);
+      if (!active) return;
+      setVerifiedCount(count ?? 0);
+      const ratings = (reviewRows ?? []).map(r => r.rating as number);
+      setAvgRating(ratings.length ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length : null);
+      setPositivePct(ratings.length ? (ratings.filter(r => r >= 4).length / ratings.length) * 100 : null);
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const benefits = [
     { icon: <Shield size={22} />, title: "Profissionais Verificados", desc: "Todos os CRP/CRM são validados pela nossa equipe antes da publicação." },
     { icon: <Lock size={22} />, title: "Sigilo & Segurança", desc: "Dados criptografados em repouso e em trânsito. Conformidade com LGPD." },
@@ -415,7 +440,7 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         <div className="relative max-w-7xl mx-auto px-6 pt-20 pb-24">
           <div className="grid lg:grid-cols-2 gap-12 items-center">
             <div>
-              <Badge variant="success" className="mb-6"><CheckCircle size={12} />+2.400 profissionais verificados</Badge>
+              <Badge variant="success" className="mb-6"><CheckCircle size={12} />{verifiedCount === null ? "Profissionais verificados" : `${verifiedCount} profissionais verificados`}</Badge>
               <h1 className="text-5xl lg:text-6xl font-bold text-foreground leading-tight font-display mb-6">
                 Cuidado mental <br />
                 <span className="text-primary">com quem entende</span>
@@ -432,7 +457,11 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
                 </Btn>
               </div>
               <div className="flex items-center gap-6 mt-8">
-                {[["4.9", "★ avaliação média"], ["98%", "satisfação"], ["24h", "suporte"]].map(([v, l]) => (
+                {[
+                  [avgRating !== null ? avgRating.toFixed(1) : "—", "★ avaliação média"],
+                  [positivePct !== null ? `${Math.round(positivePct)}%` : "—", "satisfação"],
+                  ["24h", "suporte"],
+                ].map(([v, l]) => (
                   <div key={l}>
                     <p className="text-xl font-bold text-foreground font-display">{v}</p>
                     <p className="text-xs text-muted-foreground">{l}</p>
@@ -1224,6 +1253,8 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [licenseNumber, setLicenseNumber] = useState("");
+  const [epsiDeclared, setEpsiDeclared] = useState(false);
+  const isCRP = !licenseNumber.toUpperCase().includes("CRM");
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState(initialInfo ?? "");
   const [loading, setLoading] = useState(false);
@@ -1287,6 +1318,9 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
       if (userType === "professional" && !licenseNumber.trim()) {
         throw new Error("Informe o CRP/CRM para cadastro profissional.");
       }
+      if (userType === "professional" && isCRP && !epsiDeclared) {
+        throw new Error("Confirme o registro no e-Psi (Resolução CFP nº 11/2018) para se cadastrar como psicólogo(a).");
+      }
 
       const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
@@ -1302,6 +1336,7 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             ...(userType === "professional" && {
               license_type: licenseNumber.toUpperCase().includes("CRM") ? "CRM" : "CRP",
               license_number: licenseNumber.trim(),
+              ...(isCRP && epsiDeclared ? { epsi_declared_at: new Date().toISOString() } : {}),
             }),
           },
         },
@@ -1392,6 +1427,12 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             {mode === "register" && userType === "professional" && (
               <Input label="CRP/CRM" placeholder="Ex: CRP 06/12345" icon={<Shield size={15} />} value={licenseNumber} onChange={setLicenseNumber} />
             )}
+            {mode === "register" && userType === "professional" && isCRP && (
+              <label className="flex items-start gap-2 mt-3 text-xs text-muted-foreground cursor-pointer">
+                <input type="checkbox" checked={epsiDeclared} onChange={e => setEpsiDeclared(e.target.checked)} className="mt-0.5 accent-primary" />
+                <span>Declaro que meu atendimento psicológico mediado por tecnologia está registrado no sistema e-Psi do CFP, conforme exige a Resolução CFP nº 11/2018.</span>
+              </label>
+            )}
           </div>
 
           {mode === "register" && (
@@ -1429,7 +1470,12 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             </div>
           )}
 
-          <Btn variant="primary" className="w-full justify-center mt-6" onClick={handleAuth} disabled={loading || (mode === "register" && !acceptedTerms)}>
+          <Btn
+            variant="primary"
+            className="w-full justify-center mt-6"
+            onClick={handleAuth}
+            disabled={loading || (mode === "register" && (!acceptedTerms || (userType === "professional" && isCRP && !epsiDeclared)))}
+          >
             {loading ? "Processando..." : mode === "login" ? "Entrar" : "Criar conta"}
           </Btn>
 
@@ -5125,6 +5171,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
   const [loadingPayments, setLoadingPayments] = useState(true);
 
   const [verifiedCount, setVerifiedCount] = useState(0);
+  const [sessionNotesCount, setSessionNotesCount] = useState<number | null>(null);
 
   const loadPending = async () => {
     setLoadingPending(true);
@@ -5200,6 +5247,14 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
       setVerifiedCount(count ?? 0);
     })();
 
+    // Metadata only (created_at/professional_id/has_notes/has_ai_summary) — never the clinical
+    // text itself. See admin_session_notes_overview() (security definer, RLS no longer grants
+    // admin any direct row access to session_notes content).
+    (async () => {
+      const { data } = await supabase.rpc("admin_session_notes_overview");
+      setSessionNotesCount((data ?? []).length);
+    })();
+
     void loadUsers();
 
     (async () => {
@@ -5229,6 +5284,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
     { label: "Pacientes cadastrados", value: String(patientCount), icon: <Heart size={18} />, color: "blue" as const },
     { label: "Validações pendentes", value: String(pending.length), icon: <Clock size={18} />, color: "purple" as const },
     { label: "GMV total (pago)", value: `R$${gmv.toFixed(2).replace(".", ",")}`, icon: <DollarSign size={18} />, color: "amber" as const },
+    { label: "Notas de sessão (metadados)", value: sessionNotesCount === null ? "…" : String(sessionNotesCount), icon: <FileText size={18} />, color: "purple" as const },
   ];
 
   const filteredUsers = users.filter(u => {

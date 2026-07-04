@@ -46,6 +46,7 @@ export interface Database {
           insurances: string[];
           years_experience: number;
           created_at: string;
+          epsi_declared_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
