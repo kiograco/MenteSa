@@ -24,7 +24,8 @@ import {
 } from "../lib/materials";
 import {
   listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
-  type ChatMessage, type Conversation,
+  listUnreadMessageNotifications, subscribeToMyMessages,
+  type ChatMessage, type Conversation, type UnreadMessageNotification,
 } from "../lib/messages";
 import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
@@ -306,14 +307,31 @@ function AppShell({
   navItems,
   userName,
   onSignOut,
+  currentUser,
+  onNotificationClick,
 }: {
   children: React.ReactNode;
   title: string;
   navItems: { icon: React.ReactNode; label: string; active?: boolean; onClick?: () => void }[];
   userName: string;
   onSignOut: () => void;
+  currentUser: AppUser;
+  onNotificationClick?: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<UnreadMessageNotification[]>([]);
+
+  const loadNotifications = async () => {
+    const data = await listUnreadMessageNotifications(currentUser.id).catch(() => []);
+    setNotifications(data);
+  };
+
+  useEffect(() => {
+    void loadNotifications();
+    return subscribeToMyMessages(currentUser.id, () => void loadNotifications());
+  }, [currentUser.id]);
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <aside className={`${collapsed ? "w-16" : "w-60"} flex-shrink-0 bg-white border-r border-border flex flex-col transition-all duration-200`}>
@@ -358,13 +376,43 @@ function AppShell({
         </div>
       </aside>
       <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-border flex items-center justify-between px-6">
+        <header className="h-16 bg-white border-b border-border flex items-center justify-between px-6 relative">
           <h1 className="font-semibold text-foreground font-display">{title}</h1>
           <div className="flex items-center gap-3">
-            <button className="relative p-2 rounded-xl hover:bg-muted">
-              <Bell size={18} className="text-muted-foreground" />
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
-            </button>
+            <div className="relative">
+              <button className="relative p-2 rounded-xl hover:bg-muted" onClick={() => setNotifOpen(o => !o)}>
+                <Bell size={18} className="text-muted-foreground" />
+                {notifications.length > 0 && (
+                  <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 bg-red-500 rounded-full text-[10px] leading-4 text-white text-center font-semibold">
+                    {notifications.length > 9 ? "9+" : notifications.length}
+                  </span>
+                )}
+              </button>
+              {notifOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                  <div className="absolute right-0 top-11 w-80 bg-white border border-border rounded-xl shadow-lg z-50 max-h-96 overflow-y-auto">
+                    <div className="px-4 py-3 border-b border-border">
+                      <p className="text-sm font-semibold text-foreground">Notificações</p>
+                    </div>
+                    {notifications.length === 0 && <p className="p-4 text-sm text-muted-foreground">Nenhuma mensagem nova.</p>}
+                    {notifications.map(n => (
+                      <button
+                        key={n.id}
+                        onClick={() => { setNotifOpen(false); onNotificationClick?.(); }}
+                        className="w-full text-left px-4 py-3 flex items-start gap-3 border-b border-border/50 hover:bg-muted last:border-0"
+                      >
+                        <PhotoOrInitials src={n.senderAvatar || undefined} name={n.senderName} className="w-8 h-8 rounded-full object-cover bg-secondary flex-shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-foreground truncate">{n.senderName}</p>
+                          <p className="text-xs text-muted-foreground truncate">{n.content}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <Avatar name={userName} size="sm" online={true} />
           </div>
         </header>
@@ -2031,7 +2079,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
     : null;
 
   return (
-    <AppShell title="Meu Painel" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Meu Painel" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => setDashboardTab("mensagens")}>
       <div className="space-y-6">
         {/* Welcome */}
         <Card className="p-6 bg-gradient-to-r from-primary to-[#156038] text-white border-0">
@@ -2440,7 +2488,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     .slice(0, 5);
 
   return (
-    <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Dashboard Profissional" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-6">
         {profileIncomplete && (
           <Card className="p-5 border-blue-200 bg-blue-50">
@@ -2872,7 +2920,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const monthList = appointments.slice().sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
 
   return (
-    <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-4 h-full">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
@@ -3311,7 +3359,7 @@ function PatientsScreen({
   }, [currentUser.id]);
 
   return (
-    <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <MessagingPanel
         currentUser={currentUser}
         role="professional"
@@ -3565,7 +3613,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
   return (
-    <AppShell title="Prontuário Eletrônico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Prontuário Eletrônico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="flex gap-6 h-full">
         {/* Patient list */}
         <div className="w-64 flex-shrink-0">
@@ -4015,7 +4063,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
   };
 
   return (
-    <AppShell title="IA Assistente Clínico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="IA Assistente Clínico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       {loadingPatients ? (
         <p className="text-sm text-muted-foreground">Carregando...</p>
       ) : patients.length === 0 ? (
@@ -5137,7 +5185,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   const distinctPatientsCount = new Set(appointments.map(a => a.patientId)).size;
 
   return (
-    <AppShell title="Dashboard Financeiro" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Dashboard Financeiro" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-6">
         {loading && <p className="text-sm text-muted-foreground">Carregando...</p>}
 
@@ -5463,14 +5511,14 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
 
   if (loading) {
     return (
-      <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
         <p className="text-sm text-muted-foreground">Carregando...</p>
       </AppShell>
     );
   }
 
   return (
-    <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Configurações" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-6 max-w-3xl">
         <Card className="p-6 space-y-4">
           <h2 className="font-semibold text-foreground font-display">Meu perfil profissional</h2>
@@ -5788,7 +5836,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
   const roleLabel = (role: UserRole) => role === "professional" ? "Profissional" : role === "admin" ? "Admin" : "Paciente";
 
   return (
-    <AppShell title="Painel Administrativo" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+    <AppShell title="Painel Administrativo" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser}>
       <div className="space-y-6">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {statsData.map(s => (
