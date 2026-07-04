@@ -13,6 +13,11 @@ import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
 import { getAISessionSummary, type AISessionSummary } from "../lib/ai";
 import { PHQ9_QUESTIONS, GAD7_QUESTIONS, ANSWER_OPTIONS, scoreInstrument, instrumentLabel, type Instrument } from "../lib/assessments";
+import {
+  uploadPatientMaterial, listMaterialsForProfessional, deletePatientMaterial, getMaterialSignedUrl,
+  listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
+  type PatientMaterial, type PatientTask,
+} from "../lib/materials";
 import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
@@ -1527,7 +1532,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
-  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas">("inicio");
+  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas" | "documentos" | "tarefas">("inicio");
 
   const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
   const [totalInvested, setTotalInvested] = useState(0);
@@ -1593,6 +1598,51 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
     setAssessmentMessage(`Enviado! Pontuação: ${totalScore} (${severity})`);
     setAnswers(new Array(questions.length).fill(-1));
     void loadAssessments();
+  };
+
+  const [materials, setMaterials] = useState<PatientMaterial[]>([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(true);
+  const [tasks, setTasks] = useState<PatientTask[]>([]);
+  const [loadingTasks, setLoadingTasks] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoadingMaterials(true);
+      const data = await listMaterialsForPatient(currentUser.id).catch(() => []);
+      if (active) { setMaterials(data); setLoadingMaterials(false); }
+    })();
+    return () => { active = false; };
+  }, [currentUser.id]);
+
+  const loadTasks = async () => {
+    setLoadingTasks(true);
+    const data = await listTasksForPatient(currentUser.id).catch(() => []);
+    setTasks(data);
+    setLoadingTasks(false);
+  };
+
+  useEffect(() => {
+    void loadTasks();
+  }, [currentUser.id]);
+
+  const handleViewMaterial = async (storagePath: string) => {
+    try {
+      const url = await getMaterialSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "patientDashboard.viewMaterial" });
+    }
+  };
+
+  const handleToggleTask = async (taskId: string, completed: boolean) => {
+    setTasks(prev => prev.map(t => (t.id === taskId ? { ...t, completedAt: completed ? new Date().toISOString() : null } : t)));
+    try {
+      await markTaskCompleted(taskId, completed);
+    } catch (error) {
+      reportError(error, { flow: "patientDashboard.toggleTask" });
+      void loadTasks();
+    }
   };
 
   const handleCancelAppointment = async (appointmentId: string) => {
@@ -1684,10 +1734,10 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         </Card>
 
         <div className="flex gap-1 border-b border-border">
-          {(["inicio", "escalas"] as const).map(t => (
+          {(["inicio", "escalas", "documentos", "tarefas"] as const).map(t => (
             <button key={t} onClick={() => setDashboardTab(t)}
               className={`px-3 py-2 text-sm font-medium border-b-2 transition-all ${dashboardTab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              {t === "inicio" ? "Início" : "Escalas psicológicas"}
+              {t === "inicio" ? "Início" : t === "escalas" ? "Escalas psicológicas" : t === "documentos" ? "Documentos" : "Tarefas"}
             </button>
           ))}
         </div>
@@ -1817,6 +1867,48 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
               </div>
             </Card>
           </div>
+        )}
+
+        {dashboardTab === "documentos" && (
+          <Card className="p-6">
+            <h3 className="font-semibold text-foreground font-display mb-1">Documentos compartilhados</h3>
+            <p className="text-xs text-muted-foreground mb-4">Materiais que seu profissional compartilhou com você.</p>
+            {loadingMaterials && <p className="text-sm text-muted-foreground">Carregando...</p>}
+            {!loadingMaterials && materials.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento compartilhado ainda.</p>}
+            <div className="divide-y divide-border">
+              {materials.map(m => (
+                <button key={m.id} type="button" onClick={() => handleViewMaterial(m.storagePath)} className="w-full py-3 flex items-center gap-2 text-left text-sm text-foreground hover:text-primary">
+                  <FileText size={15} className="flex-shrink-0" />{m.fileName}
+                </button>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {dashboardTab === "tarefas" && (
+          <Card className="p-6">
+            <h3 className="font-semibold text-foreground font-display mb-1">Tarefas</h3>
+            <p className="text-xs text-muted-foreground mb-4">Exercícios e tarefas atribuídos pelo seu profissional.</p>
+            {loadingTasks && <p className="text-sm text-muted-foreground">Carregando...</p>}
+            {!loadingTasks && tasks.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma tarefa atribuída ainda.</p>}
+            <div className="divide-y divide-border">
+              {tasks.map(t => (
+                <div key={t.id} className="py-3 flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(t.completedAt)}
+                    onChange={e => handleToggleTask(t.id, e.target.checked)}
+                    className="mt-1"
+                  />
+                  <div className="flex-1">
+                    <p className={`text-sm font-medium ${t.completedAt ? "text-muted-foreground line-through" : "text-foreground"}`}>{t.title}</p>
+                    {t.description && <p className="text-xs text-muted-foreground mt-0.5">{t.description}</p>}
+                    {t.dueDate && <p className="text-xs text-muted-foreground mt-0.5">Prazo: {new Date(t.dueDate).toLocaleDateString("pt-BR")}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
         )}
       </div>
     </AppShell>
@@ -2617,7 +2709,7 @@ type EhrSession = { id: string; scheduledAt: string; modality: string; status: s
 
 function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
   const [patientSearch, setPatientSearch] = useState("");
-  const [ehrTab, setEhrTab] = useState<"historico" | "notas" | "escalas">("historico");
+  const [ehrTab, setEhrTab] = useState<"historico" | "notas" | "escalas" | "materiais">("historico");
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -2669,6 +2761,81 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       active = false;
     };
   }, [selectedPatientId]);
+
+  const [materials, setMaterials] = useState<PatientMaterial[]>([]);
+  const [tasks, setTasks] = useState<(PatientTask & { patientId: string })[]>([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(false);
+  const [uploadingMaterial, setUploadingMaterial] = useState(false);
+  const [materialError, setMaterialError] = useState("");
+  const [shareWithAll, setShareWithAll] = useState(false);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskDescription, setTaskDescription] = useState("");
+  const [taskDueDate, setTaskDueDate] = useState("");
+  const [assigningTask, setAssigningTask] = useState(false);
+
+  const loadMaterialsAndTasks = async () => {
+    setLoadingMaterials(true);
+    const [materialsData, tasksData] = await Promise.all([
+      listMaterialsForProfessional(currentUser.id).catch(() => []),
+      listTasksForProfessional(currentUser.id).catch(() => []),
+    ]);
+    setMaterials(materialsData);
+    setTasks(tasksData);
+    setLoadingMaterials(false);
+  };
+
+  useEffect(() => {
+    void loadMaterialsAndTasks();
+  }, [currentUser.id]);
+
+  const handleUploadMaterial = async (file: File) => {
+    setMaterialError("");
+    setUploadingMaterial(true);
+    try {
+      await uploadPatientMaterial(currentUser.id, file, shareWithAll ? null : selectedPatientId);
+      await loadMaterialsAndTasks();
+    } catch (error) {
+      reportError(error, { flow: "ehr.uploadMaterial" });
+      setMaterialError(error instanceof Error ? error.message : "Não foi possível enviar o arquivo.");
+    } finally {
+      setUploadingMaterial(false);
+    }
+  };
+
+  const handleViewMaterial = async (storagePath: string) => {
+    try {
+      const url = await getMaterialSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "ehr.viewMaterial" });
+    }
+  };
+
+  const handleDeleteMaterial = async (material: PatientMaterial) => {
+    if (!window.confirm(`Remover "${material.fileName}"?`)) return;
+    try {
+      await deletePatientMaterial(material.id, material.storagePath);
+      await loadMaterialsAndTasks();
+    } catch (error) {
+      reportError(error, { flow: "ehr.deleteMaterial" });
+    }
+  };
+
+  const handleAssignTask = async () => {
+    if (!selectedPatientId || !taskTitle.trim()) return;
+    setAssigningTask(true);
+    try {
+      await assignTask(currentUser.id, selectedPatientId, taskTitle.trim(), taskDescription.trim(), taskDueDate || null);
+      setTaskTitle("");
+      setTaskDescription("");
+      setTaskDueDate("");
+      await loadMaterialsAndTasks();
+    } catch (error) {
+      reportError(error, { flow: "ehr.assignTask" });
+    } finally {
+      setAssigningTask(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -2817,14 +2984,92 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                   </div>
                 </div>
                 <div className="flex gap-1 border-t border-border pt-3">
-                  {(["historico", "notas", "escalas"] as const).map(t => (
+                  {(["historico", "notas", "escalas", "materiais"] as const).map(t => (
                     <button key={t} onClick={() => setEhrTab(t)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
-                      {t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : "Escalas"}
+                      {t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : t === "escalas" ? "Escalas" : "Biblioteca"}
                     </button>
                   ))}
                 </div>
               </Card>
+
+              {ehrTab === "materiais" && (
+                <div className="space-y-4">
+                  <Card className="p-5">
+                    <h3 className="font-semibold text-foreground font-display mb-3">Compartilhar material</h3>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
+                      <input type="checkbox" checked={shareWithAll} onChange={e => setShareWithAll(e.target.checked)} />
+                      Compartilhar com todos os meus pacientes (em vez de só {selectedPatient?.name ?? "o paciente selecionado"})
+                    </label>
+                    <label className="cursor-pointer">
+                      <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingMaterial ? "opacity-50 pointer-events-none" : ""}`}>
+                        <Upload size={14} />{uploadingMaterial ? "Enviando..." : "Enviar arquivo"}
+                      </span>
+                      <input
+                        type="file"
+                        className="hidden"
+                        disabled={uploadingMaterial}
+                        onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadMaterial(file); e.target.value = ""; }}
+                      />
+                    </label>
+                    {materialError && <p className="text-xs text-red-600 mt-2">{materialError}</p>}
+                  </Card>
+
+                  <Card className="p-5">
+                    <h3 className="font-semibold text-foreground font-display mb-3">Materiais compartilhados</h3>
+                    {loadingMaterials && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                    {!loadingMaterials && materials.length === 0 && <p className="text-sm text-muted-foreground">Nenhum material enviado ainda.</p>}
+                    <div className="divide-y divide-border">
+                      {materials.map(m => (
+                        <div key={m.id} className="py-2.5 flex items-center justify-between gap-3">
+                          <button type="button" onClick={() => handleViewMaterial(m.storagePath)} className="text-left text-sm text-foreground hover:text-primary flex items-center gap-2">
+                            <FileText size={14} className="flex-shrink-0" />{m.fileName}
+                          </button>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline">{m.patientId ? patients.find(p => p.id === m.patientId)?.name ?? "1 paciente" : "Todos os pacientes"}</Badge>
+                            <button type="button" onClick={() => handleDeleteMaterial(m)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+
+                  <Card className="p-5">
+                    <h3 className="font-semibold text-foreground font-display mb-3">Atribuir tarefa a {selectedPatient?.name ?? "paciente"}</h3>
+                    <div className="space-y-3">
+                      <Input label="Título" placeholder="Ex: Diário de pensamentos automáticos" value={taskTitle} onChange={setTaskTitle} />
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-sm font-medium text-foreground">Descrição (opcional)</label>
+                        <textarea
+                          value={taskDescription}
+                          onChange={e => setTaskDescription(e.target.value)}
+                          className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        />
+                      </div>
+                      <Input label="Prazo (opcional)" type="date" value={taskDueDate} onChange={setTaskDueDate} />
+                      <Btn variant="primary" disabled={!taskTitle.trim() || assigningTask} onClick={handleAssignTask}>
+                        {assigningTask ? "Atribuindo..." : "Atribuir tarefa"}
+                      </Btn>
+                    </div>
+                  </Card>
+
+                  <Card className="p-5">
+                    <h3 className="font-semibold text-foreground font-display mb-3">Tarefas atribuídas</h3>
+                    {tasks.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma tarefa atribuída ainda.</p>}
+                    <div className="divide-y divide-border">
+                      {tasks.map(t => (
+                        <div key={t.id} className="py-2.5 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-foreground">{t.title}</p>
+                            <p className="text-xs text-muted-foreground">{patients.find(p => p.id === t.patientId)?.name ?? "Paciente"}{t.dueDate ? ` · prazo ${new Date(t.dueDate).toLocaleDateString("pt-BR")}` : ""}</p>
+                          </div>
+                          <Badge variant={t.completedAt ? "success" : "outline"}>{t.completedAt ? "Concluída" : "Pendente"}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
+              )}
 
               {ehrTab === "escalas" && (
                 <Card className="p-6">

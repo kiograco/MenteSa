@@ -202,6 +202,42 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["assessment_responses"]["Row"]>;
         Relationships: [];
       };
+      patient_materials: {
+        Row: {
+          id: string;
+          professional_id: string;
+          patient_id: string | null;
+          storage_path: string;
+          file_name: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["patient_materials"]["Row"]> & {
+          professional_id: string;
+          storage_path: string;
+          file_name: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["patient_materials"]["Row"]>;
+        Relationships: [];
+      };
+      patient_tasks: {
+        Row: {
+          id: string;
+          professional_id: string;
+          patient_id: string;
+          title: string;
+          description: string | null;
+          due_date: string | null;
+          completed_at: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["patient_tasks"]["Row"]> & {
+          professional_id: string;
+          patient_id: string;
+          title: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["patient_tasks"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
