@@ -384,6 +384,7 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [verifiedCount, setVerifiedCount] = useState<number | null>(null);
   const [avgRating, setAvgRating] = useState<number | null>(null);
   const [positivePct, setPositivePct] = useState<number | null>(null);
+  const [testimonials, setTestimonials] = useState<{ id: string; text: string; rating: number; professionalName: string }[]>([]);
 
   // Real counts, not invented marketing numbers — grows on its own as professionals are verified
   // and patients leave reviews, instead of a hardcoded "+2.400 profissionais verificados" that
@@ -391,15 +392,31 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   useEffect(() => {
     let active = true;
     (async () => {
-      const [{ count }, { data: reviewRows }] = await Promise.all([
+      const [{ count }, { data: reviewRows }, { data: testimonialRows }] = await Promise.all([
         supabase.from("professional_profiles").select("id", { count: "exact", head: true }).eq("verification_status", "verified"),
         supabase.from("reviews").select("rating"),
+        // Real written reviews only — never the reviewer's name (reviews_select_all is public/
+        // anonymous, and profiles RLS rightly doesn't expose a patient's identity to anonymous
+        // visitors), just which verified professional the praise is about.
+        supabase
+          .from("reviews")
+          .select("id, rating, comment, professional_profiles(profiles(full_name))")
+          .not("comment", "is", null)
+          .gte("rating", 4)
+          .order("created_at", { ascending: false })
+          .limit(3),
       ]);
       if (!active) return;
       setVerifiedCount(count ?? 0);
       const ratings = (reviewRows ?? []).map(r => r.rating as number);
       setAvgRating(ratings.length ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length : null);
       setPositivePct(ratings.length ? (ratings.filter(r => r >= 4).length / ratings.length) * 100 : null);
+      setTestimonials(((testimonialRows ?? []) as any[]).map(r => ({
+        id: r.id,
+        text: r.comment as string,
+        rating: r.rating as number,
+        professionalName: r.professional_profiles?.profiles?.full_name ?? "um profissional da plataforma",
+      })));
     })();
     return () => {
       active = false;
@@ -419,12 +436,6 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
     { name: "Essencial", price: annual ? 79 : 99, desc: "Para profissionais iniciando online", features: ["5 pacientes ativos", "Agenda + lembretes", "Videochamada HD", "Prontuário básico", "Suporte por e-mail"] },
     { name: "Profissional", price: annual ? 159 : 199, desc: "O plano mais escolhido", features: ["Pacientes ilimitados", "IA de sessão", "Prontuário completo", "Receituário digital", "Dashboard financeiro", "Suporte prioritário"], highlight: true },
     { name: "Clínica", price: annual ? 399 : 499, desc: "Para equipes e clínicas", features: ["Tudo do Profissional", "Múltiplos profissionais", "Admin da clínica", "API de integração", "Relatórios avançados", "SLA garantido"] },
-  ];
-
-  const testimonials = [
-    { name: "Dra. Fernanda Costa", role: "Psicóloga Clínica · CRP 06/12345", avatar: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=80&h=80&fit=crop&auto=format", text: "O MindCare transformou minha prática. A IA que transcreve as sessões me poupa mais de 2h por semana." },
-    { name: "Dr. Rafael Mendes", role: "Psiquiatra · CRM 35/87654", avatar: "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=80&h=80&fit=crop&auto=format", text: "O prontuário eletrônico integrado ao agendamento é exatamente o que eu precisava. Plataforma impecável." },
-    { name: "Beatriz Alves", role: "Paciente há 8 meses", avatar: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=80&h=80&fit=crop&auto=format", text: "Encontrei minha terapeuta em 5 minutos. O pagamento pelo app é super seguro e prático." },
   ];
 
   const faqs = [
@@ -572,26 +583,28 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         </div>
       </section>
 
-      {/* Testimonials */}
-      <section className="py-20 bg-white">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-foreground font-display mb-3">O que dizem sobre nós</h2>
+      {/* Testimonials — real reviews only (reviews.comment), never fabricated. Section is simply
+          absent until there's at least one real written review to show; the reviewer's name is
+          intentionally never shown here (see the fetch above) even though it would be for a
+          logged-in professional/patient elsewhere in the app. */}
+      {testimonials.length > 0 && (
+        <section className="py-20 bg-white">
+          <div className="max-w-7xl mx-auto px-6">
+            <div className="text-center mb-12">
+              <h2 className="text-3xl font-bold text-foreground font-display mb-3">O que dizem sobre nós</h2>
+            </div>
+            <div className="grid md:grid-cols-3 gap-6">
+              {testimonials.map(t => (
+                <Card key={t.id} className="p-6">
+                  <div className="flex mb-3">{Array(t.rating).fill(0).map((_, j) => <Star key={j} size={14} className="text-amber-400 fill-amber-400" />)}</div>
+                  <p className="text-sm text-foreground leading-relaxed mb-4 italic">"{t.text}"</p>
+                  <p className="text-xs text-muted-foreground">Avaliação de paciente sobre {t.professionalName}</p>
+                </Card>
+              ))}
+            </div>
           </div>
-          <div className="grid md:grid-cols-3 gap-6">
-            {testimonials.map((t, i) => (
-              <Card key={i} className="p-6">
-                <div className="flex mb-3">{Array(5).fill(0).map((_, j) => <Star key={j} size={14} className="text-amber-400 fill-amber-400" />)}</div>
-                <p className="text-sm text-foreground leading-relaxed mb-4 italic">"{t.text}"</p>
-                <div className="flex items-center gap-3">
-                  <img src={t.avatar} alt={t.name} className="w-10 h-10 rounded-full object-cover bg-secondary" />
-                  <div><p className="text-sm font-semibold text-foreground">{t.name}</p><p className="text-xs text-muted-foreground">{t.role}</p></div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* FAQ */}
       <section className="py-20 max-w-3xl mx-auto px-6">
