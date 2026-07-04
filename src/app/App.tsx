@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { mockPaymentProvider, createMercadoPagoCheckout } from "../lib/payment-provider";
-import type { UserRole } from "../lib/database.types";
+import type { UserRole, PaymentStatus } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
@@ -1614,20 +1614,183 @@ type PatientAppointment = {
   professionalImg: string;
 };
 
+/** Patient-facing equivalent of ProfessionalSettingsScreen's profile section — much smaller since
+ *  patients have no bio/specialties/availability, just identity + password. */
+function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
+  const [loading, setLoading] = useState(true);
+  const [fullName, setFullName] = useState(currentUser.fullName);
+  const [phone, setPhone] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      const { data } = await supabase.from("profiles").select("full_name, phone, avatar_url").eq("id", currentUser.id).maybeSingle();
+      if (!active) return;
+      if (data) {
+        setFullName(data.full_name ?? currentUser.fullName);
+        setPhone(data.phone ?? "");
+        setAvatarUrl(data.avatar_url ?? "");
+      }
+      setLoading(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const handleUploadAvatar = async (file: File) => {
+    setAvatarError("");
+    setUploadingAvatar(true);
+    try {
+      const url = await uploadAvatar(currentUser.id, file);
+      setAvatarUrl(url);
+    } catch (error) {
+      reportError(error, { flow: "patientSettings.uploadAvatar" });
+      setAvatarError(error instanceof Error ? error.message : "Não foi possível enviar a foto.");
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    setSaving(true);
+    setSaveMessage("");
+    const { error } = await supabase.from("profiles").update({ full_name: fullName.trim(), phone: phone.trim() || null }).eq("id", currentUser.id);
+    setSaving(false);
+    if (error) {
+      reportError(error, { flow: "patientSettings.saveProfile" });
+      setSaveMessage("Não foi possível salvar. Tente novamente.");
+      return;
+    }
+    setSaveMessage("Dados atualizados com sucesso.");
+  };
+
+  const handleChangePassword = async () => {
+    setPasswordError("");
+    setPasswordMessage("");
+    if (newPassword.length < 6) {
+      setPasswordError("A senha deve ter pelo menos 6 caracteres.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("As senhas não coincidem.");
+      return;
+    }
+    setPasswordSaving(true);
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setPasswordSaving(false);
+    if (error) {
+      reportError(error, { flow: "patientSettings.updatePassword" });
+      setPasswordError(error.message);
+      return;
+    }
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordMessage("Senha alterada com sucesso.");
+  };
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-6">
+      <Card className="p-6">
+        <h3 className="font-semibold text-foreground font-display mb-4">Meus dados</h3>
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Carregando...</p>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex items-center gap-4">
+              <PhotoOrInitials src={avatarUrl || undefined} name={fullName} className="w-16 h-16 rounded-2xl object-cover bg-secondary" />
+              <div>
+                <label className="text-sm font-medium text-primary cursor-pointer hover:underline">
+                  {uploadingAvatar ? "Enviando..." : "Trocar foto"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={uploadingAvatar}
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleUploadAvatar(file);
+                    }}
+                  />
+                </label>
+                {avatarError && <p className="text-xs text-red-600 mt-1">{avatarError}</p>}
+              </div>
+            </div>
+            <Input label="Nome completo" value={fullName} onChange={setFullName} />
+            <Input label="Telefone" value={phone} onChange={setPhone} placeholder="(11) 90000-0000" />
+            <Btn variant="primary" size="sm" disabled={saving || !fullName.trim()} onClick={handleSaveProfile}>
+              {saving ? "Salvando..." : "Salvar dados"}
+            </Btn>
+            {saveMessage && <p className="text-xs text-emerald-700">{saveMessage}</p>}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="font-semibold text-foreground font-display mb-4">Alterar senha</h3>
+        <div className="space-y-4">
+          <Input label="Nova senha" type="password" value={newPassword} onChange={setNewPassword} />
+          <Input label="Confirmar nova senha" type="password" value={confirmPassword} onChange={setConfirmPassword} />
+          {passwordError && <p className="text-xs text-red-600">{passwordError}</p>}
+          <Btn variant="primary" size="sm" disabled={passwordSaving || !newPassword} onClick={handleChangePassword}>
+            {passwordSaving ? "Salvando..." : "Alterar senha"}
+          </Btn>
+          {passwordMessage && <p className="text-xs text-emerald-700">{passwordMessage}</p>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+type PatientDashboardTab = "inicio" | "escalas" | "documentos" | "tarefas" | "mensagens" | "pagamentos" | "configuracoes";
+
+const DASHBOARD_TAB_LABELS: Record<PatientDashboardTab, string> = {
+  inicio: "Início",
+  mensagens: "Mensagens",
+  escalas: "Escalas psicológicas",
+  documentos: "Documentos",
+  tarefas: "Tarefas",
+  pagamentos: "Pagamentos",
+  configuracoes: "Configurações",
+};
+
+type PatientPayment = {
+  id: string;
+  amount: number;
+  status: PaymentStatus;
+  method: string;
+  createdAt: string;
+  scheduledAt: string;
+  professionalName: string;
+};
+
 function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
-  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas" | "documentos" | "tarefas" | "mensagens">("inicio");
+  const [dashboardTab, setDashboardTab] = useState<PatientDashboardTab>("inicio");
 
   const navItems = [
-    { icon: <Home size={18} />, label: "Início", active: dashboardTab !== "mensagens", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
+    { icon: <Home size={18} />, label: "Início", active: dashboardTab === "inicio", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
     { icon: <Calendar size={18} />, label: "Consultas", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
     { icon: <MessageSquare size={18} />, label: "Mensagens", active: dashboardTab === "mensagens", onClick: () => setDashboardTab("mensagens") },
-    { icon: <FileText size={18} />, label: "Documentos" },
-    { icon: <CreditCard size={18} />, label: "Pagamentos" },
-    { icon: <Settings size={18} />, label: "Configurações" },
+    { icon: <FileText size={18} />, label: "Documentos", active: dashboardTab === "documentos", onClick: () => setDashboardTab("documentos") },
+    { icon: <CreditCard size={18} />, label: "Pagamentos", active: dashboardTab === "pagamentos", onClick: () => setDashboardTab("pagamentos") },
+    { icon: <Settings size={18} />, label: "Configurações", active: dashboardTab === "configuracoes", onClick: () => setDashboardTab("configuracoes") },
   ];
 
   const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
   const [totalInvested, setTotalInvested] = useState(0);
+  const [paymentHistory, setPaymentHistory] = useState<PatientPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
@@ -1802,10 +1965,32 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
       if (ids.length) {
         const { data: paymentsData } = await supabase
           .from("payments")
-          .select("amount, appointment_id")
-          .in("appointment_id", ids)
-          .eq("status", "paid");
-        if (active) setTotalInvested((paymentsData ?? []).reduce((sum, p) => sum + Number(p.amount), 0));
+          .select("id, amount, status, method, created_at, appointment_id")
+          .in("appointment_id", ids);
+
+        if (active) {
+          const paid = (paymentsData ?? []).filter(p => p.status === "paid");
+          setTotalInvested(paid.reduce((sum, p) => sum + Number(p.amount), 0));
+
+          const byAppointmentId = new Map(rows.map(r => [r.id, r]));
+          const history: PatientPayment[] = (paymentsData ?? [])
+            .map(p => {
+              const appointment = byAppointmentId.get(p.appointment_id);
+              if (!appointment) return null;
+              return {
+                id: p.id,
+                amount: Number(p.amount),
+                status: p.status,
+                method: p.method,
+                createdAt: p.created_at,
+                scheduledAt: appointment.scheduledAt,
+                professionalName: appointment.professionalName,
+              };
+            })
+            .filter((p): p is PatientPayment => p !== null)
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          setPaymentHistory(history);
+        }
       }
 
       setLoading(false);
@@ -1853,11 +2038,11 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
           </div>
         </Card>
 
-        <div className="flex gap-1 border-b border-border">
-          {(["inicio", "mensagens", "escalas", "documentos", "tarefas"] as const).map(t => (
+        <div className="flex gap-1 border-b border-border overflow-x-auto">
+          {(["inicio", "mensagens", "escalas", "documentos", "tarefas", "pagamentos", "configuracoes"] as const).map(t => (
             <button key={t} onClick={() => setDashboardTab(t)}
-              className={`px-3 py-2 text-sm font-medium border-b-2 transition-all ${dashboardTab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              {t === "inicio" ? "Início" : t === "mensagens" ? "Mensagens" : t === "escalas" ? "Escalas psicológicas" : t === "documentos" ? "Documentos" : "Tarefas"}
+              className={`px-3 py-2 text-sm font-medium border-b-2 whitespace-nowrap transition-all ${dashboardTab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              {DASHBOARD_TAB_LABELS[t]}
             </button>
           ))}
         </div>
@@ -1944,6 +2129,39 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
 
         {dashboardTab === "mensagens" && (
           <MessagingPanel currentUser={currentUser} role="patient" counterparts={professionalCounterparts} loadingCounterparts={loading} />
+        )}
+
+        {dashboardTab === "pagamentos" && (
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-foreground font-display">Histórico de pagamentos</h3>
+              <p className="text-sm text-muted-foreground">Total investido: <strong className="text-foreground">R${totalInvested.toFixed(2).replace(".", ",")}</strong></p>
+            </div>
+            {loading && <p className="text-sm text-muted-foreground">Carregando pagamentos...</p>}
+            {!loading && paymentHistory.length === 0 && <p className="text-sm text-muted-foreground">Nenhum pagamento registrado ainda.</p>}
+            <div className="divide-y divide-border">
+              {paymentHistory.map(p => (
+                <div key={p.id} className="py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{p.professionalName}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {new Date(p.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })} · {p.method === "pix" ? "Pix" : p.method === "card" ? "Cartão" : p.method}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-foreground">R${p.amount.toFixed(2).replace(".", ",")}</p>
+                    <Badge variant={p.status === "paid" ? "success" : p.status === "refunded" ? "danger" : "outline"}>
+                      {p.status === "paid" ? "Pago" : p.status === "refunded" ? "Reembolsado" : "Pendente"}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        {dashboardTab === "configuracoes" && (
+          <PatientSettingsPanel currentUser={currentUser} />
         )}
 
         {dashboardTab === "escalas" && (
