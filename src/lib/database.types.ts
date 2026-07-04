@@ -256,6 +256,25 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["waitlist_entries"]["Row"]>;
         Relationships: [];
       };
+      messages: {
+        Row: {
+          id: string;
+          professional_id: string;
+          patient_id: string;
+          sender_id: string;
+          content: string;
+          created_at: string;
+          read_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["messages"]["Row"]> & {
+          professional_id: string;
+          patient_id: string;
+          sender_id: string;
+          content: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["messages"]["Row"]>;
+        Relationships: [];
+      };
       consent_signatures: {
         Row: {
           id: string;

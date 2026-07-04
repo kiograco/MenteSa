@@ -36,6 +36,7 @@ describe("pathToScreen", () => {
 
   it("resolves the nested professional sub-routes", () => {
     expect(pathToScreen("/profissional/agenda")).toEqual({ screen: "calendar" });
+    expect(pathToScreen("/profissional/pacientes")).toEqual({ screen: "patients" });
     expect(pathToScreen("/profissional/prontuarios")).toEqual({ screen: "ehr" });
     expect(pathToScreen("/profissional/ia")).toEqual({ screen: "ai-assistant" });
     expect(pathToScreen("/profissional/financeiro")).toEqual({ screen: "financial" });

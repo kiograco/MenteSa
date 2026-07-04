@@ -1,6 +1,6 @@
 export type Screen =
   | "landing" | "directory" | "profile" | "patient-dashboard"
-  | "pro-dashboard" | "calendar" | "ehr" | "ai-assistant"
+  | "pro-dashboard" | "calendar" | "patients" | "ehr" | "ai-assistant"
   | "video" | "pricing" | "checkout" | "financial" | "admin" | "login"
   | "reset-password" | "professional-settings";
 
@@ -18,6 +18,7 @@ const SCREEN_TO_PATH: Record<Screen, string> = {
   "patient-dashboard": "/paciente",
   "pro-dashboard": "/profissional",
   calendar: "/profissional/agenda",
+  patients: "/profissional/pacientes",
   ehr: "/profissional/prontuarios",
   "ai-assistant": "/profissional/ia",
   financial: "/profissional/financeiro",
@@ -44,6 +45,7 @@ export function pathToScreen(pathname: string): { screen: Screen; professionalId
   if (segments[0] === "perfil") return { screen: "profile", professionalId: segments[1] };
   if (segments[0] === "video") return { screen: "video", appointmentId: segments[1] };
   if (segments[0] === "profissional" && segments[1] === "agenda") return { screen: "calendar" };
+  if (segments[0] === "profissional" && segments[1] === "pacientes") return { screen: "patients" };
   if (segments[0] === "profissional" && segments[1] === "prontuarios") return { screen: "ehr" };
   if (segments[0] === "profissional" && segments[1] === "ia") return { screen: "ai-assistant" };
   if (segments[0] === "profissional" && segments[1] === "financeiro") return { screen: "financial" };

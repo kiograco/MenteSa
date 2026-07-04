@@ -326,6 +326,25 @@
     pacientes avaliam. "24h suporte" continua estático por ser um compromisso de atendimento, não
     uma estatística medida.
 
+  ### Mensagens entre paciente e profissional
+
+  Antes, o menu lateral do profissional tinha dois itens ("Pacientes" e "Prontuários") que levavam
+  exatamente para a mesma tela (`onNavigate("ehr")`), sem diferença nenhuma de comportamento. Agora:
+
+  - **"Pacientes"** (`/profissional/pacientes`, `PatientsScreen`) é uma tela nova de chat — lista de
+    pacientes à esquerda (com pré-visualização da última mensagem e contador de não lidas), thread +
+    campo de envio à direita, e um atalho "Ver prontuário" que abre o `EHRScreen` já com aquele
+    paciente selecionado.
+  - **"Prontuários"** continua abrindo direto o `EHRScreen` (histórico clínico, notas, escalas,
+    materiais) — sem mais se confundir com a lista de pacientes/mensagens.
+  - O lado do paciente ganhou a aba "Mensagens" no painel dele (`PatientDashboard`), que antes existia
+    só visualmente no menu, sem `onClick` nenhum.
+  - Mensagens usam a tabela `messages` (`professional_id`, `patient_id`, `sender_id`, `content`,
+    `read_at`), com RLS que só permite trocar mensagem entre quem já teve consulta marcada um com o
+    outro (mesma checagem de relacionamento via `appointments` já usada por
+    `profiles_select_own_patients`/`assessment_responses_select_professional`). Entrega em tempo real
+    via Supabase Realtime (`alter publication supabase_realtime add table messages`), sem polling.
+
   ### Painel administrativo: controle de usuários e conta admin
 
   A aba "Usuários" do painel admin (`/admin`) já lista todos os pacientes/profissionais/admins com

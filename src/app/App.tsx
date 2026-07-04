@@ -22,6 +22,10 @@ import {
   listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
   type PatientMaterial, type PatientTask,
 } from "../lib/materials";
+import {
+  listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
+  type ChatMessage, type Conversation,
+} from "../lib/messages";
 import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
@@ -1611,16 +1615,16 @@ type PatientAppointment = {
 };
 
 function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
+  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas" | "documentos" | "tarefas" | "mensagens">("inicio");
+
   const navItems = [
-    { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("patient-dashboard") },
-    { icon: <Calendar size={18} />, label: "Consultas", onClick: () => onNavigate("patient-dashboard") },
-    { icon: <MessageSquare size={18} />, label: "Mensagens" },
+    { icon: <Home size={18} />, label: "Início", active: dashboardTab !== "mensagens", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
+    { icon: <Calendar size={18} />, label: "Consultas", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
+    { icon: <MessageSquare size={18} />, label: "Mensagens", active: dashboardTab === "mensagens", onClick: () => setDashboardTab("mensagens") },
     { icon: <FileText size={18} />, label: "Documentos" },
     { icon: <CreditCard size={18} />, label: "Pagamentos" },
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
-
-  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas" | "documentos" | "tarefas">("inicio");
 
   const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
   const [totalInvested, setTotalInvested] = useState(0);
@@ -1819,6 +1823,10 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
   const distinctProfessionals = new Set(appointments.map(a => a.professionalName)).size;
   const firstName = currentUser.fullName.split(" ")[0];
 
+  const professionalCounterparts: MessagingCounterpart[] = Array.from(
+    new Map(appointments.map(a => [a.professionalId, { id: a.professionalId, name: a.professionalName, img: a.professionalImg }])).values()
+  );
+
   const nextSessionLabel = upcoming.length
     ? new Date(upcoming[0].scheduledAt).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "short" }) +
       " às " + new Date(upcoming[0].scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
@@ -1846,10 +1854,10 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         </Card>
 
         <div className="flex gap-1 border-b border-border">
-          {(["inicio", "escalas", "documentos", "tarefas"] as const).map(t => (
+          {(["inicio", "mensagens", "escalas", "documentos", "tarefas"] as const).map(t => (
             <button key={t} onClick={() => setDashboardTab(t)}
               className={`px-3 py-2 text-sm font-medium border-b-2 transition-all ${dashboardTab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              {t === "inicio" ? "Início" : t === "escalas" ? "Escalas psicológicas" : t === "documentos" ? "Documentos" : "Tarefas"}
+              {t === "inicio" ? "Início" : t === "mensagens" ? "Mensagens" : t === "escalas" ? "Escalas psicológicas" : t === "documentos" ? "Documentos" : "Tarefas"}
             </button>
           ))}
         </div>
@@ -1932,6 +1940,10 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
           </div>
         </Card>
         </>
+        )}
+
+        {dashboardTab === "mensagens" && (
+          <MessagingPanel currentUser={currentUser} role="patient" counterparts={professionalCounterparts} loadingCounterparts={loading} />
         )}
 
         {dashboardTab === "escalas" && (
@@ -2062,7 +2074,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
@@ -2374,7 +2386,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
@@ -2831,6 +2843,255 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   );
 }
 
+// ─── Messaging (shared by PatientsScreen and PatientDashboard's "Mensagens" tab) ──────────────
+
+type MessagingCounterpart = { id: string; name: string; img: string };
+
+/** Two-pane chat: conversation list on the left, thread + composer on the right. `role` decides
+ *  which side of (professional_id, patient_id) is "me" vs. the counterpart. */
+function MessagingPanel({
+  currentUser,
+  role,
+  counterparts,
+  loadingCounterparts,
+  onOpenRecord,
+}: {
+  currentUser: AppUser;
+  role: "professional" | "patient";
+  counterparts: MessagingCounterpart[];
+  loadingCounterparts: boolean;
+  onOpenRecord?: (counterpartId: string) => void;
+}) {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [thread, setThread] = useState<ChatMessage[]>([]);
+  const [loadingThread, setLoadingThread] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [search, setSearch] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const threadIds = (counterpartId: string) => ({
+    professionalId: role === "professional" ? currentUser.id : counterpartId,
+    patientId: role === "professional" ? counterpartId : currentUser.id,
+  });
+
+  const loadConversations = async () => {
+    const all = await listAllMessagesFor(currentUser.id, role).catch(() => []);
+    setConversations(groupIntoConversations(all, currentUser.id, role));
+  };
+
+  useEffect(() => {
+    void loadConversations();
+  }, [currentUser.id, role]);
+
+  useEffect(() => {
+    setSelectedId(prev => prev ?? counterparts[0]?.id ?? null);
+  }, [counterparts]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setThread([]);
+      return;
+    }
+    let active = true;
+    setLoadingThread(true);
+    const { professionalId, patientId } = threadIds(selectedId);
+    (async () => {
+      const data = await listThreadMessages(professionalId, patientId).catch(() => []);
+      if (!active) return;
+      setThread(data);
+      setLoadingThread(false);
+      await markThreadRead(professionalId, patientId, currentUser.id).catch(() => {});
+      if (active) void loadConversations();
+    })();
+    return () => {
+      active = false;
+    };
+  }, [selectedId]);
+
+  useEffect(() => {
+    return subscribeToMessages(currentUser.id, role, (message) => {
+      const partnerId = role === "professional" ? message.patientId : message.professionalId;
+      if (partnerId === selectedId) {
+        setThread(prev => [...prev, message]);
+        void markThreadRead(message.professionalId, message.patientId, currentUser.id).catch(() => {});
+      }
+      void loadConversations();
+    });
+  }, [currentUser.id, role, selectedId]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [thread]);
+
+  const handleSend = async () => {
+    if (!draft.trim() || !selectedId || sending) return;
+    setSending(true);
+    const { professionalId, patientId } = threadIds(selectedId);
+    try {
+      await sendMessage(professionalId, patientId, currentUser.id, draft);
+      setDraft("");
+    } catch (error) {
+      reportError(error, { flow: "messaging.send" });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const filteredCounterparts = counterparts.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
+  const conversationFor = (id: string) => conversations.find(c => c.counterpartId === id);
+  const selected = counterparts.find(c => c.id === selectedId);
+
+  return (
+    <div className="grid lg:grid-cols-[300px_1fr] gap-4 h-[calc(100vh-220px)] min-h-[420px]">
+      <Card className="p-0 overflow-hidden flex flex-col">
+        <div className="p-3 border-b border-border">
+          <Input placeholder="Buscar conversa..." value={search} onChange={setSearch} />
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loadingCounterparts && <p className="p-4 text-sm text-muted-foreground">Carregando...</p>}
+          {!loadingCounterparts && filteredCounterparts.length === 0 && (
+            <p className="p-4 text-sm text-muted-foreground">Nenhuma conversa disponível ainda.</p>
+          )}
+          {filteredCounterparts.map(c => {
+            const conversation = conversationFor(c.id);
+            return (
+              <button
+                key={c.id}
+                onClick={() => setSelectedId(c.id)}
+                className={`w-full text-left px-4 py-3 flex items-center gap-3 border-b border-border/50 hover:bg-muted transition-colors ${selectedId === c.id ? "bg-secondary" : ""}`}
+              >
+                <PhotoOrInitials src={c.img || undefined} name={c.name} className="w-10 h-10 rounded-full object-cover bg-secondary flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-foreground truncate">{c.name}</p>
+                    {!!conversation?.unreadCount && (
+                      <span className="flex-shrink-0 bg-primary text-white text-[10px] font-semibold rounded-full w-5 h-5 flex items-center justify-center">
+                        {conversation.unreadCount}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">{conversation?.lastMessage.content ?? "Nenhuma mensagem ainda"}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card className="p-0 overflow-hidden flex flex-col">
+        {!selected && (
+          <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Selecione uma conversa</div>
+        )}
+        {selected && (
+          <>
+            <div className="p-4 border-b border-border flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <PhotoOrInitials src={selected.img || undefined} name={selected.name} className="w-9 h-9 rounded-full object-cover bg-secondary" />
+                <p className="text-sm font-semibold text-foreground">{selected.name}</p>
+              </div>
+              {onOpenRecord && (
+                <Btn variant="outline" size="sm" onClick={() => onOpenRecord(selected.id)}>Ver prontuário</Btn>
+              )}
+            </div>
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
+              {loadingThread && <p className="text-sm text-muted-foreground">Carregando conversa...</p>}
+              {!loadingThread && thread.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center mt-8">Nenhuma mensagem ainda. Diga olá!</p>
+              )}
+              {thread.map(m => (
+                <div key={m.id} className={`flex ${m.senderId === currentUser.id ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm ${m.senderId === currentUser.id ? "bg-primary text-white" : "bg-muted text-foreground"}`}>
+                    <p className="whitespace-pre-wrap break-words">{m.content}</p>
+                    <p className={`text-[10px] mt-1 ${m.senderId === currentUser.id ? "text-white/70" : "text-muted-foreground"}`}>
+                      {new Date(m.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-3 border-t border-border flex gap-2">
+              <input
+                placeholder="Escreva uma mensagem..."
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                className="flex-1 px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+              />
+              <Btn variant="primary" onClick={handleSend} disabled={sending || !draft.trim()}><Send size={16} /></Btn>
+            </div>
+          </>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ─── SCREEN: Patients (professional's patient list + messaging) ──────────────
+
+function PatientsScreen({
+  onNavigate,
+  currentUser,
+  onSignOut,
+  onOpenEhr,
+}: AuthenticatedScreenProps & { onOpenEhr: (patientId: string, appointmentId: string) => void }) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", active: true, onClick: () => onNavigate("patients") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
+  ];
+
+  const [patients, setPatients] = useState<EhrPatient[]>([]);
+  const [loadingPatients, setLoadingPatients] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoadingPatients(true);
+      const { data } = await supabase
+        .from("appointments")
+        .select("patient_id, profiles(full_name, avatar_url)")
+        .eq("professional_id", currentUser.id);
+
+      if (!active) return;
+
+      const map = new Map<string, EhrPatient>();
+      ((data ?? []) as any[]).forEach(a => {
+        const existing = map.get(a.patient_id);
+        if (existing) existing.sessionsCount += 1;
+        else map.set(a.patient_id, { id: a.patient_id, name: a.profiles?.full_name ?? "Paciente", img: a.profiles?.avatar_url ?? "", sessionsCount: 1 });
+      });
+      setPatients(Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name)));
+      setLoadingPatients(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  return (
+    <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
+      <MessagingPanel
+        currentUser={currentUser}
+        role="professional"
+        counterparts={patients}
+        loadingCounterparts={loadingPatients}
+        onOpenRecord={(patientId) => { onOpenEhr(patientId, ""); onNavigate("ehr"); }}
+      />
+    </AppShell>
+  );
+}
+
 // ─── SCREEN: EHR ─────────────────────────────────────────────────────────────
 
 type EhrPatient = { id: string; name: string; img: string; sessionsCount: number };
@@ -2842,7 +3103,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", active: true, onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
@@ -3330,7 +3591,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", active: true, onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
@@ -4584,7 +4845,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", active: true, onClick: () => onNavigate("financial") },
@@ -4749,7 +5010,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
-    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("ehr") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
@@ -5541,13 +5802,14 @@ export default function App() {
     }
   }, []);
 
-  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "financial", "admin", "professional-settings"];
-  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "ehr", "ai-assistant", "video", "checkout", "financial", "admin", "professional-settings"];
+  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "financial", "admin", "professional-settings"];
+  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "video", "checkout", "financial", "admin", "professional-settings"];
   // Screens restricted to specific roles; screens absent from this map are open to any authenticated user (e.g. video, shared by patient + professional).
   const screenRoles: Partial<Record<Screen, UserRole[]>> = {
     "patient-dashboard": ["patient"],
     "pro-dashboard": ["professional"],
     calendar: ["professional"],
+    patients: ["professional"],
     ehr: ["professional"],
     "ai-assistant": ["professional"],
     financial: ["professional"],
@@ -5730,6 +5992,7 @@ export default function App() {
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr} />}
+      {screen === "patients" && currentUser && <PatientsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onOpenEhr={onOpenEhr} />}
       {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} initialPatientId={ehrPatientId} initialAppointmentId={ehrAppointmentId} />}
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}
