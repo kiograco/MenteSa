@@ -255,6 +255,28 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["waitlist_entries"]["Row"]>;
         Relationships: [];
       };
+      consent_signatures: {
+        Row: {
+          id: string;
+          patient_id: string;
+          professional_id: string;
+          document_version: string;
+          document_hash: string;
+          typed_name: string;
+          ip_address: string | null;
+          user_agent: string | null;
+          signed_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["consent_signatures"]["Row"]> & {
+          patient_id: string;
+          professional_id: string;
+          document_version: string;
+          document_hash: string;
+          typed_name: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["consent_signatures"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

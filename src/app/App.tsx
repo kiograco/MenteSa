@@ -10,6 +10,8 @@ import { calculateAttendanceRate, calculateCancellationRate, calculateRetentionR
 import { joinWaitlist, leaveWaitlist, listMyWaitlistEntries, notifyWaitlistMatch, type WaitlistEntry } from "../lib/waitlist";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, CURRENT_TERMS_VERSION, type LegalDocument } from "../content/legal";
+import { informedConsent, CURRENT_CONSENT_VERSION } from "../content/consent";
+import { hashDocumentText, signConsent } from "../lib/consent";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
@@ -4178,13 +4180,67 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
   bookingDraft: BookingDraft | null;
 }) {
   const [payMethod, setPayMethod] = useState<"pix" | "card" | "sub">("card");
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [checkoutError, setCheckoutError] = useState("");
   const [processingPayment, setProcessingPayment] = useState(false);
   const [fullName, setFullName] = useState(currentUser.fullName);
   const [cpf, setCpf] = useState("");
   const [email, setEmail] = useState(currentUser.email);
   const [phone, setPhone] = useState("");
+
+  const [checkingConsent, setCheckingConsent] = useState(true);
+  const [alreadySignedAt, setAlreadySignedAt] = useState<string | null>(null);
+  const [typedConsentName, setTypedConsentName] = useState("");
+  const [consentAccepted, setConsentAccepted] = useState(false);
+  const [signingConsent, setSigningConsent] = useState(false);
+  const [consentError, setConsentError] = useState("");
+
+  useEffect(() => {
+    if (!bookingDraft) return;
+    let active = true;
+    setCheckingConsent(true);
+    (async () => {
+      const { data } = await supabase
+        .from("consent_signatures")
+        .select("signed_at")
+        .eq("patient_id", currentUser.id)
+        .eq("professional_id", bookingDraft.professionalId)
+        .eq("document_version", CURRENT_CONSENT_VERSION)
+        .maybeSingle();
+      if (active) {
+        setAlreadySignedAt(data?.signed_at ?? null);
+        setCheckingConsent(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [bookingDraft?.professionalId, currentUser.id]);
+
+  const handleSignConsent = async () => {
+    if (!bookingDraft) return;
+    if (!consentAccepted || !typedConsentName.trim()) {
+      setConsentError("Marque o consentimento e digite seu nome completo para continuar.");
+      return;
+    }
+    setSigningConsent(true);
+    setConsentError("");
+    try {
+      const documentText = informedConsent.sections.map(s => `${s.heading}\n${s.body}`).join("\n\n");
+      const hash = await hashDocumentText(documentText);
+      const ok = await signConsent(bookingDraft.professionalId, typedConsentName.trim(), hash, CURRENT_CONSENT_VERSION);
+      if (!ok) {
+        setConsentError("Não foi possível registrar sua assinatura. Tente novamente.");
+        return;
+      }
+      setStep(3);
+    } catch (error) {
+      reportError(error, { flow: "checkout.signConsent" });
+      setConsentError("Não foi possível registrar sua assinatura. Tente novamente.");
+    } finally {
+      setSigningConsent(false);
+    }
+  };
 
   if (!bookingDraft) {
     return (
@@ -4275,7 +4331,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
       });
       void supabase.functions.invoke("send-booking-confirmation", { body: { appointmentId: appointment.id } });
 
-      setStep(3);
+      setStep(4);
     } catch (error) {
       reportError(error, { flow: "checkout.handlePayment", professionalId: bookingDraft.professionalId });
       setCheckoutError(error instanceof Error ? error.message : "Não foi possível concluir o pagamento.");
@@ -4301,13 +4357,13 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
           <div className="lg:col-span-3 space-y-6">
             {/* Steps */}
             <div className="flex items-center gap-2">
-              {[1, 2, 3].map(s => (
+              {[1, 2, 3, 4].map(s => (
                 <div key={s} className="flex items-center gap-2">
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${step >= s ? "bg-primary text-white" : "bg-muted text-muted-foreground"}`}>{step > s ? <Check size={13} /> : s}</div>
-                  {s < 3 && <div className={`h-px w-16 ${step > s ? "bg-primary" : "bg-border"}`} />}
+                  {s < 4 && <div className={`h-px w-10 ${step > s ? "bg-primary" : "bg-border"}`} />}
                 </div>
               ))}
-              <span className="text-xs text-muted-foreground ml-2">{["Dados pessoais", "Pagamento", "Confirmação"][step - 1]}</span>
+              <span className="text-xs text-muted-foreground ml-2">{["Dados pessoais", "Consentimento", "Pagamento", "Confirmação"][step - 1]}</span>
             </div>
 
             {step === 1 && (
@@ -4329,6 +4385,50 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
             )}
 
             {step === 2 && (
+              <Card className="p-6 space-y-4">
+                <h2 className="font-semibold text-foreground font-display">{informedConsent.title}</h2>
+                {checkingConsent ? (
+                  <p className="text-sm text-muted-foreground">Carregando...</p>
+                ) : alreadySignedAt ? (
+                  <>
+                    <p className="text-sm text-muted-foreground">
+                      Você já assinou este termo com {bookingDraft.professionalName} em {new Date(alreadySignedAt).toLocaleDateString("pt-BR")}. Não é preciso assinar de novo.
+                    </p>
+                    <div className="flex gap-3">
+                      <Btn variant="outline" onClick={() => setStep(1)}>Voltar</Btn>
+                      <Btn variant="primary" className="flex-1 justify-center" onClick={() => setStep(3)}>Continuar <ChevronRight size={16} /></Btn>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="max-h-64 overflow-y-auto space-y-4 pr-1 border border-border rounded-xl p-4 bg-muted/30">
+                      {informedConsent.sections.map(s => (
+                        <div key={s.heading}>
+                          <p className="text-sm font-semibold text-foreground mb-1">{s.heading}</p>
+                          <p className="text-sm text-muted-foreground leading-relaxed">{s.body}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <Input label="Digite seu nome completo para assinar" placeholder={currentUser.fullName} value={typedConsentName} onChange={setTypedConsentName} />
+                    <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <input type="checkbox" checked={consentAccepted} onChange={e => setConsentAccepted(e.target.checked)} className="mt-0.5 accent-primary" />
+                      Li e concordo com o Termo de Consentimento Informado acima para o atendimento com {bookingDraft.professionalName}.
+                    </label>
+                    {consentError && (
+                      <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{consentError}</div>
+                    )}
+                    <div className="flex gap-3">
+                      <Btn variant="outline" onClick={() => setStep(1)}>Voltar</Btn>
+                      <Btn variant="primary" className="flex-1 justify-center" disabled={signingConsent || !consentAccepted || !typedConsentName.trim()} onClick={handleSignConsent}>
+                        {signingConsent ? "Assinando..." : "Assinar e continuar"}
+                      </Btn>
+                    </div>
+                  </>
+                )}
+              </Card>
+            )}
+
+            {step === 3 && (
               <Card className="p-6 space-y-4">
                 <h2 className="font-semibold text-foreground font-display">Forma de pagamento</h2>
                 <div className="grid grid-cols-3 gap-3">
@@ -4372,7 +4472,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
                 )}
 
                 <div className="flex gap-3">
-                  <Btn variant="outline" onClick={() => setStep(1)}>Voltar</Btn>
+                  <Btn variant="outline" onClick={() => setStep(2)}>Voltar</Btn>
                   <Btn variant="primary" className="flex-1 justify-center" onClick={handlePayment} disabled={processingPayment}>
                     <Lock size={15} />{processingPayment ? "Processando..." : "Pagar com segurança"}
                   </Btn>
@@ -4385,7 +4485,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
               </Card>
             )}
 
-            {step === 3 && (
+            {step === 4 && (
               <Card className="p-8 flex flex-col items-center text-center">
                 <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4">
                   <CheckCircle size={32} className="text-primary" />

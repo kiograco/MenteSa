@@ -75,6 +75,8 @@
         retenção de pacientes no Dashboard Financeiro (antes 100% mock)
   - [x] Fila de espera inteligente: paciente entra na fila de um horário ocupado, todos são
         avisados por e-mail quando ele libera (cancelamento), primeiro a agendar garante a vaga
+  - [x] Assinatura eletrônica do Termo de Consentimento Informado (por paciente/profissional),
+        com IP/user-agent capturados no servidor e hash do texto exibido
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
@@ -157,6 +159,27 @@
 
   Para ativar: `supabase functions deploy notify-waitlist-match` (reaproveita
   `RESEND_API_KEY`/`EMAIL_FROM` já configurados).
+
+  ### Assinatura eletrônica do Termo de Consentimento Informado
+
+  Distinto dos Termos de Uso gerais (aceitos uma vez, no cadastro): este é um termo específico
+  por relação paciente↔profissional, assinado no checkout antes do pagamento (`src/content/consent.ts`,
+  `CURRENT_CONSENT_VERSION`). Diferente do aceite de Termos de Uso (só um timestamp), aqui a
+  assinatura é uma "assinatura eletrônica simples" de verdade — a lei brasileira (MP 2.200-2/2001,
+  Art. 10, §2º) aceita esse tipo pra acordos entre partes que consentem em usar meio eletrônico,
+  sem precisar de ICP-Brasil:
+
+  - Nome digitado + checkbox de concordância.
+  - Hash SHA-256 (`crypto.subtle.digest`, no navegador) do texto exato exibido — prova o que foi
+    mostrado, mesmo que o conteúdo mude depois.
+  - IP e User-Agent capturados **no servidor** (`supabase/functions/sign-consent`) — só uma Edge
+    Function consegue ler o IP real do cabeçalho `x-forwarded-for`; o navegador não tem como se
+    autodeclarar o próprio IP de forma confiável. Por isso não existe policy de insert direto pro
+    paciente em `consent_signatures` — só a função (com a service role) grava.
+  - Paciente que já assinou aquela versão do termo com aquele profissional não precisa assinar de
+    novo (pula direto pro pagamento).
+
+  Para ativar: `supabase functions deploy sign-consent` (não precisa de nenhuma chave nova).
 
   ### Resumo de IA da sessão (Google Gemini)
 
