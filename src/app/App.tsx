@@ -12,6 +12,7 @@ import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSigne
 import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
 import { getAISessionSummary, type AISessionSummary } from "../lib/ai";
+import { PHQ9_QUESTIONS, GAD7_QUESTIONS, ANSWER_OPTIONS, scoreInstrument, instrumentLabel, type Instrument } from "../lib/assessments";
 import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
@@ -1526,10 +1527,73 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
+  const [dashboardTab, setDashboardTab] = useState<"inicio" | "escalas">("inicio");
+
   const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
   const [totalInvested, setTotalInvested] = useState(0);
   const [loading, setLoading] = useState(true);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const [assessmentHistory, setAssessmentHistory] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
+  const [loadingAssessments, setLoadingAssessments] = useState(true);
+  const [selectedInstrument, setSelectedInstrument] = useState<Instrument>("phq9");
+  const questions = selectedInstrument === "phq9" ? PHQ9_QUESTIONS : GAD7_QUESTIONS;
+  const [answers, setAnswers] = useState<number[]>(() => new Array(PHQ9_QUESTIONS.length).fill(-1));
+  const [submittingAssessment, setSubmittingAssessment] = useState(false);
+  const [assessmentMessage, setAssessmentMessage] = useState("");
+
+  const handleSelectInstrument = (instrument: Instrument) => {
+    setSelectedInstrument(instrument);
+    setAnswers(new Array(instrument === "phq9" ? PHQ9_QUESTIONS.length : GAD7_QUESTIONS.length).fill(-1));
+    setAssessmentMessage("");
+  };
+
+  const loadAssessments = async () => {
+    setLoadingAssessments(true);
+    const { data } = await supabase
+      .from("assessment_responses")
+      .select("id, instrument, total_score, severity, created_at")
+      .eq("patient_id", currentUser.id)
+      .order("created_at", { ascending: false });
+    setAssessmentHistory((data ?? []).map(d => ({
+      id: d.id,
+      instrument: d.instrument as Instrument,
+      totalScore: d.total_score,
+      severity: d.severity,
+      createdAt: d.created_at,
+    })));
+    setLoadingAssessments(false);
+  };
+
+  useEffect(() => {
+    void loadAssessments();
+  }, [currentUser.id]);
+
+  const handleSubmitAssessment = async () => {
+    if (answers.some(a => a < 0)) {
+      setAssessmentMessage("Responda todas as perguntas antes de enviar.");
+      return;
+    }
+    setSubmittingAssessment(true);
+    setAssessmentMessage("");
+    const { totalScore, severity } = scoreInstrument(selectedInstrument, answers);
+    const { error } = await supabase.from("assessment_responses").insert({
+      patient_id: currentUser.id,
+      instrument: selectedInstrument,
+      answers,
+      total_score: totalScore,
+      severity,
+    });
+    setSubmittingAssessment(false);
+    if (error) {
+      reportError(error, { flow: "patientDashboard.submitAssessment" });
+      setAssessmentMessage("Não foi possível enviar. Tente novamente.");
+      return;
+    }
+    setAssessmentMessage(`Enviado! Pontuação: ${totalScore} (${severity})`);
+    setAnswers(new Array(questions.length).fill(-1));
+    void loadAssessments();
+  };
 
   const handleCancelAppointment = async (appointmentId: string) => {
     if (!window.confirm("Cancelar esta consulta? Essa ação não pode ser desfeita.")) return;
@@ -1619,6 +1683,17 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
           </div>
         </Card>
 
+        <div className="flex gap-1 border-b border-border">
+          {(["inicio", "escalas"] as const).map(t => (
+            <button key={t} onClick={() => setDashboardTab(t)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 transition-all ${dashboardTab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+              {t === "inicio" ? "Início" : "Escalas psicológicas"}
+            </button>
+          ))}
+        </div>
+
+        {dashboardTab === "inicio" && (
+        <>
         {/* Upcoming */}
         <div>
           <h2 className="text-base font-semibold text-foreground font-display mb-3">Próximas consultas</h2>
@@ -1678,6 +1753,71 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
             ))}
           </div>
         </Card>
+        </>
+        )}
+
+        {dashboardTab === "escalas" && (
+          <div className="grid lg:grid-cols-2 gap-6">
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-1">Preencher escala</h3>
+              <p className="text-xs text-muted-foreground mb-4">
+                Respostas ficam visíveis para o profissional que te atende, ajudando a acompanhar sua evolução ao longo do tempo.
+              </p>
+              <div className="flex gap-2 mb-4">
+                {(["phq9", "gad7"] as const).map(inst => (
+                  <button key={inst} onClick={() => handleSelectInstrument(inst)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${selectedInstrument === inst ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-secondary"}`}>
+                    {instrumentLabel(inst)}
+                  </button>
+                ))}
+              </div>
+              <div className="space-y-4">
+                {questions.map((q, i) => (
+                  <div key={i}>
+                    <p className="text-sm text-foreground mb-2">{i + 1}. {q}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {ANSWER_OPTIONS.map(opt => (
+                        <button
+                          key={opt.value}
+                          onClick={() => setAnswers(prev => prev.map((v, idx) => (idx === i ? opt.value : v)))}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${answers[i] === opt.value ? "bg-secondary text-primary border border-primary/30" : "bg-muted text-muted-foreground hover:bg-secondary border border-transparent"}`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Btn variant="primary" className="w-full justify-center mt-5" disabled={submittingAssessment} onClick={handleSubmitAssessment}>
+                {submittingAssessment ? "Enviando..." : "Enviar respostas"}
+              </Btn>
+              {assessmentMessage && <p className="text-xs text-emerald-700 mt-2">{assessmentMessage}</p>}
+            </Card>
+
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-4">Suas respostas anteriores</h3>
+              {loadingAssessments && <p className="text-sm text-muted-foreground">Carregando...</p>}
+              {!loadingAssessments && assessmentHistory.length === 0 && (
+                <p className="text-sm text-muted-foreground">Nenhuma escala respondida ainda.</p>
+              )}
+              <div className="divide-y divide-border">
+                {assessmentHistory.map(a => (
+                  <div key={a.id} className="py-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{instrumentLabel(a.instrument)}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-semibold text-foreground">{a.totalScore} pontos</p>
+                      <p className="text-xs text-muted-foreground">{a.severity}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
       </div>
     </AppShell>
   );
@@ -2477,7 +2617,7 @@ type EhrSession = { id: string; scheduledAt: string; modality: string; status: s
 
 function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
   const [patientSearch, setPatientSearch] = useState("");
-  const [ehrTab, setEhrTab] = useState<"historico" | "notas">("historico");
+  const [ehrTab, setEhrTab] = useState<"historico" | "notas" | "escalas">("historico");
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -2498,6 +2638,37 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [notesDraft, setNotesDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+
+  const [assessments, setAssessments] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
+  const [loadingAssessmentsForPatient, setLoadingAssessmentsForPatient] = useState(false);
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setAssessments([]);
+      return;
+    }
+    let active = true;
+    setLoadingAssessmentsForPatient(true);
+    (async () => {
+      const { data } = await supabase
+        .from("assessment_responses")
+        .select("id, instrument, total_score, severity, created_at")
+        .eq("patient_id", selectedPatientId)
+        .order("created_at", { ascending: true });
+      if (!active) return;
+      setAssessments((data ?? []).map(d => ({
+        id: d.id,
+        instrument: d.instrument as Instrument,
+        totalScore: d.total_score,
+        severity: d.severity,
+        createdAt: d.created_at,
+      })));
+      setLoadingAssessmentsForPatient(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [selectedPatientId]);
 
   useEffect(() => {
     let active = true;
@@ -2646,14 +2817,58 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                   </div>
                 </div>
                 <div className="flex gap-1 border-t border-border pt-3">
-                  {(["historico", "notas"] as const).map(t => (
+                  {(["historico", "notas", "escalas"] as const).map(t => (
                     <button key={t} onClick={() => setEhrTab(t)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
-                      {t === "historico" ? "Histórico" : "Notas Seguras"}
+                      {t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : "Escalas"}
                     </button>
                   ))}
                 </div>
               </Card>
+
+              {ehrTab === "escalas" && (
+                <Card className="p-6">
+                  <h3 className="font-semibold text-foreground font-display mb-1">Escalas psicológicas</h3>
+                  <p className="text-xs text-muted-foreground mb-4">Pontuações de PHQ-9/GAD-7 que {selectedPatient?.name ?? "o paciente"} preencheu, na ordem em que foram respondidas.</p>
+                  {loadingAssessmentsForPatient && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                  {!loadingAssessmentsForPatient && assessments.length === 0 && (
+                    <p className="text-sm text-muted-foreground">Este paciente ainda não respondeu nenhuma escala.</p>
+                  )}
+                  {!loadingAssessmentsForPatient && assessments.length > 0 && (
+                    <>
+                      <div className="h-52 mb-4">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={assessments.map(a => ({
+                            label: new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }),
+                            score: a.totalScore,
+                            instrument: a.instrument,
+                          }))}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
+                            <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} formatter={(value: number, _name, item: any) => [`${value} pontos`, instrumentLabel(item.payload.instrument)]} />
+                            <Bar dataKey="score" fill="#1B7A48" radius={[6, 6, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="divide-y divide-border">
+                        {assessments.slice().reverse().map(a => (
+                          <div key={a.id} className="py-2.5 flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-medium text-foreground">{instrumentLabel(a.instrument)}</p>
+                              <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-semibold text-foreground">{a.totalScore} pontos</p>
+                              <p className="text-xs text-muted-foreground">{a.severity}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </Card>
+              )}
 
               {ehrTab === "historico" && (
                 <div className="space-y-3">

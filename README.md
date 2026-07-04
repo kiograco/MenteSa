@@ -68,6 +68,8 @@
   - [x] Upload de documento para verificação profissional
   - [x] Vídeo real (LiveKit)
   - [x] Resumo de sessão com IA (Google Gemini)
+  - [x] Cancelamento de consulta + trava no banco contra duplo agendamento
+  - [x] Escalas psicológicas (PHQ-9, GAD-7) preenchidas pelo paciente, com evolução no prontuário
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI

@@ -182,6 +182,26 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["professional_documents"]["Row"]>;
         Relationships: [];
       };
+      assessment_responses: {
+        Row: {
+          id: string;
+          patient_id: string;
+          instrument: string;
+          answers: number[];
+          total_score: number;
+          severity: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["assessment_responses"]["Row"]> & {
+          patient_id: string;
+          instrument: string;
+          answers: number[];
+          total_score: number;
+          severity: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["assessment_responses"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
