@@ -5,9 +5,14 @@
 export type LegalSection = { heading: string; body: string };
 export type LegalDocument = { title: string; updatedAt: string; sections: LegalSection[] };
 
+// Bumped whenever a section changes materially (e.g. adding/removing a data processor). Stored
+// alongside terms_accepted_at (profiles.terms_version) so a future re-consent prompt can tell
+// apart who agreed to which revision, instead of only knowing "some version, at some point."
+export const CURRENT_TERMS_VERSION = "2026-07-04";
+
 export const termsOfService: LegalDocument = {
   title: "Termos de Uso",
-  updatedAt: "03/07/2026",
+  updatedAt: "04/07/2026",
   sections: [
     {
       heading: "1. Sobre a plataforma",
@@ -42,7 +47,7 @@ export const termsOfService: LegalDocument = {
 
 export const privacyPolicy: LegalDocument = {
   title: "Política de Privacidade",
-  updatedAt: "03/07/2026",
+  updatedAt: "04/07/2026",
   sections: [
     {
       heading: "1. Dados que coletamos",
@@ -62,14 +67,18 @@ export const privacyPolicy: LegalDocument = {
     },
     {
       heading: "5. Seus direitos",
-      body: "Você pode solicitar acesso, correção ou portabilidade dos seus dados de cadastro a qualquer momento. Solicitações envolvendo dados clínicos são encaminhadas ao profissional responsável, conforme a regulamentação do conselho de classe.",
+      body: "Você pode solicitar acesso, correção, portabilidade ou eliminação dos seus dados de cadastro a qualquer momento, entrando em contato pelo canal descrito na seção 8 (hoje não há um botão de autoatendimento para apagar a própria conta — o pedido é atendido manualmente pela equipe). Solicitações envolvendo dados clínicos são encaminhadas ao profissional responsável, conforme a regulamentação do conselho de classe.",
     },
     {
       heading: "6. Compartilhamento com terceiros",
-      body: "Compartilhamos dados estritamente necessários com provedores de pagamento (processamento de transações) e videochamada (conexão da sessão), sob contrato de confidencialidade. Não vendemos dados pessoais a terceiros.",
+      body: "Compartilhamos dados estritamente necessários com: Mercado Pago (processamento de pagamento), LiveKit (conexão da videochamada), Resend (envio de e-mails transacionais) e Google Gemini (quando o profissional opta por gerar um resumo de IA da sessão — nesse caso, o texto da nota clínica digitada é enviado à Google para essa finalidade específica, mediante consentimento explícito do profissional na própria tela de IA). Cada um sob contrato/termos de confidencialidade próprios. Não vendemos dados pessoais a terceiros.",
     },
     {
-      heading: "7. Contato",
+      heading: "7. Transferência internacional de dados",
+      body: "LiveKit, Resend e Google Gemini processam dados fora do Brasil. Ao usar recursos que dependem desses provedores (videochamada, e-mail transacional, resumo de IA de sessão), você concorda com essa transferência internacional, feita com base nas salvaguardas contratuais desses provedores (Art. 33, LGPD).",
+    },
+    {
+      heading: "8. Contato",
       body: "Para exercer seus direitos de titular ou tirar dúvidas sobre este documento, entre em contato com nosso encarregado de dados (DPO) pelo e-mail informado no rodapé da plataforma.",
     },
   ],

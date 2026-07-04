@@ -19,7 +19,8 @@ export interface Database {
           phone: string | null;
           avatar_url: string | null;
           created_at: string;
-          terms_accepted_at: string;
+          terms_accepted_at: string | null;
+          terms_version: string | null;
           suspended_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["profiles"]["Row"]> & {

@@ -7,7 +7,7 @@ import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { reportError } from "../lib/monitoring";
-import { termsOfService, privacyPolicy, type LegalDocument } from "../content/legal";
+import { termsOfService, privacyPolicy, CURRENT_TERMS_VERSION, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
@@ -1168,7 +1168,7 @@ function LegalModal({ document, onClose }: { document: LegalDocument | null; onC
   );
 }
 
-function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => void; initialInfo?: string }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [userType, setUserType] = useState<"patient" | "professional">("patient");
   const [showPass, setShowPass] = useState(false);
@@ -1178,7 +1178,7 @@ function LoginPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const [password, setPassword] = useState("");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [authError, setAuthError] = useState("");
-  const [authInfo, setAuthInfo] = useState("");
+  const [authInfo, setAuthInfo] = useState(initialInfo ?? "");
   const [loading, setLoading] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [legalDoc, setLegalDoc] = useState<LegalDocument | null>(null);
@@ -1991,7 +1991,7 @@ type CalendarAppointment = {
 const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–19:00
 const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
+function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void; onOpenEhr: (patientId: string, appointmentId: string) => void }) {
   const [view, setView] = useState<"week" | "month" | "day">("week");
   const [anchorDate, setAnchorDate] = useState(() => new Date());
   const navItems = [
@@ -2378,7 +2378,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo }: Au
               </Badge>
             </div>
             <div className="flex gap-2 mt-5">
-              <Btn variant="outline" onClick={() => onNavigate("ehr")}>Ver prontuário</Btn>
+              <Btn variant="outline" onClick={() => { onOpenEhr(selectedAppointment.patientId, selectedAppointment.id); onNavigate("ehr"); }}>Ver prontuário</Btn>
               {selectedAppointment.modality === "online" && selectedAppointment.status === "scheduled" && (
                 <Btn variant="primary" onClick={() => { onEnterVideo(selectedAppointment.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
               )}
@@ -2439,7 +2439,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo }: Au
 type EhrPatient = { id: string; name: string; img: string; sessionsCount: number };
 type EhrSession = { id: string; scheduledAt: string; modality: string; status: string; notes: string; aiSummary: string | null };
 
-function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
   const [patientSearch, setPatientSearch] = useState("");
   const [ehrTab, setEhrTab] = useState<"historico" | "notas">("historico");
   const navItems = [
@@ -2483,7 +2483,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
       });
       const list = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
       setPatients(list);
-      setSelectedPatientId(prev => prev ?? list[0]?.id ?? null);
+      setSelectedPatientId(prev => prev ?? initialPatientId ?? list[0]?.id ?? null);
       setLoadingPatients(false);
     })();
 
@@ -2525,8 +2525,9 @@ function EHRScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenPr
         };
       });
       setSessions(rows);
-      setSelectedSessionId(rows[0]?.id ?? null);
-      setNotesDraft(rows[0]?.notes ?? "");
+      const preselected = initialAppointmentId && rows.some(r => r.id === initialAppointmentId) ? rows.find(r => r.id === initialAppointmentId)! : rows[0];
+      setSelectedSessionId(preselected?.id ?? null);
+      setNotesDraft(preselected?.notes ?? "");
       setLoadingSessions(false);
     })();
 
@@ -4691,6 +4692,14 @@ export default function App() {
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
   const [activeAppointmentId, setActiveAppointmentIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.appointmentId ?? null);
   const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
+  // Separate from activeAppointmentId (used by the video screen) so jumping to EHR from Calendar
+  // never overwrites an in-progress video call's id if the user switches between the two screens.
+  const [ehrPatientId, setEhrPatientId] = useState<string | null>(null);
+  const [ehrAppointmentId, setEhrAppointmentId] = useState<string | null>(null);
+  const onOpenEhr = (patientId: string, appointmentId: string) => {
+    setEhrPatientId(patientId);
+    setEhrAppointmentId(appointmentId);
+  };
 
   // Refs mirror the two id states synchronously so `navigate()` can read the value a sibling
   // setter just set in the same click handler (e.g. DirectoryPage calls onSelectProfessional(id)
@@ -4774,7 +4783,7 @@ export default function App() {
 
     const { data } = await supabase
       .from("profiles")
-      .select("id, full_name, role")
+      .select("id, full_name, role, terms_accepted_at")
       .eq("id", nextSession.user.id)
       .maybeSingle();
 
@@ -4784,6 +4793,18 @@ export default function App() {
         fullName: data.full_name,
         role: data.role,
       };
+
+      // The signup checkbox already blocks both the e-mail and Google sign-up buttons until
+      // checked (see LoginPage's acceptedTerms gate) — so the first time this authenticated
+      // session appears with a null terms_accepted_at, that's faithful evidence of real consent,
+      // recorded here instead of relying on the column's old (now removed) `default now()`, which
+      // only proved "a row was created," not "someone actually agreed to anything."
+      if (!data.terms_accepted_at) {
+        void supabase
+          .from("profiles")
+          .update({ terms_accepted_at: new Date().toISOString(), terms_version: CURRENT_TERMS_VERSION })
+          .eq("id", nextSession.user.id);
+      }
     }
 
     setCurrentUser(nextUser);
@@ -4850,6 +4871,36 @@ export default function App() {
     navigate("landing");
   };
 
+  // A banned account (admin-manage-user's suspend action) can no longer log in or refresh its
+  // token, but an access token issued before the ban stays valid — and accepted everywhere — until
+  // it naturally expires (jwt_expiry = 3600s). This closes most of that window by re-checking the
+  // account's own suspended_at (allowed by profiles_select's `auth.uid() = id`) periodically and on
+  // tab focus, signing the user out the moment it's set instead of waiting up to an hour.
+  const [suspendedNotice, setSuspendedNotice] = useState("");
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let active = true;
+
+    const checkSuspended = async () => {
+      const { data } = await supabase.from("profiles").select("suspended_at").eq("id", currentUser.id).maybeSingle();
+      if (active && data?.suspended_at) {
+        setSuspendedNotice("Sua conta foi suspensa. Entre em contato com o suporte.");
+        await handleSignOut();
+      }
+    };
+
+    const interval = setInterval(() => void checkSuspended(), 60_000);
+    const onVisible = () => { if (document.visibilityState === "visible") void checkSuspended(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [currentUser?.id]);
+
   return (
     <div className="min-h-screen bg-background font-sans" style={{ fontFamily: "'Plus Jakarta Sans', 'Inter', system-ui, sans-serif" }}>
       {showTopNav && <TopNav onScreenChange={navigate} current={screen} currentUser={currentUser} onSignOut={handleSignOut} />}
@@ -4879,12 +4930,12 @@ export default function App() {
       {screen === "landing" && <LandingPage onNavigate={navigate} />}
       {screen === "directory" && <DirectoryPage onNavigate={navigate} onSelectProfessional={setSelectedProfessionalId} />}
       {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
-      {screen === "login" && <LoginPage onNavigate={navigate} />}
+      {screen === "login" && <LoginPage onNavigate={navigate} initialInfo={suspendedNotice} />}
       {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr} />}
+      {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} initialPatientId={ehrPatientId} initialAppointmentId={ehrAppointmentId} />}
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}
       {screen === "pricing" && <PricingPage onNavigate={navigate} />}

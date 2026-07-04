@@ -47,6 +47,16 @@ Deno.serve(async req => {
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) return json({ error: "Sessão inválida." }, 401);
 
+    // A suspended account's access token stays valid (and would otherwise still pass every check
+    // below) until it naturally expires — re-check here instead of trusting "the JWT still
+    // verifies" as proof the account is still active.
+    const { data: callerProfile } = await supabase
+      .from("profiles")
+      .select("suspended_at")
+      .eq("id", userData.user.id)
+      .maybeSingle();
+    if (callerProfile?.suspended_at) return json({ error: "Conta suspensa." }, 403);
+
     const { data: appointment, error: apptError } = await supabase
       .from("appointments")
       .select("id, patient_id, professional_id, profiles(full_name), professional_profiles(profiles(full_name))")
