@@ -7,6 +7,7 @@ import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { calculateAttendanceRate, calculateCancellationRate, calculateRetentionRate } from "../lib/metrics";
+import { joinWaitlist, leaveWaitlist, listMyWaitlistEntries, notifyWaitlistMatch, type WaitlistEntry } from "../lib/waitlist";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, CURRENT_TERMS_VERSION, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
@@ -833,10 +834,11 @@ type ProfileData = {
 
 const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function ProfilePage({ onNavigate, professionalId, onBook }: {
+function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
   onNavigate: (s: Screen) => void;
   professionalId: string | null;
   onBook: (draft: BookingDraft) => void;
+  currentUser: AppUser | null;
 }) {
   const [tab, setTab] = useState("sobre");
   const [pro, setPro] = useState<ProfileData | null>(null);
@@ -847,6 +849,28 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
   const [reviews, setReviews] = useState<{ name: string; rating: number; comment: string | null }[]>([]);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [selectedTakenSlot, setSelectedTakenSlot] = useState<string | null>(null);
+  const [joiningWaitlist, setJoiningWaitlist] = useState(false);
+  const [waitlistMessage, setWaitlistMessage] = useState("");
+
+  const handleJoinWaitlist = async () => {
+    if (!selectedTakenSlot || !professionalId) return;
+    if (!currentUser) {
+      onNavigate("login");
+      return;
+    }
+    setJoiningWaitlist(true);
+    setWaitlistMessage("");
+    try {
+      await joinWaitlist(currentUser.id, professionalId, selectedTakenSlot);
+      setWaitlistMessage("Você entrou na fila! Avisaremos por e-mail se esse horário abrir.");
+    } catch (error) {
+      reportError(error, { flow: "profilePage.joinWaitlist" });
+      setWaitlistMessage("Não foi possível entrar na fila. Tente novamente.");
+    } finally {
+      setJoiningWaitlist(false);
+    }
+  };
 
   useEffect(() => {
     setPro(null);
@@ -1091,9 +1115,12 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
                       {slotsForDay(selectedDay).map(s => (
                         <button
                           key={s.iso}
-                          disabled={s.taken}
-                          onClick={() => setSelectedSlot(s.iso)}
-                          className={`py-2.5 rounded-xl text-xs font-medium transition-all ${s.taken ? "bg-muted text-muted-foreground/40 line-through cursor-not-allowed" : selectedSlot === s.iso ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}
+                          title={s.taken ? "Horário ocupado — clique para entrar na fila de espera" : undefined}
+                          onClick={() => {
+                            if (s.taken) { setSelectedTakenSlot(s.iso); setSelectedSlot(null); setWaitlistMessage(""); }
+                            else { setSelectedSlot(s.iso); setSelectedTakenSlot(null); }
+                          }}
+                          className={`py-2.5 rounded-xl text-xs font-medium transition-all ${s.taken ? "bg-muted text-muted-foreground/50 line-through hover:bg-amber-50 hover:text-amber-700" : selectedSlot === s.iso ? "bg-primary text-white" : "bg-muted hover:bg-secondary hover:text-primary"}`}
                         >
                           {s.time}
                         </button>
@@ -1106,6 +1133,17 @@ function ProfilePage({ onNavigate, professionalId, onBook }: {
                         {WEEKDAY_LABELS[selectedDay.getDay()]} {String(selectedDay.getDate()).padStart(2, "0")} · {new Date(selectedSlot).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} · R${pro.price}
                       </p>
                       <Btn variant="primary" size="sm" onClick={handleBook}>Confirmar</Btn>
+                    </div>
+                  )}
+                  {selectedDay && selectedTakenSlot && (
+                    <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                      <p className="text-sm font-medium text-foreground mb-2">
+                        {WEEKDAY_LABELS[selectedDay.getDay()]} {String(selectedDay.getDate()).padStart(2, "0")} · {new Date(selectedTakenSlot).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} está ocupado.
+                      </p>
+                      <Btn variant="outline" size="sm" disabled={joiningWaitlist} onClick={handleJoinWaitlist}>
+                        {joiningWaitlist ? "Entrando..." : "Entrar na fila de espera"}
+                      </Btn>
+                      {waitlistMessage && <p className="text-xs text-emerald-700 mt-2">{waitlistMessage}</p>}
                     </div>
                   )}
                 </>
@@ -1519,6 +1557,7 @@ type PatientAppointment = {
   modality: string;
   status: string;
   price: number;
+  professionalId: string;
   professionalName: string;
   professionalImg: string;
 };
@@ -1646,8 +1685,30 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
     }
   };
 
+  const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>([]);
+
+  const loadWaitlistEntries = async () => {
+    const data = await listMyWaitlistEntries(currentUser.id).catch(() => []);
+    setWaitlistEntries(data.filter(e => e.status === "waiting"));
+  };
+
+  useEffect(() => {
+    void loadWaitlistEntries();
+  }, [currentUser.id]);
+
+  const handleLeaveWaitlist = async (entryId: string) => {
+    setWaitlistEntries(prev => prev.filter(e => e.id !== entryId));
+    try {
+      await leaveWaitlist(entryId);
+    } catch (error) {
+      reportError(error, { flow: "patientDashboard.leaveWaitlist" });
+      void loadWaitlistEntries();
+    }
+  };
+
   const handleCancelAppointment = async (appointmentId: string) => {
     if (!window.confirm("Cancelar esta consulta? Essa ação não pode ser desfeita.")) return;
+    const appointment = appointments.find(a => a.id === appointmentId);
     setCancellingId(appointmentId);
     const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", appointmentId);
     setCancellingId(null);
@@ -1657,6 +1718,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
       return;
     }
     setAppointments(prev => prev.map(a => (a.id === appointmentId ? { ...a, status: "cancelled" } : a)));
+    if (appointment) void notifyWaitlistMatch(appointment.professionalId, appointment.scheduledAt);
   };
 
   useEffect(() => {
@@ -1666,7 +1728,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
       setLoading(true);
       const { data } = await supabase
         .from("appointments")
-        .select("id, scheduled_at, modality, status, price, professional_profiles(profiles(full_name, avatar_url))")
+        .select("id, scheduled_at, modality, status, price, professional_id, professional_profiles(profiles(full_name, avatar_url))")
         .eq("patient_id", currentUser.id)
         .order("scheduled_at", { ascending: true });
 
@@ -1678,6 +1740,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         modality: a.modality,
         status: a.status,
         price: Number(a.price),
+        professionalId: a.professional_id,
         professionalName: a.professional_profiles?.profiles?.full_name ?? "Profissional",
         professionalImg: a.professional_profiles?.profiles?.avatar_url ?? "",
       }));
@@ -1777,6 +1840,22 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
             ))}
           </div>
         </div>
+
+        {waitlistEntries.length > 0 && (
+          <Card className="p-5">
+            <h3 className="font-semibold text-foreground font-display mb-3">Na fila de espera</h3>
+            <div className="divide-y divide-border">
+              {waitlistEntries.map(e => (
+                <div key={e.id} className="py-2.5 flex items-center justify-between gap-3">
+                  <p className="text-sm text-foreground">
+                    {new Date(e.desiredScheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} às {new Date(e.desiredScheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  </p>
+                  <Btn variant="ghost" size="sm" onClick={() => handleLeaveWaitlist(e.id)}>Sair da fila</Btn>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -2286,6 +2365,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     }
     setAppointments(prev => prev.map(a => (a.id === selectedAppointment.id ? { ...a, status: "cancelled" } : a)));
     setSelectedAppointment(prev => (prev ? { ...prev, status: "cancelled" } : prev));
+    void notifyWaitlistMatch(currentUser.id, selectedAppointment.scheduledAt);
   };
 
   const weekStart = getWeekStart(anchorDate);
@@ -4161,6 +4241,16 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
 
       if (appointmentError) throw appointmentError;
 
+      // Best-effort: if this booking fills a slot the patient was waitlisted for, mark that entry
+      // claimed so it stops showing as still-waiting. Never blocks the booking itself.
+      void supabase
+        .from("waitlist_entries")
+        .update({ status: "claimed" })
+        .eq("patient_id", currentUser.id)
+        .eq("professional_id", bookingDraft.professionalId)
+        .eq("desired_scheduled_at", bookingDraft.scheduledAt)
+        .eq("status", "waiting");
+
       // Real payment path: redirect to Mercado Pago's hosted checkout. The webhook (not this
       // redirect) is what actually confirms payment — see supabase/functions/mercadopago-webhook.
       const mpCheckoutUrl = await createMercadoPagoCheckout(appointment.id);
@@ -5478,7 +5568,7 @@ export default function App() {
       )}
       {screen === "landing" && <LandingPage onNavigate={navigate} />}
       {screen === "directory" && <DirectoryPage onNavigate={navigate} onSelectProfessional={setSelectedProfessionalId} />}
-      {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} />}
+      {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} currentUser={currentUser} />}
       {screen === "login" && <LoginPage onNavigate={navigate} initialInfo={suspendedNotice} />}
       {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
       {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}

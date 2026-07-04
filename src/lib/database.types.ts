@@ -238,6 +238,23 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["patient_tasks"]["Row"]>;
         Relationships: [];
       };
+      waitlist_entries: {
+        Row: {
+          id: string;
+          patient_id: string;
+          professional_id: string;
+          desired_scheduled_at: string;
+          status: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["waitlist_entries"]["Row"]> & {
+          patient_id: string;
+          professional_id: string;
+          desired_scheduled_at: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["waitlist_entries"]["Row"]>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

@@ -44,5 +44,6 @@ jobs:
           supabase functions deploy notify-admin-document
           supabase functions deploy admin-manage-user
           supabase functions deploy ai-summarize-session
+          supabase functions deploy notify-waitlist-match
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}

@@ -73,6 +73,8 @@
   - [x] Portal do paciente (documentos/tarefas) + biblioteca de materiais do profissional
   - [x] Telemetria do profissional: receita real (bruta/líquida), comparecimento, cancelamento e
         retenção de pacientes no Dashboard Financeiro (antes 100% mock)
+  - [x] Fila de espera inteligente: paciente entra na fila de um horário ocupado, todos são
+        avisados por e-mail quando ele libera (cancelamento), primeiro a agendar garante a vaga
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
@@ -140,6 +142,21 @@
   ver "Revisão de segurança final") — sem isso, cai no mock mesmo com o LiveKit configurado. No MVP
   sem Mercado Pago configurado, o checkout mock (`mockPaymentProvider`) já grava esse registro, então
   basta completar um agendamento normalmente pra testar o vídeo real.
+
+  ### Fila de espera inteligente
+
+  Ao clicar num horário já ocupado no perfil do profissional, o paciente pode "Entrar na fila de
+  espera" (`waitlist_entries`). Quando alguém cancela uma consulta (botão real de cancelamento no
+  painel do paciente e no modal da Agenda do profissional), a Edge Function
+  `notify-waitlist-match` avisa **todo mundo que esperava aquele horário exato, de uma vez** por
+  e-mail — não é um sistema de "segure a vaga por X minutos" (isso exigiria um job agendado, que
+  este projeto não tem); quem completar o agendamento primeiro garante a vaga de verdade, porque
+  `appointments` tem um índice único parcial (`professional_id, scheduled_at` onde `status =
+  'scheduled'`) que impede duplo agendamento no banco — quem chegar depois só vê a mensagem normal
+  de "horário já reservado".
+
+  Para ativar: `supabase functions deploy notify-waitlist-match` (reaproveita
+  `RESEND_API_KEY`/`EMAIL_FROM` já configurados).
 
   ### Resumo de IA da sessão (Google Gemini)
 
