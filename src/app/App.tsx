@@ -6,6 +6,7 @@ import type { UserRole } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
+import { calculateAttendanceRate, calculateCancellationRate, calculateRetentionRate } from "../lib/metrics";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, CURRENT_TERMS_VERSION, type LegalDocument } from "../content/legal";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
@@ -4354,29 +4355,75 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
-  const revenueData = [
-    { month: "Jul", bruto: 3800, liquido: 3420 }, { month: "Ago", bruto: 4200, liquido: 3780 },
-    { month: "Set", bruto: 3900, liquido: 3510 }, { month: "Out", bruto: 4800, liquido: 4320 },
-    { month: "Nov", bruto: 5200, liquido: 4680 }, { month: "Dez", bruto: 4600, liquido: 4140 },
-    { month: "Jan", bruto: 5800, liquido: 5220 },
-  ];
+  const [loading, setLoading] = useState(true);
+  const [appointments, setAppointments] = useState<{ id: string; status: string; patientId: string }[]>([]);
+  const [recentPayments, setRecentPayments] = useState<{ amount: number; platformFee: number; createdAt: string }[]>([]);
+  const [revenueData, setRevenueData] = useState<{ month: string; bruto: number; liquido: number }[]>([]);
 
-  const transfers = [
-    { date: "07 Jan", amount: 1620, sessions: 9, status: "Processado" },
-    { date: "31 Dez", amount: 1440, sessions: 8, status: "Processado" },
-    { date: "24 Dez", amount: 900, sessions: 5, status: "Processado" },
-    { date: "17 Dez", amount: 1980, sessions: 11, status: "Processado" },
-    { date: "10 Dez", amount: 720, sessions: 4, status: "Processado" },
-  ];
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      setLoading(true);
+      const [{ data: apptData }, { data: paymentRows }] = await Promise.all([
+        supabase.from("appointments").select("id, status, patient_id").eq("professional_id", currentUser.id),
+        supabase
+          .from("payments")
+          .select("amount, platform_fee, created_at, appointments!inner(professional_id, scheduled_at)")
+          .eq("appointments.professional_id", currentUser.id)
+          .eq("status", "paid")
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (!active) return;
+
+      setAppointments(((apptData ?? []) as any[]).map(a => ({ id: a.id, status: a.status, patientId: a.patient_id })));
+
+      const payments = ((paymentRows ?? []) as any[])
+        .filter(p => p.appointments?.scheduled_at)
+        .map(p => ({ amount: Number(p.amount), platformFee: Number(p.platform_fee), createdAt: p.appointments.scheduled_at as string }));
+      setRecentPayments(payments.slice(0, 8));
+
+      const months = getLastMonths(7);
+      const brutoByMonth = bucketAmountsByMonth(payments.map(p => ({ amount: p.amount, dateIso: p.createdAt })), months);
+      const liquidoByMonth = bucketAmountsByMonth(payments.map(p => ({ amount: p.amount - p.platformFee, dateIso: p.createdAt })), months);
+      setRevenueData(months.map((m, i) => ({ month: m.label, bruto: brutoByMonth[i].total, liquido: liquidoByMonth[i].total })));
+
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser.id]);
+
+  const currentMonthBruto = revenueData[revenueData.length - 1]?.bruto ?? 0;
+  const currentMonthLiquido = revenueData[revenueData.length - 1]?.liquido ?? 0;
+  const totalBrutoAllTime = recentPayments.reduce((sum, p) => sum + p.amount, 0);
+  const totalFeeAllTime = recentPayments.reduce((sum, p) => sum + p.platformFee, 0);
+
+  const attendanceRate = calculateAttendanceRate(appointments);
+  const cancellationRate = calculateCancellationRate(appointments);
+  const retentionRate = calculateRetentionRate(appointments);
+  const pastAppointments = appointments.filter(a => a.status === "completed" || a.status === "cancelled");
+  const distinctPatientsCount = new Set(appointments.map(a => a.patientId)).size;
 
   return (
     <AppShell title="Dashboard Financeiro" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut}>
       <div className="space-y-6">
+        {loading && <p className="text-sm text-muted-foreground">Carregando...</p>}
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard label="Receita bruta (Jan)" value="R$5.800" delta="+12%" icon={<TrendingUp size={18} />} color="green" />
-          <StatCard label="Após comissão (10%)" value="R$5.220" delta="+12%" icon={<DollarSign size={18} />} color="blue" />
-          <StatCard label="Pendente de repasse" value="R$1.440" icon={<Clock size={18} />} color="amber" />
-          <StatCard label="Total acumulado 2025" value="R$5.220" icon={<BarChart2 size={18} />} color="purple" />
+          <StatCard label="Receita bruta (mês atual)" value={`R$${currentMonthBruto.toFixed(2).replace(".", ",")}`} icon={<TrendingUp size={18} />} color="green" />
+          <StatCard label="Após comissão (mês atual)" value={`R$${currentMonthLiquido.toFixed(2).replace(".", ",")}`} icon={<DollarSign size={18} />} color="blue" />
+          <StatCard label="Recebido (últimos pagamentos)" value={`R$${totalBrutoAllTime.toFixed(2).replace(".", ",")}`} icon={<BarChart2 size={18} />} color="purple" />
+          <StatCard label="Comissão da plataforma" value={`R$${totalFeeAllTime.toFixed(2).replace(".", ",")}`} icon={<Clock size={18} />} color="amber" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <StatCard label="Taxa de comparecimento" value={`${(attendanceRate * 100).toFixed(0)}%`} icon={<CheckCircle size={18} />} color="green" />
+          <StatCard label="Taxa de cancelamento" value={`${(cancellationRate * 100).toFixed(0)}%`} icon={<X size={18} />} color="amber" />
+          <StatCard label="Retenção de pacientes" value={`${(retentionRate * 100).toFixed(0)}%`} icon={<Heart size={18} />} color="blue" />
         </div>
 
         <Card className="p-6">
@@ -4384,7 +4431,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
             <h3 className="font-semibold text-foreground font-display">Receita bruta vs. líquida</h3>
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-primary" />Bruto</span>
-              <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-accent" />Líquido (após 10%)</span>
+              <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-accent" />Líquido (após comissão)</span>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={220}>
@@ -4405,17 +4452,18 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
 
         <div className="grid lg:grid-cols-2 gap-6">
           <Card className="p-6">
-            <h3 className="font-semibold text-foreground font-display mb-4">Histórico de repasses</h3>
+            <h3 className="font-semibold text-foreground font-display mb-4">Pagamentos recentes</h3>
+            {!loading && recentPayments.length === 0 && <p className="text-sm text-muted-foreground">Nenhum pagamento recebido ainda.</p>}
             <div className="space-y-3">
-              {transfers.map((t, i) => (
+              {recentPayments.map((p, i) => (
                 <div key={i} className="flex items-center justify-between py-2.5 border-b border-border last:border-0">
                   <div>
-                    <p className="text-sm font-medium text-foreground">{t.date}</p>
-                    <p className="text-xs text-muted-foreground">{t.sessions} sessões realizadas</p>
+                    <p className="text-sm font-medium text-foreground">{new Date(p.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}</p>
+                    <p className="text-xs text-muted-foreground">Comissão: R${p.platformFee.toFixed(2).replace(".", ",")}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-bold text-foreground font-display">R${t.amount.toLocaleString()}</p>
-                    <Badge variant="success">{t.status}</Badge>
+                    <p className="text-sm font-bold text-foreground font-display">R${p.amount.toFixed(2).replace(".", ",")}</p>
+                    <Badge variant="success">Pago</Badge>
                   </div>
                 </div>
               ))}
@@ -4423,26 +4471,23 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
           </Card>
 
           <Card className="p-6">
-            <h3 className="font-semibold text-foreground font-display mb-4">Fiscal & Impostos</h3>
-            <div className="space-y-3 mb-6">
+            <h3 className="font-semibold text-foreground font-display mb-4">Detalhes das métricas</h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Não há um status distinto de "falta" (no-show) hoje — a taxa de comparecimento/cancelamento
+              considera apenas consultas concluídas vs. canceladas.
+            </p>
+            <div className="space-y-3">
               {[
-                { label: "Receita bruta acumulada (2025)", value: "R$5.800,00" },
-                { label: "ISS estimado (5%)", value: "R$290,00" },
-                { label: "INSS estimado (11%)", value: "R$638,00" },
-                { label: "IR estimado (tabela progressiva)", value: "R$312,00" },
-                { label: "Comissão plataforma (10%)", value: "R$580,00" },
-              ].map((r, i) => (
-                <div key={i} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
-                  <span className="text-muted-foreground">{r.label}</span>
-                  <span className="font-medium text-foreground">{r.value}</span>
+                ["Pacientes distintos", String(distinctPatientsCount)],
+                ["Consultas concluídas", String(appointments.filter(a => a.status === "completed").length)],
+                ["Consultas canceladas", String(appointments.filter(a => a.status === "cancelled").length)],
+                ["Base de cálculo (concluídas + canceladas)", String(pastAppointments.length)],
+              ].map(([l, v]) => (
+                <div key={l} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
+                  <span className="text-muted-foreground">{l}</span><span className="font-medium text-foreground">{v}</span>
                 </div>
               ))}
-              <div className="flex justify-between text-sm font-bold pt-1">
-                <span>Líquido estimado</span>
-                <span className="text-primary font-display">R$3.980,00</span>
-              </div>
             </div>
-            <Btn variant="outline" size="sm" className="w-full justify-center"><Download size={14} />Exportar DRE (PDF)</Btn>
           </Card>
         </div>
       </div>

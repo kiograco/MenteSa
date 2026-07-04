@@ -71,6 +71,8 @@
   - [x] Cancelamento de consulta + trava no banco contra duplo agendamento
   - [x] Escalas psicológicas (PHQ-9, GAD-7) preenchidas pelo paciente, com evolução no prontuário
   - [x] Portal do paciente (documentos/tarefas) + biblioteca de materiais do profissional
+  - [x] Telemetria do profissional: receita real (bruta/líquida), comparecimento, cancelamento e
+        retenção de pacientes no Dashboard Financeiro (antes 100% mock)
   - [x] Pagamento real (Mercado Pago)
   - [x] E-mail transacional de confirmação
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
