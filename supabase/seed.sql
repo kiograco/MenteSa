@@ -1,6 +1,11 @@
 -- MindCare MVP fake seed data.
 -- Run after applying migrations. This file uses only fictitious users and public test data.
 
+-- The token columns (confirmation_token etc.) default to NULL, which GoTrue's Go driver can't
+-- scan into its non-nullable string fields — every login attempt for a seeded user fails with
+-- "Database error querying schema" ("converting NULL to string is unsupported") until these are
+-- set to ''. Real signups never hit this because handle_new_user() always goes through GoTrue
+-- first, which fills them in itself.
 insert into auth.users (
   id,
   instance_id,
@@ -11,7 +16,15 @@ insert into auth.users (
   email_confirmed_at,
   raw_user_meta_data,
   created_at,
-  updated_at
+  updated_at,
+  confirmation_token,
+  recovery_token,
+  email_change_token_new,
+  email_change_token_current,
+  email_change,
+  phone_change,
+  phone_change_token,
+  reauthentication_token
 ) values
   (
     '00000000-0000-4000-8000-000000000001',
@@ -23,7 +36,8 @@ insert into auth.users (
     now(),
     '{"full_name":"Ana Demo Paciente","role":"patient"}'::jsonb,
     now(),
-    now()
+    now(),
+    '', '', '', '', '', '', '', ''
   ),
   (
     '00000000-0000-4000-8000-000000000101',
@@ -35,7 +49,8 @@ insert into auth.users (
     now(),
     '{"full_name":"Dra. Fernanda Demo","role":"professional"}'::jsonb,
     now(),
-    now()
+    now(),
+    '', '', '', '', '', '', '', ''
   ),
   (
     '00000000-0000-4000-8000-000000000102',
@@ -47,7 +62,8 @@ insert into auth.users (
     now(),
     '{"full_name":"Dr. Rafael Demo","role":"professional"}'::jsonb,
     now(),
-    now()
+    now(),
+    '', '', '', '', '', '', '', ''
   ),
   (
     '00000000-0000-4000-8000-000000000900',
@@ -59,12 +75,21 @@ insert into auth.users (
     now(),
     '{"full_name":"Admin Demo","role":"admin"}'::jsonb,
     now(),
-    now()
+    now(),
+    '', '', '', '', '', '', '', ''
   )
 on conflict (id) do update set
   email = excluded.email,
   encrypted_password = excluded.encrypted_password,
   raw_user_meta_data = excluded.raw_user_meta_data,
+  confirmation_token = '',
+  recovery_token = '',
+  email_change_token_new = '',
+  email_change_token_current = '',
+  email_change = '',
+  phone_change = '',
+  phone_change_token = '',
+  reauthentication_token = '',
   updated_at = now();
 
 insert into auth.identities (

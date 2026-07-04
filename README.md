@@ -16,6 +16,22 @@
   - `npm run build` — production build (Vite)
   - `npm run typecheck` — TypeScript, no emit
   - `npm run test` — unit tests (Vitest) for the pure logic in `src/lib`
+  - `npm run test:e2e` — Playwright E2E tests for login, booking + payment, and messaging (`e2e/`)
+
+  ### Rodando os testes E2E
+
+  Precisa de Docker rodando (usado pelo `supabase start` para um stack local isolado — nunca contra
+  produção). Passos:
+
+  1. `npx supabase start` (primeira vez) ou `npx supabase db reset` (depois, pra voltar ao estado
+     seedado) — aplica todas as migrations e o `supabase/seed.sql` num Postgres local.
+  2. `npm run test:e2e` — o `globalSetup` já roda `supabase db reset` sozinho antes da suíte, então
+     cada execução começa do mesmo estado (os testes de agendamento sempre escolhem o mesmo horário
+     determinístico e dependem disso pra não colidir com a trava de duplo agendamento).
+
+  O `playwright.config.ts` sobe o Vite com `--mode test`, que carrega `.env.test` (gitignored, já
+  aponta pra `http://127.0.0.1:54321` com a anon key padrão do Supabase local — não é segredo, é a
+  mesma chave pública documentada pelo próprio CLI) em vez do `.env` real.
 
   ## Supabase MVP setup
 

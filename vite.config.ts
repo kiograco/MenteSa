@@ -45,4 +45,11 @@ export default defineConfig({
       },
     },
   },
+
+  test: {
+    // e2e/*.spec.ts use Playwright's own test()/expect() (run via `npm run test:e2e`), not
+    // Vitest's — without this exclude, Vitest's default glob picks them up too and fails since
+    // the two test runners' globals aren't compatible.
+    exclude: ['node_modules/**', 'e2e/**'],
+  },
 })

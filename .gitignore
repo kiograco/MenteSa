@@ -2,8 +2,16 @@ node_modules
 dist
 .env
 .env.local
+.env.test
 *.log
 .DS_Store
 supabase/.temp
+supabase/.branches
 
 .vercel
+
+# Playwright
+test-results
+playwright-report
+blob-report
+playwright/.cache
