@@ -1529,6 +1529,20 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
   const [appointments, setAppointments] = useState<PatientAppointment[]>([]);
   const [totalInvested, setTotalInvested] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+
+  const handleCancelAppointment = async (appointmentId: string) => {
+    if (!window.confirm("Cancelar esta consulta? Essa ação não pode ser desfeita.")) return;
+    setCancellingId(appointmentId);
+    const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", appointmentId);
+    setCancellingId(null);
+    if (error) {
+      reportError(error, { flow: "patientDashboard.cancelAppointment" });
+      window.alert("Não foi possível cancelar a consulta. Tente novamente.");
+      return;
+    }
+    setAppointments(prev => prev.map(a => (a.id === appointmentId ? { ...a, status: "cancelled" } : a)));
+  };
 
   useEffect(() => {
     let active = true;
@@ -1629,6 +1643,9 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
                   {a.modality === "online" && (
                     <Btn variant="primary" size="sm" onClick={() => { onEnterVideo(a.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
                   )}
+                  <Btn variant="outline" size="sm" disabled={cancellingId === a.id} onClick={() => handleCancelAppointment(a.id)}>
+                    {cancellingId === a.id ? "Cancelando..." : "Cancelar"}
+                  </Btn>
                 </div>
               </Card>
             ))}
@@ -2021,6 +2038,22 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const [googleConnected, setGoogleConnected] = useState(false);
   const [googleSyncing, setGoogleSyncing] = useState(false);
   const [googleMessage, setGoogleMessage] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancelAppointment = async () => {
+    if (!selectedAppointment) return;
+    if (!window.confirm("Cancelar esta consulta? Essa ação não pode ser desfeita.")) return;
+    setCancelling(true);
+    const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", selectedAppointment.id);
+    setCancelling(false);
+    if (error) {
+      reportError(error, { flow: "calendarScreen.cancelAppointment" });
+      window.alert("Não foi possível cancelar a consulta. Tente novamente.");
+      return;
+    }
+    setAppointments(prev => prev.map(a => (a.id === selectedAppointment.id ? { ...a, status: "cancelled" } : a)));
+    setSelectedAppointment(prev => (prev ? { ...prev, status: "cancelled" } : prev));
+  };
 
   const weekStart = getWeekStart(anchorDate);
   const weekDays = getWeekDays(weekStart);
@@ -2377,10 +2410,13 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : "Agendada"}
               </Badge>
             </div>
-            <div className="flex gap-2 mt-5">
+            <div className="flex gap-2 mt-5 flex-wrap">
               <Btn variant="outline" onClick={() => { onOpenEhr(selectedAppointment.patientId, selectedAppointment.id); onNavigate("ehr"); }}>Ver prontuário</Btn>
               {selectedAppointment.modality === "online" && selectedAppointment.status === "scheduled" && (
                 <Btn variant="primary" onClick={() => { onEnterVideo(selectedAppointment.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
+              )}
+              {selectedAppointment.status === "scheduled" && (
+                <Btn variant="danger" disabled={cancelling} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
               )}
             </div>
           </div>
