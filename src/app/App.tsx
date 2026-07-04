@@ -204,6 +204,48 @@ function Input({ label, placeholder, type = "text", icon, value, onChange, class
   );
 }
 
+/** Loading placeholder — a plain animated bar. Compose these into shapes (SkeletonProfessionalCard
+ *  below) instead of showing "Carregando..." text where the real layout is known ahead of time. */
+function Skeleton({ className = "" }: { className?: string }) {
+  return <div className={`animate-pulse bg-muted rounded ${className}`} />;
+}
+
+function SkeletonProfessionalCard() {
+  return (
+    <Card className="p-5">
+      <div className="flex gap-4 mb-4">
+        <Skeleton className="w-16 h-16 rounded-2xl flex-shrink-0" />
+        <div className="flex-1 space-y-2 pt-1">
+          <Skeleton className="h-3.5 w-2/3" />
+          <Skeleton className="h-3 w-1/2" />
+        </div>
+      </div>
+      <div className="flex gap-1.5 mb-4">
+        <Skeleton className="h-5 w-16 rounded-full" />
+        <Skeleton className="h-5 w-20 rounded-full" />
+      </div>
+      <Skeleton className="h-3 w-full mb-4" />
+      <div className="flex items-center justify-between pt-3 border-t border-border">
+        <Skeleton className="h-4 w-14" />
+        <Skeleton className="h-8 w-20 rounded-xl" />
+      </div>
+    </Card>
+  );
+}
+
+function SkeletonAppointmentRow() {
+  return (
+    <Card className="p-4 flex items-center gap-4">
+      <Skeleton className="w-12 h-12 rounded-2xl flex-shrink-0" />
+      <div className="flex-1 space-y-2">
+        <Skeleton className="h-3.5 w-1/3" />
+        <Skeleton className="h-3 w-1/2" />
+      </div>
+      <Skeleton className="h-8 w-20 rounded-xl flex-shrink-0" />
+    </Card>
+  );
+}
+
 function StatCard({ label, value, delta, icon, color = "green" }: { label: string; value: string; delta?: string; icon: React.ReactNode; color?: string }) {
   const colors: Record<string, string> = { green: "bg-primary/10 text-primary", blue: "bg-blue-50 text-blue-600", amber: "bg-amber-50 text-amber-600", purple: "bg-purple-50 text-purple-600" };
   return (
@@ -843,9 +885,9 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        <p className="text-sm text-muted-foreground mb-6">
-          {loadingProfessionals ? "Carregando profissionais..." : `${filtered.length} profissionais encontrados`}
-        </p>
+        {!loadingProfessionals && (
+          <p className="text-sm text-muted-foreground mb-6">{filtered.length} profissionais encontrados</p>
+        )}
         {professionalsError && (
           <Card className="p-5 mb-5 border-red-200 bg-red-50">
             <p className="text-sm font-medium text-red-700">{professionalsError}</p>
@@ -862,7 +904,8 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
           </Card>
         )}
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
-          {filtered.map((p, i) => (
+          {loadingProfessionals && Array.from({ length: 6 }).map((_, i) => <SkeletonProfessionalCard key={`skeleton-${i}`} />)}
+          {!loadingProfessionals && filtered.map((p, i) => (
             <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => { if (p.id) { onSelectProfessional(p.id); onNavigate("profile"); } }}>
               <div className="flex gap-4 mb-4">
                 <PhotoOrInitials src={p.img || undefined} name={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
@@ -1080,7 +1123,35 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
   }
 
   if (loading) {
-    return <div className="min-h-screen bg-background flex items-center justify-center text-sm text-muted-foreground">Carregando perfil...</div>;
+    return (
+      <div className="min-h-screen bg-background">
+        <div className="max-w-6xl mx-auto px-6 py-8 grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <Card className="p-6">
+              <div className="flex gap-5">
+                <Skeleton className="w-24 h-24 rounded-2xl flex-shrink-0" />
+                <div className="flex-1 space-y-3 pt-2">
+                  <Skeleton className="h-5 w-1/2" />
+                  <Skeleton className="h-3.5 w-1/3" />
+                  <div className="flex gap-2"><Skeleton className="h-5 w-20 rounded-full" /><Skeleton className="h-5 w-24 rounded-full" /></div>
+                </div>
+              </div>
+            </Card>
+            <Card className="p-6 space-y-3">
+              <Skeleton className="h-3.5 w-1/4" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-2/3" />
+            </Card>
+          </div>
+          <Card className="p-6 space-y-3 h-fit">
+            <Skeleton className="h-3.5 w-1/2" />
+            <Skeleton className="h-9 w-full rounded-xl" />
+            <Skeleton className="h-9 w-full rounded-xl" />
+          </Card>
+        </div>
+      </div>
+    );
   }
 
   if (loadError || !pro) {
@@ -2113,7 +2184,6 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         {/* Upcoming */}
         <div>
           <h2 className="text-base font-semibold text-foreground font-display mb-3">Próximas consultas</h2>
-          {loading && <p className="text-sm text-muted-foreground">Carregando consultas...</p>}
           {!loading && upcoming.length === 0 && (
             <Card className="p-6 text-center">
               <p className="text-sm text-muted-foreground mb-3">Você ainda não tem consultas agendadas.</p>
@@ -2121,7 +2191,9 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
             </Card>
           )}
           <div className="space-y-3">
-            {upcoming.map(a => (
+            {loading && <SkeletonAppointmentRow />}
+            {loading && <SkeletonAppointmentRow />}
+            {!loading && upcoming.map(a => (
               <Card key={a.id} className="p-4 flex items-center gap-4">
                 <PhotoOrInitials src={a.professionalImg || undefined} name={a.professionalName} className="w-12 h-12 rounded-2xl object-cover bg-secondary" />
                 <div className="flex-1">
@@ -2170,9 +2242,10 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         {/* History */}
         <Card className="p-6">
           <h3 className="font-semibold text-foreground font-display mb-4">Histórico de consultas</h3>
-          {past.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta anterior ainda.</p>}
+          {!loading && past.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta anterior ainda.</p>}
           <div className="divide-y divide-border">
-            {past.map(a => (
+            {loading && <Skeleton className="h-12 w-full mb-2" />}
+            {!loading && past.map(a => (
               <div key={a.id} className="py-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-foreground">{a.professionalName}</p>
