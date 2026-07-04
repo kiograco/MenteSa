@@ -442,7 +442,7 @@ function LandingPage({ onNavigate }: { onNavigate: (s: Screen) => void }) {
     { q: "Como os profissionais são verificados?", a: "Nossa equipe valida CRP/CRM junto ao conselho federal e estadual. O processo leva até 48h após o envio da documentação." },
     { q: "Posso cancelar a qualquer momento?", a: "Sim. Sem multa nem fidelidade. O acesso continua até o fim do período pago." },
     { q: "Os dados dos pacientes são seguros?", a: "Totalmente. Usamos criptografia AES-256 e seguimos rigorosamente a LGPD. Seus dados nunca são vendidos." },
-    { q: "Existe app móvel?", a: "Sim! Apps nativos para iOS e Android para pacientes e profissionais. A plataforma web também é totalmente responsiva." },
+    { q: "Existe app móvel?", a: "Ainda não temos um app nativo para iOS ou Android — está no nosso roadmap. A plataforma web já é totalmente responsiva e funciona bem no navegador do celular, incluindo videochamada e prontuário." },
     { q: "Como funciona o repasse para o profissional?", a: "O paciente paga pelo MindCare. Após a sessão concluída, o valor (menos a comissão de 10%) é transferido em até 2 dias úteis." },
   ];
 
