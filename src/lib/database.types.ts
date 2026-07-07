@@ -107,6 +107,11 @@ export interface Database {
           platform_fee: number;
           provider: string;
           provider_payment_id: string | null;
+          paid_at: string | null;
+          pix_qr_code: string | null;
+          pix_qr_code_base64: string | null;
+          pix_expires_at: string | null;
+          payment_link_url: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["payments"]["Row"]> & {
@@ -333,6 +338,67 @@ export interface Database {
           file_name: string;
         };
         Update: Partial<Database["public"]["Tables"]["patient_documents"]["Row"]>;
+        Relationships: [];
+      };
+      nota_fiscal_requests: {
+        Row: {
+          id: string;
+          payment_id: string;
+          status: string;
+          provider: string | null;
+          pdf_url: string | null;
+          message: string | null;
+          requested_at: string;
+          issued_at: string | null;
+        };
+        Insert: Partial<Database["public"]["Tables"]["nota_fiscal_requests"]["Row"]> & {
+          payment_id: string;
+          status: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["nota_fiscal_requests"]["Row"]>;
+        Relationships: [];
+      };
+      generated_documents: {
+        Row: {
+          id: string;
+          document_type: string;
+          patient_id: string;
+          professional_id: string;
+          appointment_id: string | null;
+          payment_id: string | null;
+          storage_path: string;
+          file_name: string;
+          signed_at: string | null;
+          typed_name: string | null;
+          signature_hash: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["generated_documents"]["Row"]> & {
+          document_type: string;
+          patient_id: string;
+          professional_id: string;
+          storage_path: string;
+          file_name: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["generated_documents"]["Row"]>;
+        Relationships: [];
+      };
+      document_templates: {
+        Row: {
+          id: string;
+          professional_id: string | null;
+          type: string;
+          title: string;
+          body: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["document_templates"]["Row"]> & {
+          type: string;
+          title: string;
+          body: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["document_templates"]["Row"]>;
         Relationships: [];
       };
       consent_signatures: {

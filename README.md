@@ -520,6 +520,55 @@
      ```
      Até esses dois segredos existirem no Vault, o job roda a cada 15 min mas não faz nada.
 
+  ### Financeiro: recibos, nota fiscal, Pix avulso e link de pagamento
+
+  Antes, `FinancialDashboard` era só relatório (gráfico de receita, taxas) — pagar uma consulta só
+  acontecia no momento do agendamento (`CheckoutScreen`). Agora a aba "Financeiro" tem uma seção
+  **"Sessões"** listando toda consulta do profissional com o status de pagamento derivado do
+  pagamento mais recente ligado a ela (`src/lib/payments.ts`, `listAppointmentsWithPaymentStatus` —
+  não existe uma coluna "pago/pendente" em `appointments`, isso é sempre calculado a partir de
+  `payments`, já que uma consulta pode ter mais de uma linha de pagamento):
+
+  - **Cobrar via Pix**: `supabase/functions/create-pix-charge` chama a API de Pagamentos direta do
+    Mercado Pago (não a Checkout Pro usada no agendamento — só a API direta devolve o QR
+    code/copia-e-cola pro app mostrar). Reutiliza uma cobrança pendente ainda não expirada em vez
+    de gerar uma nova a cada clique. O status final (pago/estornado) continua resolvido só pelo
+    `mercadopago-webhook` já existente — nada mudou lá.
+  - **Gerar link de pagamento**: reaproveita a mesma `create-mp-preference`/`createMercadoPagoCheckout`
+    já usada no checkout, sem nenhuma mudança nela — só passou a ser chamável fora do fluxo de
+    agendamento.
+  - **Emitir recibo**: gera um PDF client-side (`jspdf`, `src/lib/pdf.ts`/`src/lib/receipt.ts`) com
+    os dados da sessão paga e salva no bucket `generated-documents` (mesmo padrão de
+    `patientDocuments.ts`), com download imediato.
+  - **Nota fiscal**: `supabase/functions/request-nota-fiscal` é só uma **camada de abstração** —
+    nenhum provedor (eNotas/Focus NFe/etc.) está configurado ainda, então a função sempre responde
+    "indisponível" com uma mensagem clara e grava isso em `nota_fiscal_requests`. Plugar um provedor
+    real no futuro só muda essa função; o schema e a UI já estão prontos.
+
+  Para ativar Pix: nenhuma chave nova, reaproveita `MERCADOPAGO_ACCESS_TOKEN` (já configurado pro
+  checkout) — só `supabase functions deploy create-pix-charge`.
+
+  ### Biblioteca de Modelos (declarações, relatórios, pareceres, laudos, encaminhamentos)
+
+  Nova tela `/profissional/biblioteca` (`LibraryScreen`): 6 tipos de documento com um texto padrão
+  já semeado pela migration `20260710000003` (`document_templates`, linha com `professional_id`
+  nulo). O profissional pode editar e salvar sua própria versão de cada tipo — isso nunca sobrescreve
+  o padrão do sistema, só cria uma linha própria (`professional_id`, `type`) que passa a valer pra
+  ele. Os textos usam placeholders `{{assim}}` (lista completa em `TEMPLATE_PLACEHOLDERS`,
+  `src/lib/documentTemplates.ts`); os automáticos (nome/CPF do paciente, registro do profissional,
+  data etc.) são preenchidos sozinhos ao gerar; os manuais (motivo, análise, conclusão...) ficam
+  visíveis como texto literal pro profissional preencher antes de exportar.
+
+  A geração acontece a partir da aba **"Cadastro"** do prontuário (`EHRScreen`, já mostra o paciente
+  selecionado): botão "Gerar documento" → escolhe o tipo → revisa/edita o texto já preenchido →
+  digita o nome completo → "Assinar e exportar PDF". A assinatura usa exatamente o mesmo modelo de
+  confiança de `sign-session-note`/`sign-consent`: só a Edge Function `sign-generated-document`
+  (service role) grava `signed_at`/`typed_name`/`signature_hash`, nunca o cliente direto. O PDF vai
+  pro mesmo bucket `generated-documents` usado pelo recibo, e a lista de documentos gerados de cada
+  paciente aparece logo abaixo dos anexos, na própria aba "Cadastro".
+
+  Não precisa de nenhuma chave nova — só `supabase functions deploy sign-generated-document`.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
@@ -559,6 +608,8 @@
   | *(nenhuma chave nova)* | `notify-admin-document` / `admin-manage-user` reaproveitam `RESEND_API_KEY`/`EMAIL_FROM` e a service role key (injetada automaticamente pelo runtime das Edge Functions) | Notificação de documento novo e suspensão/exclusão de contas |
   | `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_TEMPLATE_NAME` | Secrets da função `send-appointment-reminder` | Lembrete de consulta por WhatsApp (Meta Cloud API). Sem elas, o job de cron roda mas não envia nada. |
   | `CRON_SECRET` | Secret da função `send-appointment-reminder` + segredo `reminder_cron_secret` no Vault | Autentica a chamada do `pg_cron` (o endpoint não usa sessão de usuário) |
+  | *(nenhuma chave nova)* | `create-pix-charge` reaproveita `MERCADOPAGO_ACCESS_TOKEN` | Cobrança avulsa via Pix no Financeiro |
+  | `NOTA_FISCAL_PROVIDER` / `NOTA_FISCAL_API_KEY` (ainda sem provedor real) | Secrets da função `request-nota-fiscal` | Emissão de nota fiscal. Sem elas (hoje sempre), a função responde "indisponível" — é o estado esperado até um provedor (eNotas/Focus NFe/etc.) ser escolhido e integrado. |
 
   ### Monitoramento de erros
 

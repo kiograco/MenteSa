@@ -29,6 +29,20 @@ import {
   type PatientDocument,
 } from "../lib/patientDocuments";
 import {
+  listAppointmentsWithPaymentStatus, createPixCharge, requestNotaFiscal, getPayment,
+  type AppointmentWithPaymentStatus,
+} from "../lib/payments";
+import { generateReceiptPdf } from "../lib/receipt";
+import {
+  listEffectiveTemplates, saveTemplateCustomization, fillTemplate, buildAutoFillData,
+  DOCUMENT_TEMPLATE_TYPES, DOCUMENT_TEMPLATE_LABELS, TEMPLATE_PLACEHOLDERS,
+  type DocumentTemplateType, type EffectiveTemplate,
+} from "../lib/documentTemplates";
+import {
+  generateAndSignDocument, listGeneratedDocuments, getGeneratedDocumentSignedUrl,
+  type GeneratedDocument,
+} from "../lib/generatedDocuments";
+import {
   listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
   listUnreadMessageNotifications, subscribeToMyMessages,
   type ChatMessage, type Conversation, type UnreadMessageNotification,
@@ -45,7 +59,8 @@ import {
   Heart, Award, BookOpen, Zap, Lock, TrendingUp, ArrowUpRight, ArrowDownRight,
   AlertCircle, CheckCircle, User, LogOut, Home, Activity, Clipboard,
   Camera, Send, Paperclip, MoreHorizontal, Edit3, Trash2, RefreshCw,
-  ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon
+  ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon,
+  Copy, Link2, QrCode, Receipt,
 } from "lucide-react";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
@@ -2475,6 +2490,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -2787,6 +2803,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -3465,6 +3482,7 @@ function PatientsScreen({
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", active: true, onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -3563,6 +3581,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", active: true, onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -3729,6 +3748,125 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       if (selectedPatientId) await loadPatientDocuments(selectedPatientId);
     } catch (error) {
       reportError(error, { flow: "ehr.deletePatientDocument" });
+    }
+  };
+
+  // ─ Biblioteca de Modelos: gera e assina declarações/relatórios/pareceres/laudos/encaminhamentos
+  // a partir dos dados já carregados desta tela (paciente selecionado + ficha cadastral).
+  const [templates, setTemplates] = useState<EffectiveTemplate[]>([]);
+  const [professionalMeta, setProfessionalMeta] = useState({ license: "", city: "" });
+  const [generatedDocs, setGeneratedDocs] = useState<GeneratedDocument[]>([]);
+  const [loadingGeneratedDocs, setLoadingGeneratedDocs] = useState(false);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [generateType, setGenerateType] = useState<DocumentTemplateType>("declaracao_comparecimento");
+  const [generatePreview, setGeneratePreview] = useState("");
+  const [generateTypedName, setGenerateTypedName] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const [templateList, { data: profRow }] = await Promise.all([
+        listEffectiveTemplates(currentUser.id).catch(() => []),
+        supabase.from("professional_profiles").select("license_type, license_number, city").eq("id", currentUser.id).maybeSingle(),
+      ]);
+      setTemplates(templateList);
+      if (profRow) setProfessionalMeta({ license: `${profRow.license_type} ${profRow.license_number}`.trim(), city: profRow.city ?? "" });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const loadGeneratedDocuments = async (patientId: string) => {
+    setLoadingGeneratedDocs(true);
+    try {
+      setGeneratedDocs(await listGeneratedDocuments(patientId));
+    } catch (error) {
+      reportError(error, { flow: "ehr.loadGeneratedDocuments" });
+    } finally {
+      setLoadingGeneratedDocs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedPatientId) void loadGeneratedDocuments(selectedPatientId);
+    else setGeneratedDocs([]);
+  }, [selectedPatientId]);
+
+  const openGenerateModal = () => {
+    setGenerateError("");
+    setGenerateTypedName("");
+    const template = templates.find(t => t.type === generateType) ?? templates[0];
+    if (template) {
+      setGenerateType(template.type);
+      const latestSession = sessions[0];
+      const data = buildAutoFillData({
+        patientName: selectedPatient?.name ?? "",
+        patientCpf: profileForm.cpf || null,
+        patientBirthDate: profileForm.birthDate || null,
+        legalGuardianName: profileForm.legalGuardianName || null,
+        professionalName: currentUser.fullName,
+        professionalLicense: professionalMeta.license || "CRP",
+        professionalCity: professionalMeta.city,
+        scheduledAt: latestSession?.scheduledAt ?? null,
+      });
+      setGeneratePreview(fillTemplate(template.body, data));
+    }
+    setShowGenerateModal(true);
+  };
+
+  const handleChangeGenerateType = (type: DocumentTemplateType) => {
+    const template = templates.find(t => t.type === type);
+    setGenerateType(type);
+    if (template) {
+      const latestSession = sessions[0];
+      const data = buildAutoFillData({
+        patientName: selectedPatient?.name ?? "",
+        patientCpf: profileForm.cpf || null,
+        patientBirthDate: profileForm.birthDate || null,
+        legalGuardianName: profileForm.legalGuardianName || null,
+        professionalName: currentUser.fullName,
+        professionalLicense: professionalMeta.license || "CRP",
+        professionalCity: professionalMeta.city,
+        scheduledAt: latestSession?.scheduledAt ?? null,
+      });
+      setGeneratePreview(fillTemplate(template.body, data));
+    }
+  };
+
+  const handleGenerateDocument = async () => {
+    if (!selectedPatientId || !generateTypedName.trim() || !generatePreview.trim()) return;
+    setGenerating(true);
+    setGenerateError("");
+    try {
+      const result = await generateAndSignDocument({
+        documentType: generateType,
+        title: DOCUMENT_TEMPLATE_LABELS[generateType],
+        filledBody: generatePreview,
+        patientId: selectedPatientId,
+        professionalId: currentUser.id,
+        appointmentId: sessions[0]?.id ?? null,
+        typedName: generateTypedName.trim(),
+      });
+      if (!result.signed) {
+        setGenerateError("O documento foi gerado, mas não foi possível assinar. Tente novamente.");
+        return;
+      }
+      setShowGenerateModal(false);
+      await loadGeneratedDocuments(selectedPatientId);
+    } catch (error) {
+      reportError(error, { flow: "ehr.generateDocument" });
+      setGenerateError("Não foi possível gerar o documento.");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleViewGeneratedDocument = async (storagePath: string) => {
+    try {
+      const url = await getGeneratedDocumentSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "ehr.viewGeneratedDocument" });
     }
   };
 
@@ -4121,8 +4259,74 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           ))}
                         </div>
                       </Card>
+
+                      <Card className="p-5">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><BookOpen size={16} />Documentos gerados</h3>
+                          <Btn variant="outline" size="sm" onClick={openGenerateModal} disabled={templates.length === 0}>
+                            <Plus size={13} />Gerar documento
+                          </Btn>
+                        </div>
+                        <div className="divide-y divide-border">
+                          {loadingGeneratedDocs && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                          {!loadingGeneratedDocs && generatedDocs.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento gerado ainda.</p>}
+                          {generatedDocs.map(doc => (
+                            <div key={doc.id} className="py-2.5 flex items-center justify-between gap-3">
+                              <button type="button" onClick={() => handleViewGeneratedDocument(doc.storagePath)} className="text-left text-sm text-foreground hover:text-primary flex items-center gap-2">
+                                <FileText size={14} className="flex-shrink-0" />
+                                <span>
+                                  {DOCUMENT_TEMPLATE_LABELS[doc.documentType as DocumentTemplateType] ?? doc.documentType}
+                                  <span className="text-muted-foreground"> · {new Date(doc.createdAt).toLocaleDateString("pt-BR")}</span>
+                                </span>
+                              </button>
+                              {doc.signedAt && <Badge variant="success">Assinado</Badge>}
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
                     </>
                   )}
+                </div>
+              )}
+
+              {showGenerateModal && (
+                <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowGenerateModal(false)}>
+                  <div className="bg-white rounded-2xl max-w-2xl w-full p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-start justify-between mb-4">
+                      <h2 className="text-lg font-bold text-foreground font-display">Gerar documento</h2>
+                      <button type="button" onClick={() => setShowGenerateModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-sm font-medium text-foreground">Tipo de documento</label>
+                        <select
+                          value={generateType}
+                          onChange={e => handleChangeGenerateType(e.target.value as DocumentTemplateType)}
+                          className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        >
+                          {DOCUMENT_TEMPLATE_TYPES.map(type => (
+                            <option key={type} value={type}>{DOCUMENT_TEMPLATE_LABELS[type]}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-sm font-medium text-foreground">Conteúdo (revise antes de exportar)</label>
+                        <textarea
+                          value={generatePreview}
+                          onChange={e => setGeneratePreview(e.target.value)}
+                          className="w-full h-64 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        />
+                      </div>
+                      <Input label="Nome completo (assinatura)" placeholder={currentUser.fullName} value={generateTypedName} onChange={setGenerateTypedName} />
+                      {generateError && <p className="text-xs text-red-600">{generateError}</p>}
+                      <div className="flex justify-end gap-2">
+                        <Btn variant="ghost" size="sm" onClick={() => setShowGenerateModal(false)}>Cancelar</Btn>
+                        <Btn variant="primary" size="sm" disabled={!generateTypedName.trim() || generating} onClick={handleGenerateDocument}>
+                          {generating ? "Gerando..." : "Assinar e exportar PDF"}
+                        </Btn>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -4423,6 +4627,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", active: true, onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -5677,6 +5882,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", active: true, onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
@@ -5723,6 +5929,117 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
       active = false;
     };
   }, [currentUser.id]);
+
+  const [sessions, setSessions] = useState<AppointmentWithPaymentStatus[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [professionalLicense, setProfessionalLicense] = useState("");
+  const [busyAppointmentId, setBusyAppointmentId] = useState<string | null>(null);
+  const [sessionsError, setSessionsError] = useState("");
+  const [pixModal, setPixModal] = useState<{ qrCode: string; qrCodeBase64: string | null; expiresAt: string | null } | null>(null);
+  const [linkModal, setLinkModal] = useState<string | null>(null);
+  const [notaFiscalMessages, setNotaFiscalMessages] = useState<Record<string, string>>({});
+
+  const loadSessions = async () => {
+    setLoadingSessions(true);
+    try {
+      setSessions(await listAppointmentsWithPaymentStatus(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "financial.loadSessions" });
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadSessions();
+    (async () => {
+      const { data } = await supabase.from("professional_profiles").select("license_type, license_number").eq("id", currentUser.id).maybeSingle();
+      if (data) setProfessionalLicense(`${data.license_type} ${data.license_number}`.trim());
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const handleChargePix = async (appointmentId: string) => {
+    setSessionsError("");
+    setBusyAppointmentId(appointmentId);
+    const result = await createPixCharge(appointmentId);
+    setBusyAppointmentId(null);
+    if (!result.ok) {
+      setSessionsError(result.error);
+      return;
+    }
+    setPixModal(result);
+    await loadSessions();
+  };
+
+  const handleGenerateLink = async (appointmentId: string) => {
+    setSessionsError("");
+    setBusyAppointmentId(appointmentId);
+    const url = await createMercadoPagoCheckout(appointmentId);
+    setBusyAppointmentId(null);
+    if (!url) {
+      setSessionsError("Mercado Pago não está configurado nesta conta.");
+      return;
+    }
+    setLinkModal(url);
+  };
+
+  const handleIssueReceipt = async (session: AppointmentWithPaymentStatus) => {
+    if (!session.paymentId) return;
+    setSessionsError("");
+    setBusyAppointmentId(session.appointmentId);
+    try {
+      const [patientProfile, payment] = await Promise.all([
+        getPatientProfile(session.patientId).catch(() => null),
+        getPayment(session.paymentId),
+      ]);
+      const url = await generateReceiptPdf({
+        patientId: session.patientId,
+        patientName: session.patientName,
+        patientCpf: patientProfile?.cpf ?? null,
+        professionalId: currentUser.id,
+        professionalName: currentUser.fullName,
+        professionalLicense: professionalLicense || "CRP",
+        appointmentId: session.appointmentId,
+        scheduledAt: session.scheduledAt,
+        paymentId: session.paymentId,
+        amount: payment?.amount ?? session.price,
+        method: payment?.method ?? "mock",
+        paidAt: payment?.createdAt ?? session.scheduledAt,
+      });
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "financial.issueReceipt" });
+      setSessionsError("Não foi possível gerar o recibo.");
+    } finally {
+      setBusyAppointmentId(null);
+    }
+  };
+
+  const handleRequestNotaFiscal = async (session: AppointmentWithPaymentStatus) => {
+    if (!session.paymentId) return;
+    setSessionsError("");
+    setBusyAppointmentId(session.appointmentId);
+    const result = await requestNotaFiscal(session.paymentId);
+    setBusyAppointmentId(null);
+    setNotaFiscalMessages(prev => ({ ...prev, [session.paymentId!]: result.message }));
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Best-effort: clipboard API can be unavailable (older browsers, non-HTTPS) — the modal
+      // still shows the text to copy manually.
+    }
+  };
+
+  const PAYMENT_STATUS_BADGE: Record<AppointmentWithPaymentStatus["paymentStatus"], { label: string; variant: "success" | "warning" | "outline" | "danger" }> = {
+    paid: { label: "Pago", variant: "success" },
+    pending: { label: "Pendente", variant: "warning" },
+    refunded: { label: "Estornado", variant: "danger" },
+    uncharged: { label: "Sem cobrança", variant: "outline" },
+  };
 
   const currentMonthBruto = revenueData[revenueData.length - 1]?.bruto ?? 0;
   const currentMonthLiquido = revenueData[revenueData.length - 1]?.liquido ?? 0;
@@ -5816,6 +6133,213 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
             </div>
           </Card>
         </div>
+
+        <Card className="p-6">
+          <h3 className="font-semibold text-foreground font-display mb-1">Sessões</h3>
+          <p className="text-xs text-muted-foreground mb-4">Cobrança, recibo e nota fiscal por consulta.</p>
+          {sessionsError && <p className="text-xs text-red-600 mb-3">{sessionsError}</p>}
+          {loadingSessions && <p className="text-sm text-muted-foreground">Carregando sessões...</p>}
+          {!loadingSessions && sessions.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta ainda.</p>}
+          <div className="divide-y divide-border">
+            {sessions.map(s => {
+              const badge = PAYMENT_STATUS_BADGE[s.paymentStatus];
+              const busy = busyAppointmentId === s.appointmentId;
+              return (
+                <div key={s.appointmentId} className="py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">{s.patientName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(s.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })} · R${s.price.toFixed(2).replace(".", ",")}
+                    </p>
+                    {s.paymentId && notaFiscalMessages[s.paymentId] && (
+                      <p className="text-xs text-amber-700 mt-1">{notaFiscalMessages[s.paymentId]}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant={badge.variant}>{badge.label}</Badge>
+                    {(s.paymentStatus === "uncharged" || s.paymentStatus === "pending") && (
+                      <>
+                        <Btn variant="outline" size="sm" disabled={busy} onClick={() => handleChargePix(s.appointmentId)}>
+                          <QrCode size={13} />Cobrar via Pix
+                        </Btn>
+                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleGenerateLink(s.appointmentId)}>
+                          <Link2 size={13} />Gerar link
+                        </Btn>
+                      </>
+                    )}
+                    {s.paymentStatus === "paid" && (
+                      <>
+                        <Btn variant="outline" size="sm" disabled={busy} onClick={() => handleIssueReceipt(s)}>
+                          <Receipt size={13} />Emitir recibo
+                        </Btn>
+                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleRequestNotaFiscal(s)}>
+                          <FileText size={13} />Nota fiscal
+                        </Btn>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+
+      {pixModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setPixModal(null)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Cobrança via Pix</h2>
+              <button type="button" onClick={() => setPixModal(null)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            {pixModal.qrCodeBase64 && (
+              <img src={`data:image/png;base64,${pixModal.qrCodeBase64}`} alt="QR code Pix" className="w-48 h-48 mx-auto mb-4" />
+            )}
+            <p className="text-xs text-muted-foreground mb-2">Pix copia e cola</p>
+            <div className="p-3 bg-secondary rounded-xl text-xs text-foreground break-all mb-3">{pixModal.qrCode}</div>
+            {pixModal.expiresAt && (
+              <p className="text-xs text-muted-foreground mb-3">Expira em {new Date(pixModal.expiresAt).toLocaleString("pt-BR")}</p>
+            )}
+            <Btn variant="primary" className="w-full justify-center" onClick={() => copyToClipboard(pixModal.qrCode)}>
+              <Copy size={14} />Copiar código
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {linkModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setLinkModal(null)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Link de pagamento</h2>
+              <button type="button" onClick={() => setLinkModal(null)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            <div className="p-3 bg-secondary rounded-xl text-xs text-foreground break-all mb-3">{linkModal}</div>
+            <Btn variant="primary" className="w-full justify-center" onClick={() => copyToClipboard(linkModal)}>
+              <Copy size={14} />Copiar link
+            </Btn>
+          </div>
+        </div>
+      )}
+    </AppShell>
+  );
+}
+
+// ─── SCREEN: Biblioteca de Modelos ────────────────────────────────────────────
+
+function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+  const navItems = [
+    { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
+    { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", active: true, onClick: () => onNavigate("library") },
+    { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
+    { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
+    { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
+  ];
+
+  const [templates, setTemplates] = useState<EffectiveTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedType, setSelectedType] = useState<DocumentTemplateType>("declaracao_comparecimento");
+  const [titleDraft, setTitleDraft] = useState("");
+  const [bodyDraft, setBodyDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+
+  const loadTemplates = async () => {
+    setLoading(true);
+    try {
+      setTemplates(await listEffectiveTemplates(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "library.loadTemplates" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadTemplates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  useEffect(() => {
+    const current = templates.find(t => t.type === selectedType);
+    if (current) {
+      setTitleDraft(current.title);
+      setBodyDraft(current.body);
+    }
+  }, [selectedType, templates]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveMessage("");
+    try {
+      await saveTemplateCustomization(currentUser.id, selectedType, titleDraft, bodyDraft);
+      await loadTemplates();
+      setSaveMessage("Modelo salvo com sucesso.");
+    } catch (error) {
+      reportError(error, { flow: "library.saveTemplate" });
+      setSaveMessage("Não foi possível salvar o modelo.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <AppShell title="Biblioteca de Modelos" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      <div className="flex gap-6 h-full">
+        <div className="w-64 flex-shrink-0 space-y-2">
+          {DOCUMENT_TEMPLATE_TYPES.map(type => {
+            const t = templates.find(x => x.type === type);
+            return (
+              <button
+                key={type}
+                onClick={() => setSelectedType(type)}
+                className={`w-full flex items-center justify-between gap-2 p-3 rounded-xl text-left transition-all ${selectedType === type ? "bg-secondary border border-border" : "hover:bg-muted"}`}
+              >
+                <span className="text-sm font-medium text-foreground">{DOCUMENT_TEMPLATE_LABELS[type]}</span>
+                {t?.isCustomized && <Badge variant="accent">Personalizado</Badge>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex-1 space-y-4">
+          {loading ? (
+            <Card className="p-6"><p className="text-sm text-muted-foreground">Carregando modelos...</p></Card>
+          ) : (
+            <>
+              <Card className="p-5 space-y-4">
+                <Input label="Título" value={titleDraft} onChange={setTitleDraft} />
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-sm font-medium text-foreground">Texto do modelo</label>
+                  <textarea
+                    value={bodyDraft}
+                    onChange={e => setBodyDraft(e.target.value)}
+                    className="w-full h-80 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground font-mono resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                </div>
+                {saveMessage && <p className={`text-xs ${saveMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
+                <div className="flex justify-end">
+                  <Btn variant="primary" onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar modelo"}</Btn>
+                </div>
+              </Card>
+
+              <Card className="p-5">
+                <h3 className="font-semibold text-foreground font-display mb-2">Campos disponíveis</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Os campos abaixo são substituídos automaticamente ao gerar o documento pra um paciente (aba "Cadastro" do prontuário). Os marcados como manuais ficam visíveis como texto pra você preencher antes de exportar o PDF.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {TEMPLATE_PLACEHOLDERS.map(p => (
+                    <Badge key={p.key} variant={p.autoFilled ? "outline" : "warning"}>{`{{${p.key}}}`} — {p.label}</Badge>
+                  ))}
+                </div>
+              </Card>
+            </>
+          )}
+        </div>
       </div>
     </AppShell>
   );
@@ -5843,6 +6367,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
     { icon: <FileText size={18} />, label: "Prontuários", onClick: () => onNavigate("ehr") },
+    { icon: <BookOpen size={18} />, label: "Biblioteca", onClick: () => onNavigate("library") },
     { icon: <Brain size={18} />, label: "IA Assistente", onClick: () => onNavigate("ai-assistant") },
     { icon: <BarChart2 size={18} />, label: "Financeiro", onClick: () => onNavigate("financial") },
     { icon: <Settings size={18} />, label: "Configurações", active: true, onClick: () => onNavigate("professional-settings") },
@@ -6653,7 +7178,7 @@ export default function App() {
   }, []);
 
   const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "financial", "admin", "professional-settings"];
-  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "video", "checkout", "financial", "admin", "professional-settings"];
+  const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "video", "checkout", "financial", "library", "admin", "professional-settings"];
   // Screens restricted to specific roles; screens absent from this map are open to any authenticated user (e.g. video, shared by patient + professional).
   const screenRoles: Partial<Record<Screen, UserRole[]>> = {
     "patient-dashboard": ["patient"],
@@ -6663,6 +7188,7 @@ export default function App() {
     ehr: ["professional"],
     "ai-assistant": ["professional"],
     financial: ["professional"],
+    library: ["professional"],
     "professional-settings": ["professional"],
     admin: ["admin"],
     checkout: ["patient"],
@@ -6849,6 +7375,7 @@ export default function App() {
       {screen === "pricing" && <PricingPage onNavigate={navigate} />}
       {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={navigate} currentUser={currentUser} bookingDraft={bookingDraft} />}
       {screen === "financial" && currentUser && <FinancialDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "library" && currentUser && <LibraryScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "professional-settings" && currentUser && <ProfessionalSettingsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "admin" && currentUser && <AdminPanel onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
     </div>
