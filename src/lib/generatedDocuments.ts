@@ -24,6 +24,7 @@ export type GeneratedDocument = {
   fileName: string;
   signedAt: string | null;
   typedName: string | null;
+  sentToPatientAt: string | null;
   createdAt: string;
 };
 
@@ -39,14 +40,17 @@ function fromRow(d: any): GeneratedDocument {
     fileName: d.file_name,
     signedAt: d.signed_at,
     typedName: d.typed_name,
+    sentToPatientAt: d.sent_to_patient_at,
     createdAt: d.created_at,
   };
 }
 
+/** Called by the professional (sees every document for that patient) or by the patient themselves
+ *  (RLS silently limits the result to documents already sent to them — generated_documents_select_patient). */
 export async function listGeneratedDocuments(patientId: string): Promise<GeneratedDocument[]> {
   const { data, error } = await supabase
     .from("generated_documents")
-    .select("id, document_type, patient_id, professional_id, appointment_id, payment_id, storage_path, file_name, signed_at, typed_name, created_at")
+    .select("id, document_type, patient_id, professional_id, appointment_id, payment_id, storage_path, file_name, signed_at, typed_name, sent_to_patient_at, created_at")
     .eq("patient_id", patientId)
     .order("created_at", { ascending: false });
 
@@ -58,6 +62,41 @@ export async function getGeneratedDocumentSignedUrl(storagePath: string): Promis
   const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(storagePath, 60);
   if (error) throw error;
   return data.signedUrl;
+}
+
+/** Marks a document as sent — only the owning professional can (generated_documents_update_professional).
+ *  This is what makes it show up in the patient's own document list (RLS gates their read on this). */
+export async function markGeneratedDocumentSent(documentId: string): Promise<void> {
+  const { error } = await supabase
+    .from("generated_documents")
+    .update({ sent_to_patient_at: new Date().toISOString() })
+    .eq("id", documentId);
+  if (error) throw error;
+}
+
+/** Downloads the PDF as a blob and prints it via a same-origin blob: URL — a signed storage URL is
+ *  cross-origin, and browsers restrict enough of the cross-origin Window API that triggering print
+ *  reliably needs same-origin. Opens the tab synchronously (before the download) so browsers don't
+ *  treat it as an unrequested popup once the async download resolves. */
+export async function printGeneratedDocument(storagePath: string): Promise<void> {
+  const printWindow = window.open("", "_blank");
+
+  const { data, error } = await supabase.storage.from(BUCKET).download(storagePath);
+  if (error || !data) {
+    printWindow?.close();
+    throw error ?? new Error("Não foi possível baixar o documento.");
+  }
+
+  const blobUrl = URL.createObjectURL(data);
+  if (!printWindow) {
+    // Popup blocked — fall back to a normal tab the user can print from manually (Ctrl/Cmd+P).
+    window.open(blobUrl, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  printWindow.location.href = blobUrl;
+  printWindow.addEventListener("load", () => printWindow.print());
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }
 
 /** Uploads a PDF already built with src/lib/pdf.ts and records its metadata row. Used directly for

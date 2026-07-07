@@ -705,6 +705,18 @@
 
   Não precisa de nenhuma chave nova — só `supabase functions deploy sign-generated-document`.
 
+  **Imprimir e enviar ao paciente**: cada documento gerado (e o recibo também, mesmo bucket) tem
+  botões "Imprimir" e "Enviar ao paciente" na lista da aba "Cadastro". Imprimir baixa o PDF como
+  blob e imprime a partir de uma URL `blob:` same-origin (`printGeneratedDocument`,
+  `src/lib/generatedDocuments.ts`) — uma signed URL do Storage é de outra origem, e o navegador
+  restringe demais da API de `Window` entre origens pra confiar em `window.print()` diretamente
+  nela. Enviar grava `generated_documents.sent_to_patient_at` (migration `20260715000000`) e manda
+  uma mensagem de chat avisando o paciente (best-effort, reaproveita `sendMessage` já existente) — só
+  a partir daí o documento aparece na aba "Documentos" do próprio paciente. Antes de ser enviado, um
+  documento gerado só é visível pro profissional que o criou (RLS
+  `generated_documents_select_patient` exige `sent_to_patient_at is not null`), então um laudo ainda
+  em revisão ou um parecer preparado pra terceiros não vaza pro paciente só por existir.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar

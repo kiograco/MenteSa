@@ -40,6 +40,7 @@ import {
 } from "../lib/documentTemplates";
 import {
   generateAndSignDocument, listGeneratedDocuments, getGeneratedDocumentSignedUrl,
+  markGeneratedDocumentSent, printGeneratedDocument,
   type GeneratedDocument,
 } from "../lib/generatedDocuments";
 import { createPatientAccount } from "../lib/professionalPatients";
@@ -61,7 +62,7 @@ import {
   AlertCircle, CheckCircle, User, LogOut, Home, Activity, Clipboard,
   Camera, Send, Paperclip, MoreHorizontal, Edit3, Trash2, RefreshCw,
   ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon,
-  Copy, Link2, QrCode, Receipt,
+  Copy, Link2, QrCode, Receipt, Printer,
 } from "lucide-react";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
@@ -2203,6 +2204,9 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
   const [loadingMaterials, setLoadingMaterials] = useState(true);
   const [tasks, setTasks] = useState<PatientTask[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(true);
+  const [generatedDocs, setGeneratedDocs] = useState<GeneratedDocument[]>([]);
+  const [loadingGeneratedDocs, setLoadingGeneratedDocs] = useState(true);
+  const [printingDocId, setPrintingDocId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -2210,6 +2214,11 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
       setLoadingMaterials(true);
       const data = await listMaterialsForPatient(currentUser.id).catch(() => []);
       if (active) { setMaterials(data); setLoadingMaterials(false); }
+    })();
+    (async () => {
+      setLoadingGeneratedDocs(true);
+      const data = await listGeneratedDocuments(currentUser.id).catch(() => []);
+      if (active) { setGeneratedDocs(data); setLoadingGeneratedDocs(false); }
     })();
     return () => { active = false; };
   }, [currentUser.id]);
@@ -2231,6 +2240,26 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (error) {
       reportError(error, { flow: "patientDashboard.viewMaterial" });
+    }
+  };
+
+  const handleViewGeneratedDocument = async (storagePath: string) => {
+    try {
+      const url = await getGeneratedDocumentSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "patientDashboard.viewGeneratedDocument" });
+    }
+  };
+
+  const handlePrintGeneratedDocument = async (doc: GeneratedDocument) => {
+    setPrintingDocId(doc.id);
+    try {
+      await printGeneratedDocument(doc.storagePath);
+    } catch (error) {
+      reportError(error, { flow: "patientDashboard.printGeneratedDocument" });
+    } finally {
+      setPrintingDocId(null);
     }
   };
 
@@ -2574,19 +2603,46 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
         )}
 
         {dashboardTab === "documentos" && (
-          <Card className="p-6">
-            <h3 className="font-semibold text-foreground font-display mb-1">Documentos compartilhados</h3>
-            <p className="text-xs text-muted-foreground mb-4">Materiais que seu profissional compartilhou com você.</p>
-            {loadingMaterials && <p className="text-sm text-muted-foreground">Carregando...</p>}
-            {!loadingMaterials && materials.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento compartilhado ainda.</p>}
-            <div className="divide-y divide-border">
-              {materials.map(m => (
-                <button key={m.id} type="button" onClick={() => handleViewMaterial(m.storagePath)} className="w-full py-3 flex items-center gap-2 text-left text-sm text-foreground hover:text-primary">
-                  <FileText size={15} className="flex-shrink-0" />{m.fileName}
-                </button>
-              ))}
-            </div>
-          </Card>
+          <div className="space-y-6">
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-1">Documentos oficiais</h3>
+              <p className="text-xs text-muted-foreground mb-4">
+                Declarações, relatórios, pareceres, laudos e encaminhamentos enviados pelo seu profissional.
+              </p>
+              {loadingGeneratedDocs && <p className="text-sm text-muted-foreground">Carregando...</p>}
+              {!loadingGeneratedDocs && generatedDocs.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento enviado ainda.</p>}
+              <div className="divide-y divide-border">
+                {generatedDocs.map(doc => (
+                  <div key={doc.id} className="py-3 flex items-center justify-between gap-3 flex-wrap">
+                    <button type="button" onClick={() => handleViewGeneratedDocument(doc.storagePath)} className="text-left text-sm text-foreground hover:text-primary flex items-center gap-2">
+                      <FileText size={15} className="flex-shrink-0" />
+                      <span>
+                        {doc.documentType === "recibo" ? "Recibo" : DOCUMENT_TEMPLATE_LABELS[doc.documentType as DocumentTemplateType] ?? doc.documentType}
+                        <span className="text-muted-foreground"> · {new Date(doc.sentToPatientAt ?? doc.createdAt).toLocaleDateString("pt-BR")}</span>
+                      </span>
+                    </button>
+                    <Btn variant="ghost" size="sm" disabled={printingDocId === doc.id} onClick={() => handlePrintGeneratedDocument(doc)}>
+                      <Printer size={13} />{printingDocId === doc.id ? "Preparando..." : "Imprimir"}
+                    </Btn>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-1">Documentos compartilhados</h3>
+              <p className="text-xs text-muted-foreground mb-4">Materiais que seu profissional compartilhou com você.</p>
+              {loadingMaterials && <p className="text-sm text-muted-foreground">Carregando...</p>}
+              {!loadingMaterials && materials.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento compartilhado ainda.</p>}
+              <div className="divide-y divide-border">
+                {materials.map(m => (
+                  <button key={m.id} type="button" onClick={() => handleViewMaterial(m.storagePath)} className="w-full py-3 flex items-center gap-2 text-left text-sm text-foreground hover:text-primary">
+                    <FileText size={15} className="flex-shrink-0" />{m.fileName}
+                  </button>
+                ))}
+              </div>
+            </Card>
+          </div>
         )}
 
         {dashboardTab === "tarefas" && (
@@ -4097,6 +4153,40 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     }
   };
 
+  const [printingDocId, setPrintingDocId] = useState<string | null>(null);
+  const [sendingDocId, setSendingDocId] = useState<string | null>(null);
+  const [documentActionError, setDocumentActionError] = useState("");
+
+  const handlePrintGeneratedDocument = async (doc: GeneratedDocument) => {
+    setDocumentActionError("");
+    setPrintingDocId(doc.id);
+    try {
+      await printGeneratedDocument(doc.storagePath);
+    } catch (error) {
+      reportError(error, { flow: "ehr.printGeneratedDocument" });
+      setDocumentActionError("Não foi possível imprimir o documento.");
+    } finally {
+      setPrintingDocId(null);
+    }
+  };
+
+  const handleSendGeneratedDocument = async (doc: GeneratedDocument) => {
+    if (!selectedPatientId) return;
+    setDocumentActionError("");
+    setSendingDocId(doc.id);
+    try {
+      await markGeneratedDocumentSent(doc.id);
+      const label = doc.documentType === "recibo" ? "Recibo" : DOCUMENT_TEMPLATE_LABELS[doc.documentType as DocumentTemplateType] ?? doc.documentType;
+      void sendMessage(currentUser.id, selectedPatientId, currentUser.id, `📄 Novo documento disponível: ${label}`).catch(() => {});
+      await loadGeneratedDocuments(selectedPatientId);
+    } catch (error) {
+      reportError(error, { flow: "ehr.sendGeneratedDocument" });
+      setDocumentActionError("Não foi possível enviar o documento pro paciente.");
+    } finally {
+      setSendingDocId(null);
+    }
+  };
+
   const [materials, setMaterials] = useState<PatientMaterial[]>([]);
   const [tasks, setTasks] = useState<(PatientTask & { patientId: string })[]>([]);
   const [loadingMaterials, setLoadingMaterials] = useState(false);
@@ -4484,19 +4574,32 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                             <Plus size={13} />Gerar documento
                           </Btn>
                         </div>
+                        {documentActionError && <p className="text-xs text-red-600 mb-2">{documentActionError}</p>}
                         <div className="divide-y divide-border">
                           {loadingGeneratedDocs && <p className="text-sm text-muted-foreground">Carregando...</p>}
                           {!loadingGeneratedDocs && generatedDocs.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento gerado ainda.</p>}
                           {generatedDocs.map(doc => (
-                            <div key={doc.id} className="py-2.5 flex items-center justify-between gap-3">
+                            <div key={doc.id} className="py-2.5 flex items-center justify-between gap-3 flex-wrap">
                               <button type="button" onClick={() => handleViewGeneratedDocument(doc.storagePath)} className="text-left text-sm text-foreground hover:text-primary flex items-center gap-2">
                                 <FileText size={14} className="flex-shrink-0" />
                                 <span>
-                                  {DOCUMENT_TEMPLATE_LABELS[doc.documentType as DocumentTemplateType] ?? doc.documentType}
+                                  {doc.documentType === "recibo" ? "Recibo" : DOCUMENT_TEMPLATE_LABELS[doc.documentType as DocumentTemplateType] ?? doc.documentType}
                                   <span className="text-muted-foreground"> · {new Date(doc.createdAt).toLocaleDateString("pt-BR")}</span>
                                 </span>
                               </button>
-                              {doc.signedAt && <Badge variant="success">Assinado</Badge>}
+                              <div className="flex items-center gap-2">
+                                {doc.signedAt && <Badge variant="success">Assinado</Badge>}
+                                {doc.sentToPatientAt ? (
+                                  <Badge variant="outline">Enviado ao paciente</Badge>
+                                ) : (
+                                  <Btn variant="ghost" size="sm" disabled={sendingDocId === doc.id} onClick={() => handleSendGeneratedDocument(doc)}>
+                                    <Send size={13} />{sendingDocId === doc.id ? "Enviando..." : "Enviar ao paciente"}
+                                  </Btn>
+                                )}
+                                <Btn variant="ghost" size="sm" disabled={printingDocId === doc.id} onClick={() => handlePrintGeneratedDocument(doc)}>
+                                  <Printer size={13} />{printingDocId === doc.id ? "Preparando..." : "Imprimir"}
+                                </Btn>
+                              </div>
                             </div>
                           ))}
                         </div>

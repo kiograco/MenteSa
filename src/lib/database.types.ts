@@ -371,6 +371,7 @@ export interface Database {
           signed_at: string | null;
           typed_name: string | null;
           signature_hash: string | null;
+          sent_to_patient_at: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["generated_documents"]["Row"]> & {
