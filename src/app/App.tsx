@@ -42,6 +42,7 @@ import {
   generateAndSignDocument, listGeneratedDocuments, getGeneratedDocumentSignedUrl,
   type GeneratedDocument,
 } from "../lib/generatedDocuments";
+import { createPatientAccount } from "../lib/professionalPatients";
 import {
   listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
   listUnreadMessageNotifications, subscribeToMyMessages,
@@ -222,6 +223,17 @@ function Input({ label, placeholder, type = "text", icon, value, onChange, class
           className={`w-full ${icon ? "pl-9" : "pl-3"} pr-3 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all`}
         />
       </div>
+    </div>
+  );
+}
+
+/** Read-only rendering of an Input's value — used where the professional can view a patient's own
+ *  data (ficha cadastral) but only the patient can edit it. */
+function ReadOnlyField({ label, value, className = "" }: { label: string; value: string; className?: string }) {
+  return (
+    <div className={`flex flex-col gap-1 ${className}`}>
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm text-foreground">{value.trim() || "—"}</span>
     </div>
   );
 }
@@ -1800,6 +1812,11 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
   const [whatsappReminders, setWhatsappReminders] = useState(true);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
 
+  const [profileForm, setProfileForm] = useState<PatientProfileFormState>(EMPTY_PATIENT_PROFILE_FORM);
+  const [loadingPatientProfile, setLoadingPatientProfile] = useState(true);
+  const [savingPatientProfile, setSavingPatientProfile] = useState(false);
+  const [patientProfileMessage, setPatientProfileMessage] = useState("");
+
   useEffect(() => {
     let active = true;
     (async () => {
@@ -1814,13 +1831,54 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
       setLoading(false);
     })();
     (async () => {
+      setLoadingPatientProfile(true);
       const profile = await getPatientProfile(currentUser.id).catch(() => null);
-      if (active && profile) setWhatsappReminders(profile.whatsappRemindersEnabled);
+      if (!active) return;
+      if (profile) {
+        setWhatsappReminders(profile.whatsappRemindersEnabled);
+        setProfileForm(patientProfileToFormState(profile));
+      }
+      setLoadingPatientProfile(false);
     })();
     return () => {
       active = false;
     };
   }, [currentUser.id]);
+
+  const handleSavePatientProfile = async () => {
+    setSavingPatientProfile(true);
+    setPatientProfileMessage("");
+    try {
+      await upsertPatientProfile(currentUser.id, {
+        birthDate: profileForm.birthDate || null,
+        cpf: profileForm.cpf || null,
+        addressStreet: profileForm.addressStreet || null,
+        addressNumber: profileForm.addressNumber || null,
+        addressComplement: profileForm.addressComplement || null,
+        addressNeighborhood: profileForm.addressNeighborhood || null,
+        addressCity: profileForm.addressCity || null,
+        addressState: profileForm.addressState || null,
+        addressZip: profileForm.addressZip || null,
+        emergencyContactName: profileForm.emergencyContactName || null,
+        emergencyContactPhone: profileForm.emergencyContactPhone || null,
+        emergencyContactRelationship: profileForm.emergencyContactRelationship || null,
+        legalGuardianName: profileForm.legalGuardianName || null,
+        legalGuardianCpf: profileForm.legalGuardianCpf || null,
+        legalGuardianPhone: profileForm.legalGuardianPhone || null,
+        legalGuardianRelationship: profileForm.legalGuardianRelationship || null,
+        insuranceProvider: profileForm.insuranceProvider || null,
+        insurancePlan: profileForm.insurancePlan || null,
+        insuranceCardNumber: profileForm.insuranceCardNumber || null,
+        clinicalHistory: profileForm.clinicalHistory || null,
+      });
+      setPatientProfileMessage("Ficha cadastral salva com sucesso.");
+    } catch (error) {
+      reportError(error, { flow: "patientSettings.savePatientProfile" });
+      setPatientProfileMessage("Não foi possível salvar a ficha cadastral.");
+    } finally {
+      setSavingPatientProfile(false);
+    }
+  };
 
   const handleToggleWhatsappReminders = async (enabled: boolean) => {
     setWhatsappReminders(enabled);
@@ -1887,6 +1945,7 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
   };
 
   return (
+    <div className="space-y-6">
     <div className="grid lg:grid-cols-2 gap-6">
       <Card className="p-6">
         <h3 className="font-semibold text-foreground font-display mb-4">Meus dados</h3>
@@ -1944,6 +2003,97 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
           {passwordMessage && <p className="text-xs text-emerald-700">{passwordMessage}</p>}
         </div>
       </Card>
+    </div>
+
+      <div>
+        <h3 className="font-semibold text-foreground font-display mb-1">Ficha cadastral</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Esses dados ficam visíveis pro seu psicólogo/psiquiatra no prontuário, mas só você pode editá-los aqui.
+        </p>
+        {loadingPatientProfile ? (
+          <Card className="p-6"><p className="text-sm text-muted-foreground">Carregando ficha cadastral...</p></Card>
+        ) : (
+          <div className="space-y-4">
+            <Card className="p-5 space-y-4">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2"><User size={16} />Dados Pessoais</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Data de nascimento" type="date" value={profileForm.birthDate} onChange={v => setProfileForm(f => ({ ...f, birthDate: v }))} />
+                <Input label="CPF" placeholder="000.000.000-00" value={profileForm.cpf} onChange={v => setProfileForm(f => ({ ...f, cpf: v }))} />
+              </div>
+            </Card>
+
+            <Card className="p-5 space-y-4">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2"><MapPin size={16} />Contatos e Endereço</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Logradouro" value={profileForm.addressStreet} onChange={v => setProfileForm(f => ({ ...f, addressStreet: v }))} />
+                <Input label="Número" value={profileForm.addressNumber} onChange={v => setProfileForm(f => ({ ...f, addressNumber: v }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Complemento" value={profileForm.addressComplement} onChange={v => setProfileForm(f => ({ ...f, addressComplement: v }))} />
+                <Input label="Bairro" value={profileForm.addressNeighborhood} onChange={v => setProfileForm(f => ({ ...f, addressNeighborhood: v }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Cidade" value={profileForm.addressCity} onChange={v => setProfileForm(f => ({ ...f, addressCity: v }))} />
+                <Input label="Estado (UF)" value={profileForm.addressState} onChange={v => setProfileForm(f => ({ ...f, addressState: v }))} />
+              </div>
+              <Input label="CEP" value={profileForm.addressZip} onChange={v => setProfileForm(f => ({ ...f, addressZip: v }))} className="max-w-xs" />
+            </Card>
+
+            <Card className="p-5 space-y-4">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2">
+                <Shield size={16} />Responsável Legal <span className="text-xs font-normal text-muted-foreground">(se necessário)</span>
+              </h4>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Nome" value={profileForm.legalGuardianName} onChange={v => setProfileForm(f => ({ ...f, legalGuardianName: v }))} />
+                <Input label="CPF" value={profileForm.legalGuardianCpf} onChange={v => setProfileForm(f => ({ ...f, legalGuardianCpf: v }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Telefone" value={profileForm.legalGuardianPhone} onChange={v => setProfileForm(f => ({ ...f, legalGuardianPhone: v }))} />
+                <Input label="Parentesco" value={profileForm.legalGuardianRelationship} onChange={v => setProfileForm(f => ({ ...f, legalGuardianRelationship: v }))} />
+              </div>
+            </Card>
+
+            <Card className="p-5 space-y-4">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2">
+                <CreditCard size={16} />Convênio <span className="text-xs font-normal text-muted-foreground">(se houver)</span>
+              </h4>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Convênio" value={profileForm.insuranceProvider} onChange={v => setProfileForm(f => ({ ...f, insuranceProvider: v }))} />
+                <Input label="Plano" value={profileForm.insurancePlan} onChange={v => setProfileForm(f => ({ ...f, insurancePlan: v }))} />
+              </div>
+              <Input label="Número da carteirinha" value={profileForm.insuranceCardNumber} onChange={v => setProfileForm(f => ({ ...f, insuranceCardNumber: v }))} className="max-w-xs" />
+            </Card>
+
+            <Card className="p-5 space-y-4">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2"><Heart size={16} />Contato de Emergência</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <Input label="Nome" value={profileForm.emergencyContactName} onChange={v => setProfileForm(f => ({ ...f, emergencyContactName: v }))} />
+                <Input label="Telefone" value={profileForm.emergencyContactPhone} onChange={v => setProfileForm(f => ({ ...f, emergencyContactPhone: v }))} />
+              </div>
+              <Input label="Parentesco" value={profileForm.emergencyContactRelationship} onChange={v => setProfileForm(f => ({ ...f, emergencyContactRelationship: v }))} className="max-w-xs" />
+            </Card>
+
+            <Card className="p-5 space-y-3">
+              <h4 className="font-semibold text-foreground font-display flex items-center gap-2"><Clipboard size={16} />Histórico</h4>
+              <textarea
+                value={profileForm.clinicalHistory}
+                onChange={e => setProfileForm(f => ({ ...f, clinicalHistory: e.target.value }))}
+                placeholder="Histórico relevante, queixa inicial, encaminhamentos..."
+                className="w-full h-28 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+              />
+            </Card>
+
+            {patientProfileMessage && (
+              <p className={`text-xs ${patientProfileMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{patientProfileMessage}</p>
+            )}
+            <div className="flex justify-end">
+              <Btn variant="primary" onClick={handleSavePatientProfile} disabled={savingPatientProfile}>
+                {savingPatientProfile ? "Salvando..." : "Salvar ficha cadastral"}
+              </Btn>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3491,33 +3641,96 @@ function PatientsScreen({
   const [patients, setPatients] = useState<EhrPatient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
 
+  const loadPatients = async () => {
+    setLoadingPatients(true);
+    const { data } = await supabase
+      .from("appointments")
+      .select("patient_id, profiles(full_name, avatar_url)")
+      .eq("professional_id", currentUser.id);
+
+    const map = new Map<string, EhrPatient>();
+    ((data ?? []) as any[]).forEach(a => {
+      const existing = map.get(a.patient_id);
+      if (existing) existing.sessionsCount += 1;
+      else map.set(a.patient_id, { id: a.patient_id, name: a.profiles?.full_name ?? "Paciente", img: a.profiles?.avatar_url ?? "", sessionsCount: 1 });
+    });
+    setPatients(Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name)));
+    setLoadingPatients(false);
+  };
+
   useEffect(() => {
-    let active = true;
-    (async () => {
-      setLoadingPatients(true);
-      const { data } = await supabase
-        .from("appointments")
-        .select("patient_id, profiles(full_name, avatar_url)")
-        .eq("professional_id", currentUser.id);
-
-      if (!active) return;
-
-      const map = new Map<string, EhrPatient>();
-      ((data ?? []) as any[]).forEach(a => {
-        const existing = map.get(a.patient_id);
-        if (existing) existing.sessionsCount += 1;
-        else map.set(a.patient_id, { id: a.patient_id, name: a.profiles?.full_name ?? "Paciente", img: a.profiles?.avatar_url ?? "", sessionsCount: 1 });
-      });
-      setPatients(Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name)));
-      setLoadingPatients(false);
-    })();
-    return () => {
-      active = false;
-    };
+    void loadPatients();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id]);
+
+  const [showNewPatientModal, setShowNewPatientModal] = useState(false);
+  const [newPatientName, setNewPatientName] = useState("");
+  const [newPatientEmail, setNewPatientEmail] = useState("");
+  const [newPatientPhone, setNewPatientPhone] = useState("");
+  const [newPatientDate, setNewPatientDate] = useState("");
+  const [newPatientTime, setNewPatientTime] = useState("09:00");
+  const [newPatientModality, setNewPatientModality] = useState<"online" | "presencial">("online");
+  const [creatingPatient, setCreatingPatient] = useState(false);
+  const [newPatientError, setNewPatientError] = useState("");
+  const [createdPatientPassword, setCreatedPatientPassword] = useState<string | null>(null);
+
+  const openNewPatientModal = () => {
+    setNewPatientError("");
+    setNewPatientName("");
+    setNewPatientEmail("");
+    setNewPatientPhone("");
+    setNewPatientDate(new Date().toISOString().slice(0, 10));
+    setNewPatientTime("09:00");
+    setNewPatientModality("online");
+    setCreatedPatientPassword(null);
+    setShowNewPatientModal(true);
+  };
+
+  const handleCreatePatient = async () => {
+    setNewPatientError("");
+    if (!newPatientName.trim() || !newPatientEmail.trim() || !newPatientDate || !newPatientTime) {
+      setNewPatientError("Preencha nome, e-mail e a data/horário da primeira consulta.");
+      return;
+    }
+    const scheduledAt = new Date(`${newPatientDate}T${newPatientTime}:00`);
+    if (scheduledAt.getTime() < Date.now()) {
+      setNewPatientError("Escolha uma data e horário no futuro pra primeira consulta.");
+      return;
+    }
+
+    setCreatingPatient(true);
+    const result = await createPatientAccount({
+      fullName: newPatientName.trim(),
+      email: newPatientEmail.trim(),
+      phone: newPatientPhone.trim() || undefined,
+      scheduledAt: scheduledAt.toISOString(),
+      modality: newPatientModality,
+    });
+    setCreatingPatient(false);
+
+    if (!result.ok) {
+      setNewPatientError(result.error);
+      return;
+    }
+
+    setCreatedPatientPassword(result.defaultPassword);
+    await loadPatients();
+  };
+
+  const copyDefaultPassword = async () => {
+    if (!createdPatientPassword) return;
+    try {
+      await navigator.clipboard.writeText(createdPatientPassword);
+    } catch {
+      // Best-effort: the password is still shown on screen to copy manually.
+    }
+  };
 
   return (
     <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      <div className="flex justify-end mb-3">
+        <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+      </div>
       <MessagingPanel
         currentUser={currentUser}
         role="professional"
@@ -3525,6 +3738,59 @@ function PatientsScreen({
         loadingCounterparts={loadingPatients}
         onOpenRecord={(patientId) => { onOpenEhr(patientId, ""); onNavigate("ehr"); }}
       />
+
+      {showNewPatientModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowNewPatientModal(false)}>
+          <div className="bg-white rounded-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+            {createdPatientPassword ? (
+              <>
+                <div className="flex items-start justify-between mb-4">
+                  <h2 className="text-lg font-bold text-foreground font-display">Paciente cadastrado</h2>
+                  <button type="button" onClick={() => setShowNewPatientModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+                </div>
+                <p className="text-sm text-muted-foreground mb-3">
+                  A primeira consulta já foi agendada. Repasse essas credenciais pro paciente — recomende trocar a senha no primeiro acesso (Configurações → Alterar senha).
+                </p>
+                <div className="p-3 bg-secondary rounded-xl text-sm text-foreground mb-3 space-y-1">
+                  <p><span className="text-muted-foreground">Login: </span>{newPatientEmail}</p>
+                  <p><span className="text-muted-foreground">Senha: </span>{createdPatientPassword}</p>
+                </div>
+                <div className="flex gap-2">
+                  <Btn variant="outline" className="flex-1 justify-center" onClick={copyDefaultPassword}><Copy size={14} />Copiar senha</Btn>
+                  <Btn variant="primary" className="flex-1 justify-center" onClick={() => setShowNewPatientModal(false)}>Concluir</Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-start justify-between mb-4">
+                  <h2 className="text-lg font-bold text-foreground font-display">Cadastrar paciente</h2>
+                  <button type="button" onClick={() => setShowNewPatientModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+                </div>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Cria a conta do paciente (login pelo e-mail, senha padrão) e já agenda a primeira consulta com você.
+                </p>
+                <div className="space-y-3">
+                  <Input label="Nome completo" value={newPatientName} onChange={setNewPatientName} />
+                  <Input label="E-mail" type="email" value={newPatientEmail} onChange={setNewPatientEmail} />
+                  <Input label="Telefone (opcional)" value={newPatientPhone} onChange={setNewPatientPhone} placeholder="(11) 90000-0000" />
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input label="Data da 1ª consulta" type="date" value={newPatientDate} onChange={setNewPatientDate} />
+                    <Input label="Horário" type="time" value={newPatientTime} onChange={setNewPatientTime} />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setNewPatientModality("online")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newPatientModality === "online" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Online</button>
+                    <button type="button" onClick={() => setNewPatientModality("presencial")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newPatientModality === "presencial" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Presencial</button>
+                  </div>
+                  {newPatientError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newPatientError}</div>}
+                  <Btn variant="primary" className="w-full justify-center" onClick={handleCreatePatient} disabled={creatingPatient}>
+                    {creatingPatient ? "Cadastrando..." : "Cadastrar e agendar"}
+                  </Btn>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
@@ -3637,8 +3903,6 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
 
   const [profileForm, setProfileForm] = useState<PatientProfileFormState>(EMPTY_PATIENT_PROFILE_FORM);
   const [loadingPatientProfile, setLoadingPatientProfile] = useState(false);
-  const [savingPatientProfile, setSavingPatientProfile] = useState(false);
-  const [patientProfileMessage, setPatientProfileMessage] = useState("");
 
   const [patientDocs, setPatientDocs] = useState<PatientDocument[]>([]);
   const [loadingPatientDocs, setLoadingPatientDocs] = useState(false);
@@ -3665,7 +3929,6 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
 
     let active = true;
     setLoadingPatientProfile(true);
-    setPatientProfileMessage("");
 
     (async () => {
       const profile = await getPatientProfile(selectedPatientId).catch(() => null);
@@ -3680,42 +3943,6 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       active = false;
     };
   }, [selectedPatientId]);
-
-  const handleSavePatientProfile = async () => {
-    if (!selectedPatientId) return;
-    setSavingPatientProfile(true);
-    setPatientProfileMessage("");
-    try {
-      await upsertPatientProfile(selectedPatientId, {
-        birthDate: profileForm.birthDate || null,
-        cpf: profileForm.cpf || null,
-        addressStreet: profileForm.addressStreet || null,
-        addressNumber: profileForm.addressNumber || null,
-        addressComplement: profileForm.addressComplement || null,
-        addressNeighborhood: profileForm.addressNeighborhood || null,
-        addressCity: profileForm.addressCity || null,
-        addressState: profileForm.addressState || null,
-        addressZip: profileForm.addressZip || null,
-        emergencyContactName: profileForm.emergencyContactName || null,
-        emergencyContactPhone: profileForm.emergencyContactPhone || null,
-        emergencyContactRelationship: profileForm.emergencyContactRelationship || null,
-        legalGuardianName: profileForm.legalGuardianName || null,
-        legalGuardianCpf: profileForm.legalGuardianCpf || null,
-        legalGuardianPhone: profileForm.legalGuardianPhone || null,
-        legalGuardianRelationship: profileForm.legalGuardianRelationship || null,
-        insuranceProvider: profileForm.insuranceProvider || null,
-        insurancePlan: profileForm.insurancePlan || null,
-        insuranceCardNumber: profileForm.insuranceCardNumber || null,
-        clinicalHistory: profileForm.clinicalHistory || null,
-      });
-      setPatientProfileMessage("Ficha cadastral salva com sucesso.");
-    } catch (error) {
-      reportError(error, { flow: "ehr.savePatientProfile" });
-      setPatientProfileMessage("Não foi possível salvar a ficha cadastral.");
-    } finally {
-      setSavingPatientProfile(false);
-    }
-  };
 
   const handleUploadPatientDocument = async (file: File) => {
     if (!selectedPatientId) return;
@@ -4154,29 +4381,33 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                     <Card className="p-6"><p className="text-sm text-muted-foreground">Carregando ficha cadastral...</p></Card>
                   ) : (
                     <>
+                      <p className="text-xs text-muted-foreground -mt-2">
+                        Preenchido pelo próprio paciente em Configurações — só leitura aqui.
+                      </p>
+
                       <Card className="p-5 space-y-4">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><User size={16} />Dados Pessoais</h3>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Data de nascimento" type="date" value={profileForm.birthDate} onChange={v => setProfileForm(f => ({ ...f, birthDate: v }))} />
-                          <Input label="CPF" placeholder="000.000.000-00" value={profileForm.cpf} onChange={v => setProfileForm(f => ({ ...f, cpf: v }))} />
+                          <ReadOnlyField label="Data de nascimento" value={profileForm.birthDate} />
+                          <ReadOnlyField label="CPF" value={profileForm.cpf} />
                         </div>
                       </Card>
 
                       <Card className="p-5 space-y-4">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><MapPin size={16} />Contatos e Endereço</h3>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Logradouro" value={profileForm.addressStreet} onChange={v => setProfileForm(f => ({ ...f, addressStreet: v }))} />
-                          <Input label="Número" value={profileForm.addressNumber} onChange={v => setProfileForm(f => ({ ...f, addressNumber: v }))} />
+                          <ReadOnlyField label="Logradouro" value={profileForm.addressStreet} />
+                          <ReadOnlyField label="Número" value={profileForm.addressNumber} />
                         </div>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Complemento" value={profileForm.addressComplement} onChange={v => setProfileForm(f => ({ ...f, addressComplement: v }))} />
-                          <Input label="Bairro" value={profileForm.addressNeighborhood} onChange={v => setProfileForm(f => ({ ...f, addressNeighborhood: v }))} />
+                          <ReadOnlyField label="Complemento" value={profileForm.addressComplement} />
+                          <ReadOnlyField label="Bairro" value={profileForm.addressNeighborhood} />
                         </div>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Cidade" value={profileForm.addressCity} onChange={v => setProfileForm(f => ({ ...f, addressCity: v }))} />
-                          <Input label="Estado (UF)" value={profileForm.addressState} onChange={v => setProfileForm(f => ({ ...f, addressState: v }))} />
+                          <ReadOnlyField label="Cidade" value={profileForm.addressCity} />
+                          <ReadOnlyField label="Estado (UF)" value={profileForm.addressState} />
                         </div>
-                        <Input label="CEP" value={profileForm.addressZip} onChange={v => setProfileForm(f => ({ ...f, addressZip: v }))} className="max-w-xs" />
+                        <ReadOnlyField label="CEP" value={profileForm.addressZip} className="max-w-xs" />
                       </Card>
 
                       <Card className="p-5 space-y-4">
@@ -4184,12 +4415,12 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           <Shield size={16} />Responsável Legal <span className="text-xs font-normal text-muted-foreground">(se necessário)</span>
                         </h3>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Nome" value={profileForm.legalGuardianName} onChange={v => setProfileForm(f => ({ ...f, legalGuardianName: v }))} />
-                          <Input label="CPF" value={profileForm.legalGuardianCpf} onChange={v => setProfileForm(f => ({ ...f, legalGuardianCpf: v }))} />
+                          <ReadOnlyField label="Nome" value={profileForm.legalGuardianName} />
+                          <ReadOnlyField label="CPF" value={profileForm.legalGuardianCpf} />
                         </div>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Telefone" value={profileForm.legalGuardianPhone} onChange={v => setProfileForm(f => ({ ...f, legalGuardianPhone: v }))} />
-                          <Input label="Parentesco" value={profileForm.legalGuardianRelationship} onChange={v => setProfileForm(f => ({ ...f, legalGuardianRelationship: v }))} />
+                          <ReadOnlyField label="Telefone" value={profileForm.legalGuardianPhone} />
+                          <ReadOnlyField label="Parentesco" value={profileForm.legalGuardianRelationship} />
                         </div>
                       </Card>
 
@@ -4198,39 +4429,25 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           <CreditCard size={16} />Convênio <span className="text-xs font-normal text-muted-foreground">(se houver)</span>
                         </h3>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Convênio" value={profileForm.insuranceProvider} onChange={v => setProfileForm(f => ({ ...f, insuranceProvider: v }))} />
-                          <Input label="Plano" value={profileForm.insurancePlan} onChange={v => setProfileForm(f => ({ ...f, insurancePlan: v }))} />
+                          <ReadOnlyField label="Convênio" value={profileForm.insuranceProvider} />
+                          <ReadOnlyField label="Plano" value={profileForm.insurancePlan} />
                         </div>
-                        <Input label="Número da carteirinha" value={profileForm.insuranceCardNumber} onChange={v => setProfileForm(f => ({ ...f, insuranceCardNumber: v }))} className="max-w-xs" />
+                        <ReadOnlyField label="Número da carteirinha" value={profileForm.insuranceCardNumber} className="max-w-xs" />
                       </Card>
 
                       <Card className="p-5 space-y-4">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><Heart size={16} />Contato de Emergência</h3>
                         <div className="grid grid-cols-2 gap-4">
-                          <Input label="Nome" value={profileForm.emergencyContactName} onChange={v => setProfileForm(f => ({ ...f, emergencyContactName: v }))} />
-                          <Input label="Telefone" value={profileForm.emergencyContactPhone} onChange={v => setProfileForm(f => ({ ...f, emergencyContactPhone: v }))} />
+                          <ReadOnlyField label="Nome" value={profileForm.emergencyContactName} />
+                          <ReadOnlyField label="Telefone" value={profileForm.emergencyContactPhone} />
                         </div>
-                        <Input label="Parentesco" value={profileForm.emergencyContactRelationship} onChange={v => setProfileForm(f => ({ ...f, emergencyContactRelationship: v }))} className="max-w-xs" />
+                        <ReadOnlyField label="Parentesco" value={profileForm.emergencyContactRelationship} className="max-w-xs" />
                       </Card>
 
-                      <Card className="p-5 space-y-3">
+                      <Card className="p-5 space-y-2">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><Clipboard size={16} />Histórico</h3>
-                        <textarea
-                          value={profileForm.clinicalHistory}
-                          onChange={e => setProfileForm(f => ({ ...f, clinicalHistory: e.target.value }))}
-                          placeholder="Histórico clínico relevante, queixa inicial, encaminhamentos..."
-                          className="w-full h-28 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
-                        />
+                        <p className="text-sm text-foreground whitespace-pre-wrap">{profileForm.clinicalHistory.trim() || "—"}</p>
                       </Card>
-
-                      {patientProfileMessage && (
-                        <p className={`text-xs ${patientProfileMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{patientProfileMessage}</p>
-                      )}
-                      <div className="flex justify-end">
-                        <Btn variant="primary" onClick={handleSavePatientProfile} disabled={savingPatientProfile}>
-                          {savingPatientProfile ? "Salvando..." : "Salvar ficha cadastral"}
-                        </Btn>
-                      </div>
 
                       <Card className="p-5">
                         <h3 className="font-semibold text-foreground font-display mb-3 flex items-center gap-2"><FileText size={16} />Anexos de documentos</h3>

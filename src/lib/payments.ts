@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import { classifyPaymentStatus, type AppointmentPaymentStatus } from "./paymentStatus";
+import { extractFunctionErrorMessage } from "./functionsClient";
 
 export { classifyPaymentStatus, type AppointmentPaymentStatus } from "./paymentStatus";
 
@@ -64,17 +65,6 @@ export async function getPayment(paymentId: string): Promise<{ method: string; a
   const { data, error } = await supabase.from("payments").select("method, amount, created_at").eq("id", paymentId).maybeSingle();
   if (error) throw error;
   return data ? { method: data.method, amount: Number(data.amount), createdAt: data.created_at } : null;
-}
-
-async function extractFunctionErrorMessage(error: unknown): Promise<string | null> {
-  const context = (error as any)?.context;
-  if (!context || typeof context.json !== "function") return null;
-  try {
-    const body = await context.json();
-    return typeof body?.error === "string" ? body.error : null;
-  } catch {
-    return null;
-  }
 }
 
 export type PixChargeResult =

@@ -1,7 +1,109 @@
 
   # MenteSa — SaaS Platform for Psychologists
 
-  This is a code bundle for SaaS Platform for Psychologists. The original project is available at https://www.figma.com/design/j313aEvWol9JTdOGxQxQw6/SaaS-Platform-for-Psychologists.
+  ## Sumário
+
+  - [Visão geral](#visão-geral)
+  - [Stack técnica](#stack-técnica)
+  - [Arquitetura do projeto](#arquitetura-do-projeto)
+  - [Rodando o código](#running-the-code)
+  - [Supabase MVP setup](#supabase-mvp-setup)
+  - [Testes](#rodando-os-testes-e2e)
+  - [Status do projeto](#status-do-projeto)
+  - [Documentação por funcionalidade](#documentação-por-funcionalidade-indo-para-produção) (deep dive de cada integração/feature pós-MVP)
+  - [Chaves de acesso necessárias](#chaves-de-acesso-necessárias)
+  - [Monitoramento de erros](#monitoramento-de-erros)
+
+  ## Visão geral
+
+  Plataforma que conecta psicólogos/psiquiatras a pacientes, cobrindo o fluxo clínico e de negócio
+  de ponta a ponta:
+
+  - **Diretório de profissionais verificados** — busca e filtros por especialidade, abordagem,
+    modalidade (online/presencial), cidade, convênio, preço e público-alvo.
+  - **Agendamento real** — disponibilidade semanal/pontual, agenda do profissional (semana/dia/mês),
+    consulta de retorno e sincronização opcional com o Google Agenda.
+  - **Telehealth com vídeo real** (LiveKit) — câmera, mic, compartilhar tela e chat via canal de
+    dados, com fallback automático pra sala mock quando o LiveKit não está configurado.
+  - **Prontuário eletrônico (EHR)** — ficha de cadastro completa do paciente, notas de sessão em
+    formato SOAP com assinatura digital, histórico cronológico, escalas clínicas (PHQ-9, GAD-7).
+  - **IA Assistente** (Google Gemini) — resumo de sessão (pontos-chave, itens de ação, nota clínica)
+    a partir do texto digitado/ditado, com consentimento explícito antes de gerar.
+  - **Biblioteca de Modelos** — declarações, relatórios, pareceres, laudos e encaminhamentos com
+    placeholders automáticos e assinatura digital antes da exportação em PDF.
+  - **Mensagens em tempo real** entre paciente e profissional (Supabase Realtime, sem polling).
+  - **Pagamentos reais** (Mercado Pago) — Checkout Pro no agendamento, Pix avulso e link de
+    pagamento no Financeiro, recibo em PDF, camada de abstração pronta para nota fiscal.
+  - **Dashboard financeiro** — receita real (bruta/líquida), comparecimento, cancelamento, no-show
+    e retenção de pacientes.
+  - **Fila de espera inteligente** — paciente entra na fila de um horário ocupado e é avisado por
+    e-mail quando ele libera; trava no banco garante que só quem agendar primeiro fica com a vaga.
+  - **Lembretes por WhatsApp** — via Meta WhatsApp Cloud API, disparados por `pg_cron` a cada 15 min.
+  - **Termos de Uso, Privacidade e Consentimento Informado** — aceite obrigatório no cadastro e
+    assinatura eletrônica por relação paciente↔profissional antes do pagamento.
+  - **Painel administrativo** — aprovação/rejeição de profissionais, gestão de usuários (suspender/
+    excluir), sem acesso ao conteúdo clínico das notas.
+  - **Conformidade com o Código de Ética do Psicólogo (CFP)** — declaração de registro no e-Psi,
+    privacidade real das notas clínicas (nem admin lê), estatísticas da landing page calculadas a
+    partir de dados reais (não inventadas).
+  - **Monitoramento de erros** com Sentry, opcional via variável de ambiente.
+
+  ## Stack técnica
+
+  | Camada | Tecnologia |
+  |---|---|
+  | Front end | React 18, TypeScript, Vite 6 |
+  | Estilo | Tailwind CSS |
+  | Gráficos / ícones | Recharts, lucide-react |
+  | Back end | Supabase (Postgres, Auth, Storage, Realtime, Edge Functions em Deno) |
+  | Vídeo | LiveKit |
+  | IA | Google Gemini (via Edge Function) |
+  | Pagamentos | Mercado Pago — Checkout Pro e API de Pagamentos (Pix), com fallback mock |
+  | E-mail transacional | Resend |
+  | WhatsApp | Meta WhatsApp Cloud API |
+  | Geração de PDF | jsPDF |
+  | Monitoramento de erros | Sentry (`@sentry/react`), opcional |
+  | Testes unitários | Vitest |
+  | Testes E2E | Playwright |
+  | CI/CD | GitHub Actions |
+  | Gerenciador de pacotes | npm |
+
+  ## Arquitetura do projeto
+
+  ```
+  ├── src/
+  │   ├── app/App.tsx          # Shell da aplicação, roteamento e todas as telas (landing,
+  │   │                        # diretório, agenda, pacientes, prontuário, IA assistente, vídeo,
+  │   │                        # checkout, biblioteca, configurações profissionais, admin etc.)
+  │   ├── lib/                 # Lógica de domínio: agendamento, pagamentos, mensagens,
+  │   │                        # documentos, escalas clínicas, métricas, vídeo, IA, consentimento,
+  │   │                        # csv, pdf etc. (com *.test.ts ao lado onde há cobertura)
+  │   ├── content/              # Conteúdo estático: Termos de Uso/Privacidade (legal.ts) e
+  │   │                        # Consentimento Informado (consent.ts)
+  │   ├── styles/               # CSS global, tema, fontes, Tailwind
+  │   └── main.tsx              # Entry point, Sentry ErrorBoundary
+  ├── supabase/
+  │   ├── migrations/           # Schema completo em SQL (profiles, agenda, pagamentos, EHR,
+  │   │                        # prontuário SOAP, storage, RLS, extensões pg_cron/pg_net etc.)
+  │   ├── functions/            # Edge Functions (Deno): livekit-room-access, create-mp-preference,
+  │   │                        # mercadopago-webhook, create-pix-charge, request-nota-fiscal,
+  │   │                        # ai-summarize-session, sign-consent, sign-session-note,
+  │   │                        # sign-generated-document, send-booking-confirmation,
+  │   │                        # notify-waitlist-match, notify-admin-document, admin-manage-user,
+  │   │                        # send-appointment-reminder, e o módulo _shared/ (e-mail, WhatsApp,
+  │   │                        # token do LiveKit)
+  │   ├── seed.sql               # Usuários demo e dados fictícios para desenvolvimento local
+  │   └── config.toml           # Config do Supabase CLI (SMTP via Resend, redirects etc.)
+  ├── e2e/                       # Testes Playwright (auth, booking, messaging) + global-setup.ts
+  ├── guidelines/                # Guidelines do Figma Make AI
+  ├── .github/workflows/         # ci.yml (typecheck + test + build) e deploy-supabase.yml
+  │                              # (migrations + deploy de Edge Functions)
+  ├── .env.example                # Variáveis de ambiente do front end
+  ├── .nvmrc                      # Versão do Node (22)
+  ├── vite.config.ts
+  ├── playwright.config.ts
+  └── tsconfig.json
+  ```
 
   ## Running the code
 
@@ -45,18 +147,25 @@
   - `fernanda.demo@mindcare.test` / `MindCare123!`
   - `admin.demo@mindcare.test` / `MindCare123!`
 
-  ## MVP checklist
+  ## Status do projeto
+
+  O MVP original está completo, e o projeto já avançou além dele para integrações reais de
+  produção (pagamento, vídeo, IA, WhatsApp etc.) — ambos os checklists abaixo estão 100%
+  concluídos. Onde um item de produção substitui/evolui um item do MVP (por exemplo, o checkout
+  mock do MVP virou pagamento real com Mercado Pago), isso está indicado entre parênteses.
+
+  ### MVP (escopo original)
 
   - [x] Schema, RLS e seed do Supabase (`supabase/migrations`, `supabase/seed.sql`)
   - [x] Login, cadastro, logout e proteção de rotas por papel (patient/professional/admin)
   - [x] Diretório de profissionais verificados (busca, filtros)
   - [x] Perfil profissional com agenda/disponibilidade reais
   - [x] Agendamento real com validação simples de conflito de horário
-  - [x] Checkout mock (Pix/cartão) registrando pagamento com taxa da plataforma
+  - [x] Checkout mock (Pix/cartão) registrando pagamento com taxa da plataforma *(evoluído para pagamento real — ver [Pagamento real (Mercado Pago)](#pagamento-real-mercado-pago))*
   - [x] Dashboard do paciente (consultas, histórico, total investido)
-  - [x] Dashboard profissional (agenda, pacientes, receita mensal)
-  - [x] Prontuário: notas clínicas por sessão (`session_notes`, RLS só para o profissional)
-  - [x] Sala de vídeo mock vinculada à consulta (`video_rooms`)
+  - [x] Dashboard profissional (agenda, pacientes, receita mensal) *(receita/métricas evoluídas — ver [Progresso](#progresso))*
+  - [x] Prontuário: notas clínicas por sessão (`session_notes`, RLS só para o profissional) *(evoluído para formato SOAP com assinatura — ver [Prontuário em formato SOAP](#prontuário-em-formato-soap--assinatura-digital))*
+  - [x] Sala de vídeo mock vinculada à consulta (`video_rooms`) *(evoluído para vídeo real — ver [Vídeo real (LiveKit)](#vídeo-real-livekit))*
   - [x] Painel admin: aprovar/rejeitar profissionais, listar/suspender/excluir usuários e pagamentos
   - [x] Autoatendimento do profissional: editar bio/especialidades/preço/cidade/modalidades/convênios
         e gerenciar a própria disponibilidade semanal (tela "Configurações" do dashboard profissional)
@@ -68,17 +177,16 @@
 
   Fora do escopo do MVP (ficou como mock/placeholder de propósito): receituário digital.
 
-  ## Indo para produção
+  ### Progresso (indo para produção)
 
-  Checklist do que falta para o app sair do MVP e virar algo usável com dinheiro/dados reais.
-  Todo o código já está pronto — o que falta, na maioria dos itens, é você criar as contas nos
-  provedores e preencher as chaves (nenhuma chave real está no repositório).
-
-  ### Progresso
+  Checklist do que era necessário para o app sair do MVP e virar algo usável com dinheiro/dados
+  reais. Todo o código já está pronto — o que falta, na maioria dos itens, é criar as contas nos
+  provedores e preencher as chaves (nenhuma chave real está no repositório; ver
+  [Chaves de acesso necessárias](#chaves-de-acesso-necessárias)).
 
   - [x] Node 22 alinhado (`.nvmrc`/`engines`) e CI no GitHub Actions (`.github/workflows/ci.yml`)
   - [x] Código morto removido (shadcn/Figma scaffold não usado) e vendor chunks separados
-  - [x] Monitoramento de erros (Sentry, opciconal via `VITE_SENTRY_DSN`)
+  - [x] Monitoramento de erros (Sentry, opcional via `VITE_SENTRY_DSN`)
   - [x] Termos de Uso / Política de Privacidade + consentimento obrigatório no cadastro
   - [x] Fluxo de "esqueci minha senha"
   - [x] Upload de documento para verificação profissional
@@ -98,6 +206,11 @@
   - [x] Projeto Supabase real (staging/prod) + deploy de migrations via CI
   - [x] Checagem de responsividade mobile
   - [x] Revisão de segurança final
+
+  ## Documentação por funcionalidade (indo para produção)
+
+  Deep dive de cada integração/feature construída além do MVP — como funciona, limitações
+  conhecidas, e o passo a passo para ativar cada uma em um projeto Supabase real.
 
   ### Termos de Uso e Privacidade
 
@@ -445,14 +558,37 @@
 
   ### Cadastro de paciente (ficha completa)
 
-  Aba **"Cadastro"** do `EHRScreen` (`/profissional/prontuarios`), a primeira das abas ao selecionar
-  um paciente: dados pessoais (nascimento, CPF), endereço/contatos, responsável legal (opcional, pra
-  menores de idade), convênio (opcional), contato de emergência, histórico clínico em texto livre e
-  upload de documentos anexos. Tudo fica em `patient_profiles` (migration `20260707000000`), uma
-  tabela satélite 1:1 de `profiles` no mesmo espírito de `professional_profiles` — RLS libera leitura
-  e escrita tanto pro próprio paciente quanto pro profissional que já tem consulta marcada com ele.
-  Os anexos usam o bucket privado `patient-documents` (migration `20260707000001`), mesmo padrão do
-  bucket `professional-documents`. Não precisa de nenhuma chave nova.
+  A ficha cadastral (`patient_profiles`, migration `20260707000000` — dados pessoais, endereço,
+  responsável legal opcional, convênio opcional, contato de emergência, histórico) é preenchida
+  **só pelo próprio paciente**, em "Configurações → Ficha cadastral" (`PatientSettingsPanel`). O
+  profissional só visualiza os mesmos dados, em modo leitura, na aba **"Cadastro"** do `EHRScreen`
+  (`/profissional/prontuarios`, primeira aba ao selecionar um paciente) — a migration
+  `20260714000000` removeu as policies que antes deixavam o profissional escrever nessa tabela,
+  justamente pra não ter duas fontes de verdade pro mesmo dado. Upload de documentos anexos continua
+  liberado dos dois lados (bucket privado `patient-documents`, migration `20260707000001`, mesmo
+  padrão do bucket `professional-documents`). Não precisa de nenhuma chave nova.
+
+  ### Cadastro de paciente pelo profissional (paciente ainda não inscrito)
+
+  Botão **"Cadastrar paciente"** em `/profissional/pacientes` (`PatientsScreen`): cria a conta do
+  paciente e já agenda a primeira consulta, na mesma chamada — Edge Function
+  `create-patient-account` (mesmo esqueleto de `admin-manage-user`, mas exige `role = 'professional'`
+  em vez de `'admin'`). Duas coisas acontecem numa transação lógica só, sempre com a service role:
+
+  1. `auth.admin.createUser(...)` com uma **senha padrão fixa** (mesma pra toda conta criada assim —
+     decisão consciente do time, mais simples de comunicar que uma senha aleatória por paciente, mas
+     quem souber a convenção tem acesso a qualquer conta ainda não trocada). O modal mostra a senha
+     pro profissional copiar e repassar, com aviso pra o paciente trocá-la em "Configurações → Alterar
+     senha" assim que acessar.
+  2. Insere a primeira `appointments` direto (bypassando
+     `appointments_insert_professional_existing_patient`, `20260703000005` — essa policy exige uma
+     consulta anterior entre os dois, o que nunca existe pra um paciente recém-criado). Sem essa
+     consulta, o paciente ficaria invisível em toda a UI do profissional, já que a lista de
+     pacientes/prontuário/mensagens deriva "meu paciente" só de existir consulta em comum — não há
+     uma tabela de relacionamento separada. Se o insert da consulta falhar (ex.: conflito de horário),
+     a função desfaz a criação da conta com `auth.admin.deleteUser` pra não deixar login órfão.
+
+  Não precisa de nenhuma chave nova — só `supabase functions deploy create-patient-account`.
 
   ### Prontuário em formato SOAP + assinatura digital
 
@@ -594,7 +730,7 @@
   Environment `staging` com seus próprios `SUPABASE_PROJECT_REF`/`SUPABASE_DB_PASSWORD`, disparado
   por push numa branch `staging` em vez de `main`.
 
-  ### Chaves de acesso necessárias
+  ## Chaves de acesso necessárias
 
   | Variável | Onde configurar | Para quê |
   |---|---|---|
@@ -611,7 +747,7 @@
   | *(nenhuma chave nova)* | `create-pix-charge` reaproveita `MERCADOPAGO_ACCESS_TOKEN` | Cobrança avulsa via Pix no Financeiro |
   | `NOTA_FISCAL_PROVIDER` / `NOTA_FISCAL_API_KEY` (ainda sem provedor real) | Secrets da função `request-nota-fiscal` | Emissão de nota fiscal. Sem elas (hoje sempre), a função responde "indisponível" — é o estado esperado até um provedor (eNotas/Focus NFe/etc.) ser escolhido e integrado. |
 
-  ### Monitoramento de erros
+  ## Monitoramento de erros
 
   `src/lib/monitoring.ts` inicializa o Sentry só se `VITE_SENTRY_DSN` estiver definida. Um
   `Sentry.ErrorBoundary` em `main.tsx` captura qualquer crash de render da UI, e os fluxos mais

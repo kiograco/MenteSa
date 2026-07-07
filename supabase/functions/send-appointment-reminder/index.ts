@@ -2,7 +2,9 @@
 // 20260707000005) that WhatsApp-reminds patients about appointments starting in ~24h. Unlike
 // send-booking-confirmation, this is never called by the client — only by the cron job — so it's
 // gated by a shared secret instead of a user session, and uses the service-role client throughout.
-// Deploy: supabase functions deploy send-appointment-reminder
+// Deploy: supabase functions deploy send-appointment-reminder --no-verify-jwt
+// (--no-verify-jwt is required: pg_cron/pg_net calls this without a Supabase auth token, only the
+// x-cron-secret header checked above)
 // Secrets: supabase secrets set CRON_SECRET=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_ACCESS_TOKEN=... WHATSAPP_TEMPLATE_NAME=...
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { sendAppointmentReminderWhatsApp } from "../_shared/whatsapp.ts";
