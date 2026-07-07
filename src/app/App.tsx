@@ -6,12 +6,13 @@ import type { UserRole, PaymentStatus } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
 import { downloadCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
-import { calculateAttendanceRate, calculateCancellationRate, calculateRetentionRate } from "../lib/metrics";
+import { calculateAttendanceRate, calculateCancellationRate, calculateNoShowRate, calculateRetentionRate } from "../lib/metrics";
 import { joinWaitlist, leaveWaitlist, listMyWaitlistEntries, notifyWaitlistMatch, type WaitlistEntry } from "../lib/waitlist";
 import { reportError } from "../lib/monitoring";
 import { termsOfService, privacyPolicy, CURRENT_TERMS_VERSION, type LegalDocument } from "../content/legal";
 import { informedConsent, CURRENT_CONSENT_VERSION } from "../content/consent";
 import { hashDocumentText, signConsent } from "../lib/consent";
+import { signSessionNote } from "../lib/sessionSignature";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
@@ -22,6 +23,11 @@ import {
   listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
   type PatientMaterial, type PatientTask,
 } from "../lib/materials";
+import { getPatientProfile, upsertPatientProfile, type PatientProfile } from "../lib/patients";
+import {
+  uploadPatientDocument, listPatientDocuments, deletePatientDocument, getPatientDocumentSignedUrl,
+  type PatientDocument,
+} from "../lib/patientDocuments";
 import {
   listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
   listUnreadMessageNotifications, subscribeToMyMessages,
@@ -83,6 +89,7 @@ type DirectoryProfessional = {
   yearsExperience: number;
   wait: string;
   approaches: string[];
+  targetAudience: string[];
 };
 
 // Only public marketing/auth screens belong in the top nav — authenticated areas are reached via
@@ -759,6 +766,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
   const [modality, setModality] = useState("all");
   const [specialty, setSpecialty] = useState("all");
   const [insurance, setInsurance] = useState("all");
+  const [audience, setAudience] = useState("all");
   const [dbProfessionals, setDbProfessionals] = useState<DirectoryProfessional[]>([]);
   const [loadingProfessionals, setLoadingProfessionals] = useState(false);
   const [professionalsError, setProfessionalsError] = useState("");
@@ -772,7 +780,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
 
       const { data, error } = await supabase
         .from("professional_profiles")
-        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, profiles!inner(full_name, avatar_url)")
+        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, profiles!inner(full_name, avatar_url)")
         .eq("verification_status", "verified")
         .is("profiles.suspended_at", null)
         .order("created_at", { ascending: false });
@@ -806,6 +814,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
             yearsExperience: Number(item.years_experience ?? 0),
             wait: "Agenda aberta",
             approaches: item.approaches ?? [],
+            targetAudience: item.target_audience ?? [],
           };
         }));
       } else {
@@ -838,7 +847,8 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
     const matchModality = modality === "all" || p.modalities.includes(modality === "online" ? "Online" : "Presencial");
     const matchSpecialty = specialty === "all" || p.specialties.some(s => s.toLowerCase() === specialty.toLowerCase());
     const matchInsurance = insurance === "all" || p.insurances.some(item => item.toLowerCase() === insurance.toLowerCase());
-    return matchSearch && matchCity && matchModality && matchSpecialty && matchInsurance;
+    const matchAudience = audience === "all" || p.targetAudience.some(item => item.toLowerCase() === audience.toLowerCase());
+    return matchSearch && matchCity && matchModality && matchSpecialty && matchInsurance && matchAudience;
   });
 
   return (
@@ -864,6 +874,14 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
             >
               <option value="all">Qualquer especialidade</option>
               {specialtyOptions.map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <select
+              value={audience}
+              onChange={e => setAudience(e.target.value)}
+              className="px-4 py-2.5 bg-input-background border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="all">Qualquer público-alvo</option>
+              {TARGET_AUDIENCE_OPTIONS.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
             <Btn variant="primary"><Filter size={16} />Filtrar</Btn>
           </div>
@@ -1764,6 +1782,9 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState("");
 
+  const [whatsappReminders, setWhatsappReminders] = useState(true);
+  const [savingWhatsapp, setSavingWhatsapp] = useState(false);
+
   useEffect(() => {
     let active = true;
     (async () => {
@@ -1777,10 +1798,27 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
       }
       setLoading(false);
     })();
+    (async () => {
+      const profile = await getPatientProfile(currentUser.id).catch(() => null);
+      if (active && profile) setWhatsappReminders(profile.whatsappRemindersEnabled);
+    })();
     return () => {
       active = false;
     };
   }, [currentUser.id]);
+
+  const handleToggleWhatsappReminders = async (enabled: boolean) => {
+    setWhatsappReminders(enabled);
+    setSavingWhatsapp(true);
+    try {
+      await upsertPatientProfile(currentUser.id, { whatsappRemindersEnabled: enabled });
+    } catch (error) {
+      reportError(error, { flow: "patientSettings.toggleWhatsappReminders" });
+      setWhatsappReminders(!enabled);
+    } finally {
+      setSavingWhatsapp(false);
+    }
+  };
 
   const handleUploadAvatar = async (file: File) => {
     setAvatarError("");
@@ -1866,6 +1904,15 @@ function PatientSettingsPanel({ currentUser }: { currentUser: AppUser }) {
               {saving ? "Salvando..." : "Salvar dados"}
             </Btn>
             {saveMessage && <p className="text-xs text-emerald-700">{saveMessage}</p>}
+            <label className="flex items-center gap-2 text-sm text-foreground pt-2 border-t border-border">
+              <input
+                type="checkbox"
+                checked={whatsappReminders}
+                disabled={savingWhatsapp}
+                onChange={e => void handleToggleWhatsappReminders(e.target.checked)}
+              />
+              Receber lembretes de consulta por WhatsApp
+            </label>
           </div>
         )}
       </Card>
@@ -2251,8 +2298,8 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: 
                   <p className="text-sm font-medium text-foreground">{a.professionalName}</p>
                   <p className="text-xs text-muted-foreground">{new Date(a.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
                 </div>
-                <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : "outline"}>
-                  {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status}
+                <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : a.status === "no_show" ? "warning" : "outline"}>
+                  {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status === "no_show" ? "Faltou" : a.status}
                 </Badge>
               </div>
             ))}
@@ -2419,8 +2466,8 @@ type ProAppointment = {
   patientImg: string;
 };
 
-const STATUS_COLORS: Record<string, string> = { scheduled: "#1B7A48", completed: "#5B8DEF", cancelled: "#D9E4DE" };
-const STATUS_LABELS: Record<string, string> = { scheduled: "Agendadas", completed: "Concluídas", cancelled: "Canceladas" };
+const STATUS_COLORS: Record<string, string> = { scheduled: "#1B7A48", completed: "#5B8DEF", cancelled: "#D9E4DE", no_show: "#E8A33D" };
+const STATUS_LABELS: Record<string, string> = { scheduled: "Agendadas", completed: "Concluídas", cancelled: "Canceladas", no_show: "Faltas" };
 
 function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
@@ -2544,7 +2591,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     const d = new Date(a.scheduledAt);
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).length;
-  const statusBreakdown = (["scheduled", "completed", "cancelled"] as const)
+  const statusBreakdown = (["scheduled", "completed", "cancelled", "no_show"] as const)
     .map(status => ({ status, value: appointments.filter(a => a.status === status).length }))
     .filter(s => s.value > 0);
   const currentMonthRevenue = revenueByMonth[revenueByMonth.length - 1]?.receita ?? 0;
@@ -2778,6 +2825,23 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     setAppointments(prev => prev.map(a => (a.id === selectedAppointment.id ? { ...a, status: "cancelled" } : a)));
     setSelectedAppointment(prev => (prev ? { ...prev, status: "cancelled" } : prev));
     void notifyWaitlistMatch(currentUser.id, selectedAppointment.scheduledAt);
+  };
+
+  const [markingNoShow, setMarkingNoShow] = useState(false);
+
+  const handleMarkNoShow = async () => {
+    if (!selectedAppointment) return;
+    if (!window.confirm("Marcar falta nesta consulta? O paciente não compareceu.")) return;
+    setMarkingNoShow(true);
+    const { error } = await supabase.from("appointments").update({ status: "no_show" }).eq("id", selectedAppointment.id);
+    setMarkingNoShow(false);
+    if (error) {
+      reportError(error, { flow: "calendarScreen.markNoShow" });
+      window.alert("Não foi possível marcar a falta. Tente novamente.");
+      return;
+    }
+    setAppointments(prev => prev.map(a => (a.id === selectedAppointment.id ? { ...a, status: "no_show" } : a)));
+    setSelectedAppointment(prev => (prev ? { ...prev, status: "no_show" } : prev));
   };
 
   const weekStart = getWeekStart(anchorDate);
@@ -3063,7 +3127,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                           <div
                             key={a.id}
                             onClick={e => { e.stopPropagation(); setSelectedAppointment(a); }}
-                            className={`rounded-lg border px-2 py-1 text-xs font-medium ${a.status === "cancelled" ? "bg-muted border-border text-muted-foreground line-through" : a.modality === "online" ? "bg-primary/10 border-primary/30 text-primary" : "bg-blue-50 border-blue-200 text-blue-700"}`}
+                            className={`rounded-lg border px-2 py-1 text-xs font-medium ${a.status === "cancelled" ? "bg-muted border-border text-muted-foreground line-through" : a.status === "no_show" ? "bg-amber-50 border-amber-200 text-amber-700 line-through" : a.modality === "online" ? "bg-primary/10 border-primary/30 text-primary" : "bg-blue-50 border-blue-200 text-blue-700"}`}
                           >
                             <p className="font-semibold truncate">{a.patientName}</p>
                             <p className="opacity-70">{a.modality === "online" ? "Online" : "Presencial"}</p>
@@ -3091,8 +3155,8 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                       {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>
-                  <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : "outline"}>
-                    {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.modality === "online" ? "Online" : "Presencial"}
+                  <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : a.status === "no_show" ? "warning" : "outline"}>
+                    {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status === "no_show" ? "Faltou" : a.modality === "online" ? "Online" : "Presencial"}
                   </Badge>
                 </div>
               ))}
@@ -3131,8 +3195,8 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 {new Date(selectedAppointment.scheduledAt).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })} · {new Date(selectedAppointment.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
               </p>
               <p className="text-muted-foreground">{selectedAppointment.modality === "online" ? "Online" : "Presencial"}</p>
-              <Badge variant={selectedAppointment.status === "completed" ? "success" : selectedAppointment.status === "cancelled" ? "danger" : "outline"}>
-                {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : "Agendada"}
+              <Badge variant={selectedAppointment.status === "completed" ? "success" : selectedAppointment.status === "cancelled" ? "danger" : selectedAppointment.status === "no_show" ? "warning" : "outline"}>
+                {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : selectedAppointment.status === "no_show" ? "Faltou" : "Agendada"}
               </Badge>
             </div>
             <div className="flex gap-2 mt-5 flex-wrap">
@@ -3141,7 +3205,10 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 <Btn variant="primary" onClick={() => { onEnterVideo(selectedAppointment.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
               )}
               {selectedAppointment.status === "scheduled" && (
-                <Btn variant="danger" disabled={cancelling} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
+                <>
+                  <Btn variant="outline" disabled={markingNoShow} onClick={handleMarkNoShow}>{markingNoShow ? "Marcando..." : "Marcar falta"}</Btn>
+                  <Btn variant="danger" disabled={cancelling} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
+                </>
               )}
             </div>
           </div>
@@ -3447,11 +3514,50 @@ function PatientsScreen({
 // ─── SCREEN: EHR ─────────────────────────────────────────────────────────────
 
 type EhrPatient = { id: string; name: string; img: string; sessionsCount: number };
-type EhrSession = { id: string; scheduledAt: string; modality: string; status: string; notes: string; aiSummary: string | null };
+type EhrSession = {
+  id: string; scheduledAt: string; modality: string; status: string; notes: string; aiSummary: string | null;
+  subjective?: string; objective?: string; assessment?: string; plan?: string;
+  signedAt?: string | null; typedName?: string | null;
+};
+
+const EMPTY_PATIENT_PROFILE_FORM = {
+  birthDate: "", cpf: "",
+  addressStreet: "", addressNumber: "", addressComplement: "", addressNeighborhood: "", addressCity: "", addressState: "", addressZip: "",
+  emergencyContactName: "", emergencyContactPhone: "", emergencyContactRelationship: "",
+  legalGuardianName: "", legalGuardianCpf: "", legalGuardianPhone: "", legalGuardianRelationship: "",
+  insuranceProvider: "", insurancePlan: "", insuranceCardNumber: "",
+  clinicalHistory: "",
+};
+type PatientProfileFormState = typeof EMPTY_PATIENT_PROFILE_FORM;
+
+function patientProfileToFormState(profile: PatientProfile): PatientProfileFormState {
+  return {
+    birthDate: profile.birthDate ?? "",
+    cpf: profile.cpf ?? "",
+    addressStreet: profile.addressStreet ?? "",
+    addressNumber: profile.addressNumber ?? "",
+    addressComplement: profile.addressComplement ?? "",
+    addressNeighborhood: profile.addressNeighborhood ?? "",
+    addressCity: profile.addressCity ?? "",
+    addressState: profile.addressState ?? "",
+    addressZip: profile.addressZip ?? "",
+    emergencyContactName: profile.emergencyContactName ?? "",
+    emergencyContactPhone: profile.emergencyContactPhone ?? "",
+    emergencyContactRelationship: profile.emergencyContactRelationship ?? "",
+    legalGuardianName: profile.legalGuardianName ?? "",
+    legalGuardianCpf: profile.legalGuardianCpf ?? "",
+    legalGuardianPhone: profile.legalGuardianPhone ?? "",
+    legalGuardianRelationship: profile.legalGuardianRelationship ?? "",
+    insuranceProvider: profile.insuranceProvider ?? "",
+    insurancePlan: profile.insurancePlan ?? "",
+    insuranceCardNumber: profile.insuranceCardNumber ?? "",
+    clinicalHistory: profile.clinicalHistory ?? "",
+  };
+}
 
 function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
   const [patientSearch, setPatientSearch] = useState("");
-  const [ehrTab, setEhrTab] = useState<"historico" | "notas" | "escalas" | "materiais">("historico");
+  const [ehrTab, setEhrTab] = useState<"cadastro" | "historico" | "notas" | "escalas" | "materiais">("historico");
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -3469,9 +3575,15 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [sessions, setSessions] = useState<EhrSession[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [notesDraft, setNotesDraft] = useState("");
+  const [subjectiveDraft, setSubjectiveDraft] = useState("");
+  const [objectiveDraft, setObjectiveDraft] = useState("");
+  const [assessmentDraft, setAssessmentDraft] = useState("");
+  const [planDraft, setPlanDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+  const [showSignModal, setShowSignModal] = useState(false);
+  const [signTypedName, setSignTypedName] = useState("");
+  const [signing, setSigning] = useState(false);
 
   const [assessments, setAssessments] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
   const [loadingAssessmentsForPatient, setLoadingAssessmentsForPatient] = useState(false);
@@ -3503,6 +3615,122 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       active = false;
     };
   }, [selectedPatientId]);
+
+  const [profileForm, setProfileForm] = useState<PatientProfileFormState>(EMPTY_PATIENT_PROFILE_FORM);
+  const [loadingPatientProfile, setLoadingPatientProfile] = useState(false);
+  const [savingPatientProfile, setSavingPatientProfile] = useState(false);
+  const [patientProfileMessage, setPatientProfileMessage] = useState("");
+
+  const [patientDocs, setPatientDocs] = useState<PatientDocument[]>([]);
+  const [loadingPatientDocs, setLoadingPatientDocs] = useState(false);
+  const [uploadingPatientDoc, setUploadingPatientDoc] = useState(false);
+  const [patientDocError, setPatientDocError] = useState("");
+
+  const loadPatientDocuments = async (patientId: string) => {
+    setLoadingPatientDocs(true);
+    try {
+      setPatientDocs(await listPatientDocuments(patientId));
+    } catch (error) {
+      reportError(error, { flow: "ehr.loadPatientDocuments" });
+    } finally {
+      setLoadingPatientDocs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setProfileForm(EMPTY_PATIENT_PROFILE_FORM);
+      setPatientDocs([]);
+      return;
+    }
+
+    let active = true;
+    setLoadingPatientProfile(true);
+    setPatientProfileMessage("");
+
+    (async () => {
+      const profile = await getPatientProfile(selectedPatientId).catch(() => null);
+      if (!active) return;
+      setProfileForm(profile ? patientProfileToFormState(profile) : EMPTY_PATIENT_PROFILE_FORM);
+      setLoadingPatientProfile(false);
+    })();
+
+    void loadPatientDocuments(selectedPatientId);
+
+    return () => {
+      active = false;
+    };
+  }, [selectedPatientId]);
+
+  const handleSavePatientProfile = async () => {
+    if (!selectedPatientId) return;
+    setSavingPatientProfile(true);
+    setPatientProfileMessage("");
+    try {
+      await upsertPatientProfile(selectedPatientId, {
+        birthDate: profileForm.birthDate || null,
+        cpf: profileForm.cpf || null,
+        addressStreet: profileForm.addressStreet || null,
+        addressNumber: profileForm.addressNumber || null,
+        addressComplement: profileForm.addressComplement || null,
+        addressNeighborhood: profileForm.addressNeighborhood || null,
+        addressCity: profileForm.addressCity || null,
+        addressState: profileForm.addressState || null,
+        addressZip: profileForm.addressZip || null,
+        emergencyContactName: profileForm.emergencyContactName || null,
+        emergencyContactPhone: profileForm.emergencyContactPhone || null,
+        emergencyContactRelationship: profileForm.emergencyContactRelationship || null,
+        legalGuardianName: profileForm.legalGuardianName || null,
+        legalGuardianCpf: profileForm.legalGuardianCpf || null,
+        legalGuardianPhone: profileForm.legalGuardianPhone || null,
+        legalGuardianRelationship: profileForm.legalGuardianRelationship || null,
+        insuranceProvider: profileForm.insuranceProvider || null,
+        insurancePlan: profileForm.insurancePlan || null,
+        insuranceCardNumber: profileForm.insuranceCardNumber || null,
+        clinicalHistory: profileForm.clinicalHistory || null,
+      });
+      setPatientProfileMessage("Ficha cadastral salva com sucesso.");
+    } catch (error) {
+      reportError(error, { flow: "ehr.savePatientProfile" });
+      setPatientProfileMessage("Não foi possível salvar a ficha cadastral.");
+    } finally {
+      setSavingPatientProfile(false);
+    }
+  };
+
+  const handleUploadPatientDocument = async (file: File) => {
+    if (!selectedPatientId) return;
+    setPatientDocError("");
+    setUploadingPatientDoc(true);
+    try {
+      await uploadPatientDocument(selectedPatientId, currentUser.id, file);
+      await loadPatientDocuments(selectedPatientId);
+    } catch (error) {
+      reportError(error, { flow: "ehr.uploadPatientDocument" });
+      setPatientDocError(error instanceof Error ? error.message : "Não foi possível enviar o arquivo.");
+    } finally {
+      setUploadingPatientDoc(false);
+    }
+  };
+
+  const handleViewPatientDocument = async (storagePath: string) => {
+    try {
+      const url = await getPatientDocumentSignedUrl(storagePath);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      reportError(error, { flow: "ehr.viewPatientDocument" });
+    }
+  };
+
+  const handleDeletePatientDocument = async (doc: PatientDocument) => {
+    if (!window.confirm(`Remover "${doc.fileName}"?`)) return;
+    try {
+      await deletePatientDocument(doc.id, doc.storagePath);
+      if (selectedPatientId) await loadPatientDocuments(selectedPatientId);
+    } catch (error) {
+      reportError(error, { flow: "ehr.deletePatientDocument" });
+    }
+  };
 
   const [materials, setMaterials] = useState<PatientMaterial[]>([]);
   const [tasks, setTasks] = useState<(PatientTask & { patientId: string })[]>([]);
@@ -3622,7 +3850,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     (async () => {
       const { data } = await supabase
         .from("appointments")
-        .select("id, scheduled_at, modality, status, session_notes(notes, ai_summary)")
+        .select("id, scheduled_at, modality, status, session_notes(notes, subjective, objective, assessment, plan, signed_at, typed_name, ai_summary)")
         .eq("professional_id", currentUser.id)
         .eq("patient_id", selectedPatientId)
         .order("scheduled_at", { ascending: false });
@@ -3637,13 +3865,22 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
           modality: a.modality,
           status: a.status,
           notes: note?.notes ?? "",
+          subjective: note?.subjective ?? "",
+          objective: note?.objective ?? "",
+          assessment: note?.assessment ?? "",
+          plan: note?.plan ?? "",
+          signedAt: note?.signed_at ?? null,
+          typedName: note?.typed_name ?? null,
           aiSummary: note?.ai_summary ?? null,
         };
       });
       setSessions(rows);
       const preselected = initialAppointmentId && rows.some(r => r.id === initialAppointmentId) ? rows.find(r => r.id === initialAppointmentId)! : rows[0];
       setSelectedSessionId(preselected?.id ?? null);
-      setNotesDraft(preselected?.notes ?? "");
+      setSubjectiveDraft(preselected?.subjective ?? "");
+      setObjectiveDraft(preselected?.objective ?? "");
+      setAssessmentDraft(preselected?.assessment ?? "");
+      setPlanDraft(preselected?.plan ?? "");
       setLoadingSessions(false);
     })();
 
@@ -3653,8 +3890,12 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   }, [selectedPatientId, currentUser.id]);
 
   const selectSession = (id: string) => {
+    const session = sessions.find(s => s.id === id);
     setSelectedSessionId(id);
-    setNotesDraft(sessions.find(s => s.id === id)?.notes ?? "");
+    setSubjectiveDraft(session?.subjective ?? "");
+    setObjectiveDraft(session?.objective ?? "");
+    setAssessmentDraft(session?.assessment ?? "");
+    setPlanDraft(session?.plan ?? "");
     setSaveMessage("");
   };
 
@@ -3666,7 +3907,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     const { error } = await supabase
       .from("session_notes")
       .upsert(
-        { appointment_id: selectedSessionId, professional_id: currentUser.id, notes: notesDraft },
+        {
+          appointment_id: selectedSessionId,
+          professional_id: currentUser.id,
+          subjective: subjectiveDraft,
+          objective: objectiveDraft,
+          assessment: assessmentDraft,
+          plan: planDraft,
+        },
         { onConflict: "appointment_id" }
       );
 
@@ -3677,8 +3925,35 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       return;
     }
 
-    setSessions(prev => prev.map(s => (s.id === selectedSessionId ? { ...s, notes: notesDraft } : s)));
+    setSessions(prev => prev.map(s => (s.id === selectedSessionId
+      ? { ...s, subjective: subjectiveDraft, objective: objectiveDraft, assessment: assessmentDraft, plan: planDraft }
+      : s)));
     setSaveMessage("Nota salva com segurança.");
+  };
+
+  const handleSignNote = async () => {
+    if (!selectedSessionId || !signTypedName.trim()) return;
+    setSigning(true);
+    setSaveMessage("");
+    try {
+      const documentText = `${subjectiveDraft}\n${objectiveDraft}\n${assessmentDraft}\n${planDraft}`;
+      const hash = await hashDocumentText(documentText);
+      const ok = await signSessionNote(selectedSessionId, signTypedName.trim(), hash);
+      if (!ok) {
+        setSaveMessage("Não foi possível assinar a nota.");
+        return;
+      }
+      const signedAt = new Date().toISOString();
+      setSessions(prev => prev.map(s => (s.id === selectedSessionId ? { ...s, signedAt, typedName: signTypedName.trim() } : s)));
+      setShowSignModal(false);
+      setSignTypedName("");
+      setSaveMessage("Nota assinada digitalmente com sucesso.");
+    } catch (error) {
+      reportError(error, { flow: "ehr.signNote" });
+      setSaveMessage("Não foi possível assinar a nota.");
+    } finally {
+      setSigning(false);
+    }
   };
 
   const filteredPatients = patients.filter(p => p.name.toLowerCase().includes(patientSearch.trim().toLowerCase()));
@@ -3726,14 +4001,130 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                   </div>
                 </div>
                 <div className="flex gap-1 border-t border-border pt-3">
-                  {(["historico", "notas", "escalas", "materiais"] as const).map(t => (
+                  {(["cadastro", "historico", "notas", "escalas", "materiais"] as const).map(t => (
                     <button key={t} onClick={() => setEhrTab(t)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
-                      {t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : t === "escalas" ? "Escalas" : "Biblioteca"}
+                      {t === "cadastro" ? "Cadastro" : t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : t === "escalas" ? "Escalas" : "Biblioteca"}
                     </button>
                   ))}
                 </div>
               </Card>
+
+              {ehrTab === "cadastro" && (
+                <div className="space-y-4">
+                  {loadingPatientProfile ? (
+                    <Card className="p-6"><p className="text-sm text-muted-foreground">Carregando ficha cadastral...</p></Card>
+                  ) : (
+                    <>
+                      <Card className="p-5 space-y-4">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><User size={16} />Dados Pessoais</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Data de nascimento" type="date" value={profileForm.birthDate} onChange={v => setProfileForm(f => ({ ...f, birthDate: v }))} />
+                          <Input label="CPF" placeholder="000.000.000-00" value={profileForm.cpf} onChange={v => setProfileForm(f => ({ ...f, cpf: v }))} />
+                        </div>
+                      </Card>
+
+                      <Card className="p-5 space-y-4">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><MapPin size={16} />Contatos e Endereço</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Logradouro" value={profileForm.addressStreet} onChange={v => setProfileForm(f => ({ ...f, addressStreet: v }))} />
+                          <Input label="Número" value={profileForm.addressNumber} onChange={v => setProfileForm(f => ({ ...f, addressNumber: v }))} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Complemento" value={profileForm.addressComplement} onChange={v => setProfileForm(f => ({ ...f, addressComplement: v }))} />
+                          <Input label="Bairro" value={profileForm.addressNeighborhood} onChange={v => setProfileForm(f => ({ ...f, addressNeighborhood: v }))} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Cidade" value={profileForm.addressCity} onChange={v => setProfileForm(f => ({ ...f, addressCity: v }))} />
+                          <Input label="Estado (UF)" value={profileForm.addressState} onChange={v => setProfileForm(f => ({ ...f, addressState: v }))} />
+                        </div>
+                        <Input label="CEP" value={profileForm.addressZip} onChange={v => setProfileForm(f => ({ ...f, addressZip: v }))} className="max-w-xs" />
+                      </Card>
+
+                      <Card className="p-5 space-y-4">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2">
+                          <Shield size={16} />Responsável Legal <span className="text-xs font-normal text-muted-foreground">(se necessário)</span>
+                        </h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Nome" value={profileForm.legalGuardianName} onChange={v => setProfileForm(f => ({ ...f, legalGuardianName: v }))} />
+                          <Input label="CPF" value={profileForm.legalGuardianCpf} onChange={v => setProfileForm(f => ({ ...f, legalGuardianCpf: v }))} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Telefone" value={profileForm.legalGuardianPhone} onChange={v => setProfileForm(f => ({ ...f, legalGuardianPhone: v }))} />
+                          <Input label="Parentesco" value={profileForm.legalGuardianRelationship} onChange={v => setProfileForm(f => ({ ...f, legalGuardianRelationship: v }))} />
+                        </div>
+                      </Card>
+
+                      <Card className="p-5 space-y-4">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2">
+                          <CreditCard size={16} />Convênio <span className="text-xs font-normal text-muted-foreground">(se houver)</span>
+                        </h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Convênio" value={profileForm.insuranceProvider} onChange={v => setProfileForm(f => ({ ...f, insuranceProvider: v }))} />
+                          <Input label="Plano" value={profileForm.insurancePlan} onChange={v => setProfileForm(f => ({ ...f, insurancePlan: v }))} />
+                        </div>
+                        <Input label="Número da carteirinha" value={profileForm.insuranceCardNumber} onChange={v => setProfileForm(f => ({ ...f, insuranceCardNumber: v }))} className="max-w-xs" />
+                      </Card>
+
+                      <Card className="p-5 space-y-4">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><Heart size={16} />Contato de Emergência</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <Input label="Nome" value={profileForm.emergencyContactName} onChange={v => setProfileForm(f => ({ ...f, emergencyContactName: v }))} />
+                          <Input label="Telefone" value={profileForm.emergencyContactPhone} onChange={v => setProfileForm(f => ({ ...f, emergencyContactPhone: v }))} />
+                        </div>
+                        <Input label="Parentesco" value={profileForm.emergencyContactRelationship} onChange={v => setProfileForm(f => ({ ...f, emergencyContactRelationship: v }))} className="max-w-xs" />
+                      </Card>
+
+                      <Card className="p-5 space-y-3">
+                        <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><Clipboard size={16} />Histórico</h3>
+                        <textarea
+                          value={profileForm.clinicalHistory}
+                          onChange={e => setProfileForm(f => ({ ...f, clinicalHistory: e.target.value }))}
+                          placeholder="Histórico clínico relevante, queixa inicial, encaminhamentos..."
+                          className="w-full h-28 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
+                        />
+                      </Card>
+
+                      {patientProfileMessage && (
+                        <p className={`text-xs ${patientProfileMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{patientProfileMessage}</p>
+                      )}
+                      <div className="flex justify-end">
+                        <Btn variant="primary" onClick={handleSavePatientProfile} disabled={savingPatientProfile}>
+                          {savingPatientProfile ? "Salvando..." : "Salvar ficha cadastral"}
+                        </Btn>
+                      </div>
+
+                      <Card className="p-5">
+                        <h3 className="font-semibold text-foreground font-display mb-3 flex items-center gap-2"><FileText size={16} />Anexos de documentos</h3>
+                        <label className="cursor-pointer">
+                          <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingPatientDoc ? "opacity-50 pointer-events-none" : ""}`}>
+                            <Upload size={14} />{uploadingPatientDoc ? "Enviando..." : "Enviar arquivo"}
+                          </span>
+                          <input
+                            type="file"
+                            className="hidden"
+                            disabled={uploadingPatientDoc}
+                            onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadPatientDocument(file); e.target.value = ""; }}
+                          />
+                        </label>
+                        {patientDocError && <p className="text-xs text-red-600 mt-2">{patientDocError}</p>}
+                        <div className="divide-y divide-border mt-3">
+                          {loadingPatientDocs && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                          {!loadingPatientDocs && patientDocs.length === 0 && <p className="text-sm text-muted-foreground">Nenhum documento anexado ainda.</p>}
+                          {patientDocs.map(doc => (
+                            <div key={doc.id} className="py-2.5 flex items-center justify-between gap-3">
+                              <button type="button" onClick={() => handleViewPatientDocument(doc.storagePath)} className="text-left text-sm text-foreground hover:text-primary flex items-center gap-2">
+                                <FileText size={14} className="flex-shrink-0" />{doc.fileName}
+                              </button>
+                              <button type="button" onClick={() => handleDeletePatientDocument(doc)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    </>
+                  )}
+                </div>
+              )}
 
               {ehrTab === "materiais" && (
                 <div className="space-y-4">
@@ -3875,13 +4266,27 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                             <Badge variant="outline">{s.modality === "online" ? "Online" : "Presencial"}</Badge>
                           </div>
                         </div>
-                        <Badge variant={s.status === "completed" ? "success" : s.status === "cancelled" ? "danger" : "outline"}>
-                          {s.status === "completed" ? "Concluída" : s.status === "cancelled" ? "Cancelada" : "Agendada"}
+                        <Badge variant={s.status === "completed" ? "success" : s.status === "cancelled" ? "danger" : s.status === "no_show" ? "warning" : "outline"}>
+                          {s.status === "completed" ? "Concluída" : s.status === "cancelled" ? "Cancelada" : s.status === "no_show" ? "Faltou" : "Agendada"}
                         </Badge>
                       </div>
-                      <p className="text-sm text-muted-foreground leading-relaxed">{s.notes || "Nenhuma nota clínica registrada para esta sessão ainda."}</p>
-                      <div className="flex gap-2 mt-3">
-                        <Btn variant="ghost" size="sm" onClick={() => { selectSession(s.id); setEhrTab("notas"); }}><Edit3 size={13} />Editar nota</Btn>
+                      {s.subjective || s.objective || s.assessment || s.plan ? (
+                        <div className="space-y-1.5 text-sm text-muted-foreground leading-relaxed">
+                          {s.subjective && <p><span className="font-medium text-foreground">S: </span>{s.subjective}</p>}
+                          {s.objective && <p><span className="font-medium text-foreground">O: </span>{s.objective}</p>}
+                          {s.assessment && <p><span className="font-medium text-foreground">A: </span>{s.assessment}</p>}
+                          {s.plan && <p><span className="font-medium text-foreground">P: </span>{s.plan}</p>}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground leading-relaxed">{s.notes || "Nenhuma nota clínica registrada para esta sessão ainda."}</p>
+                      )}
+                      <div className="flex items-center justify-between mt-3">
+                        <Btn variant="ghost" size="sm" onClick={() => { selectSession(s.id); setEhrTab("notas"); }}><Edit3 size={13} />{s.signedAt ? "Ver nota" : "Editar nota"}</Btn>
+                        {s.signedAt ? (
+                          <Badge variant="success">Assinado por {s.typedName} em {new Date(s.signedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</Badge>
+                        ) : (
+                          <Badge variant="warning">Não assinado</Badge>
+                        )}
                       </div>
                     </Card>
                   ))}
@@ -3892,7 +4297,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                 <Card className="p-6">
                   <div className="flex items-center gap-2 mb-4">
                     <Lock size={16} className="text-amber-600" />
-                    <h3 className="font-semibold text-foreground font-display">Notas Seguras</h3>
+                    <h3 className="font-semibold text-foreground font-display">Notas Seguras (SOAP)</h3>
                     <Badge variant="warning">Visível apenas por você</Badge>
                   </div>
                   {sessions.length === 0 ? (
@@ -3906,28 +4311,101 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       >
                         {sessions.map(s => (
                           <option key={s.id} value={s.id}>
-                            {new Date(s.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+                            {new Date(s.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}{s.signedAt ? " (assinada)" : ""}
                           </option>
                         ))}
                       </select>
-                      <textarea
-                        value={notesDraft}
-                        onChange={e => setNotesDraft(e.target.value)}
-                        className="w-full h-40 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground"
-                        placeholder="Adicione notas clínicas seguras sobre esta sessão. Elas são visíveis apenas por você."
-                      />
+
+                      {selectedSession?.signedAt && (
+                        <div className="mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
+                          <Lock size={13} />
+                          Assinada digitalmente por {selectedSession.typedName} em {new Date(selectedSession.signedAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} — conteúdo não pode mais ser alterado.
+                        </div>
+                      )}
+
+                      <div className="space-y-3">
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-sm font-medium text-foreground">Subjetivo</label>
+                          <textarea
+                            value={subjectiveDraft}
+                            onChange={e => setSubjectiveDraft(e.target.value)}
+                            disabled={Boolean(selectedSession?.signedAt)}
+                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
+                            placeholder="Relato do paciente, queixas, percepções..."
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-sm font-medium text-foreground">Objetivo</label>
+                          <textarea
+                            value={objectiveDraft}
+                            onChange={e => setObjectiveDraft(e.target.value)}
+                            disabled={Boolean(selectedSession?.signedAt)}
+                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
+                            placeholder="Observações objetivas do profissional durante a sessão..."
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-sm font-medium text-foreground">Avaliação</label>
+                          <textarea
+                            value={assessmentDraft}
+                            onChange={e => setAssessmentDraft(e.target.value)}
+                            disabled={Boolean(selectedSession?.signedAt)}
+                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
+                            placeholder="Análise clínica, hipóteses diagnósticas, evolução..."
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          <label className="text-sm font-medium text-foreground">Plano</label>
+                          <textarea
+                            value={planDraft}
+                            onChange={e => setPlanDraft(e.target.value)}
+                            disabled={Boolean(selectedSession?.signedAt)}
+                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
+                            placeholder="Conduta, próximos passos, encaminhamentos..."
+                          />
+                        </div>
+                      </div>
+
                       {selectedSession?.aiSummary && (
                         <div className="mt-3 p-3 bg-secondary rounded-xl text-xs text-muted-foreground">
                           <span className="font-medium text-foreground">Resumo de IA: </span>{selectedSession.aiSummary}
                         </div>
                       )}
-                      {saveMessage && <p className={`text-xs mt-2 ${saveMessage.includes("não") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
-                      <div className="flex justify-end mt-3">
-                        <Btn variant="primary" size="sm" onClick={handleSaveNotes} disabled={saving}><Lock size={13} />{saving ? "Salvando..." : "Salvar com segurança"}</Btn>
-                      </div>
+                      {saveMessage && <p className={`text-xs mt-2 ${saveMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
+                      {!selectedSession?.signedAt && (
+                        <div className="flex justify-end gap-2 mt-3">
+                          <Btn variant="ghost" size="sm" onClick={handleSaveNotes} disabled={saving}><Lock size={13} />{saving ? "Salvando..." : "Salvar com segurança"}</Btn>
+                          <Btn
+                            variant="primary"
+                            size="sm"
+                            disabled={!subjectiveDraft.trim() && !objectiveDraft.trim() && !assessmentDraft.trim() && !planDraft.trim()}
+                            onClick={() => setShowSignModal(true)}
+                          >
+                            <Edit3 size={13} />Assinar digitalmente
+                          </Btn>
+                        </div>
+                      )}
                     </>
                   )}
                 </Card>
+              )}
+
+              {showSignModal && (
+                <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+                  <Card className="p-6 max-w-md w-full space-y-4">
+                    <h3 className="font-semibold text-foreground font-display">Assinatura digital da nota clínica</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Ao assinar, esta nota SOAP fica permanentemente registrada em seu nome e não poderá mais ser editada. Digite seu nome completo para confirmar.
+                    </p>
+                    <Input label="Nome completo" placeholder={currentUser.fullName} value={signTypedName} onChange={setSignTypedName} />
+                    <div className="flex justify-end gap-2">
+                      <Btn variant="ghost" size="sm" onClick={() => { setShowSignModal(false); setSignTypedName(""); }}>Cancelar</Btn>
+                      <Btn variant="primary" size="sm" disabled={!signTypedName.trim() || signing} onClick={handleSignNote}>
+                        {signing ? "Assinando..." : "Confirmar assinatura"}
+                      </Btn>
+                    </div>
+                  </Card>
+                </div>
               )}
             </>
           )}
@@ -5253,8 +5731,9 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
 
   const attendanceRate = calculateAttendanceRate(appointments);
   const cancellationRate = calculateCancellationRate(appointments);
+  const noShowRate = calculateNoShowRate(appointments);
   const retentionRate = calculateRetentionRate(appointments);
-  const pastAppointments = appointments.filter(a => a.status === "completed" || a.status === "cancelled");
+  const pastAppointments = appointments.filter(a => a.status === "completed" || a.status === "cancelled" || a.status === "no_show");
   const distinctPatientsCount = new Set(appointments.map(a => a.patientId)).size;
 
   return (
@@ -5269,9 +5748,10 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
           <StatCard label="Comissão da plataforma" value={`R$${totalFeeAllTime.toFixed(2).replace(".", ",")}`} icon={<Clock size={18} />} color="amber" />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <StatCard label="Taxa de comparecimento" value={`${(attendanceRate * 100).toFixed(0)}%`} icon={<CheckCircle size={18} />} color="green" />
           <StatCard label="Taxa de cancelamento" value={`${(cancellationRate * 100).toFixed(0)}%`} icon={<X size={18} />} color="amber" />
+          <StatCard label="Taxa de falta" value={`${(noShowRate * 100).toFixed(0)}%`} icon={<AlertCircle size={18} />} color="amber" />
           <StatCard label="Retenção de pacientes" value={`${(retentionRate * 100).toFixed(0)}%`} icon={<Heart size={18} />} color="blue" />
         </div>
 
@@ -5321,16 +5801,13 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
 
           <Card className="p-6">
             <h3 className="font-semibold text-foreground font-display mb-4">Detalhes das métricas</h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Não há um status distinto de "falta" (no-show) hoje — a taxa de comparecimento/cancelamento
-              considera apenas consultas concluídas vs. canceladas.
-            </p>
             <div className="space-y-3">
               {[
                 ["Pacientes distintos", String(distinctPatientsCount)],
                 ["Consultas concluídas", String(appointments.filter(a => a.status === "completed").length)],
                 ["Consultas canceladas", String(appointments.filter(a => a.status === "cancelled").length)],
-                ["Base de cálculo (concluídas + canceladas)", String(pastAppointments.length)],
+                ["Faltas", String(appointments.filter(a => a.status === "no_show").length)],
+                ["Base de cálculo (concluídas + canceladas + faltas)", String(pastAppointments.length)],
               ].map(([l, v]) => (
                 <div key={l} className="flex justify-between text-sm border-b border-border/50 pb-2 last:border-0">
                   <span className="text-muted-foreground">{l}</span><span className="font-medium text-foreground">{v}</span>
@@ -5355,6 +5832,8 @@ const WEEKDAY_OPTIONS = [
   { value: 6, label: "Sábado" },
   { value: 0, label: "Domingo" },
 ];
+
+const TARGET_AUDIENCE_OPTIONS = ["Crianças", "Adolescentes", "Adultos", "Idosos"];
 
 type AvailabilitySlotRow = { id: string; weekday: number; start_time: string; end_time: string };
 
@@ -5385,8 +5864,13 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [yearsExperience, setYearsExperience] = useState("");
   const [modalityOnline, setModalityOnline] = useState(false);
   const [modalityPresencial, setModalityPresencial] = useState(false);
+  const [targetAudience, setTargetAudience] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
+
+  const toggleTargetAudience = (value: string) => {
+    setTargetAudience(prev => (prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]));
+  };
 
   // One time range per weekday — simpler to fill than adding slots one at a time. Keyed by the
   // same weekday numbering as the DB (0=Sunday..6=Saturday).
@@ -5423,7 +5907,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience")
         .eq("id", currentUser.id)
         .maybeSingle();
 
@@ -5442,6 +5926,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setYearsExperience(data.years_experience ? String(data.years_experience) : "");
         setModalityOnline((data.modalities ?? []).includes("online"));
         setModalityPresencial((data.modalities ?? []).includes("presencial"));
+        setTargetAudience(data.target_audience ?? []);
       } else {
         // This account's professional_profiles row was never created (e.g. it predates the
         // signup trigger that now creates it automatically). Without it, saving availability
@@ -5484,6 +5969,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         state: region.trim() || null,
         insurances: insurances.split(",").map(s => s.trim()).filter(Boolean),
         years_experience: Number(yearsExperience) || 0,
+        target_audience: targetAudience,
       })
       .eq("id", currentUser.id);
 
@@ -5648,6 +6134,18 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           <div className="grid grid-cols-2 gap-4">
             <Input label="Especialidades (separadas por vírgula)" placeholder="Ansiedade, Depressão, TCC" value={specialties} onChange={setSpecialties} />
             <Input label="Abordagens (separadas por vírgula)" placeholder="TCC, ACT" value={approaches} onChange={setApproaches} />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-foreground">Público-alvo</label>
+            <div className="flex flex-wrap gap-3">
+              {TARGET_AUDIENCE_OPTIONS.map(option => (
+                <label key={option} className="flex items-center gap-2 text-sm text-foreground">
+                  <input type="checkbox" checked={targetAudience.includes(option)} onChange={() => toggleTargetAudience(option)} />
+                  {option}
+                </label>
+              ))}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

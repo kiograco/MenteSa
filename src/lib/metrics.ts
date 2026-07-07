@@ -1,19 +1,26 @@
 export type AppointmentForMetrics = { status: string; patientId: string };
 
-/** Share of past (completed or cancelled) appointments that were actually completed.
- *  Note: there's no distinct "no-show" status in this app yet — a patient who simply didn't show
- *  up is indistinguishable from a properly cancelled appointment, so this mixes the two. */
+const PAST_STATUSES = ["completed", "cancelled", "no_show"];
+
+/** Share of past (completed, cancelled or no-show) appointments that were actually completed. */
 export function calculateAttendanceRate(appointments: AppointmentForMetrics[]): number {
-  const past = appointments.filter(a => a.status === "completed" || a.status === "cancelled");
+  const past = appointments.filter(a => PAST_STATUSES.includes(a.status));
   if (past.length === 0) return 0;
   return past.filter(a => a.status === "completed").length / past.length;
 }
 
-/** Share of past appointments that were cancelled (the complement of attendance rate). */
+/** Share of past appointments that were cancelled by either party (ahead of time). */
 export function calculateCancellationRate(appointments: AppointmentForMetrics[]): number {
-  const past = appointments.filter(a => a.status === "completed" || a.status === "cancelled");
+  const past = appointments.filter(a => PAST_STATUSES.includes(a.status));
   if (past.length === 0) return 0;
   return past.filter(a => a.status === "cancelled").length / past.length;
+}
+
+/** Share of past appointments where the patient simply didn't show up. */
+export function calculateNoShowRate(appointments: AppointmentForMetrics[]): number {
+  const past = appointments.filter(a => PAST_STATUSES.includes(a.status));
+  if (past.length === 0) return 0;
+  return past.filter(a => a.status === "no_show").length / past.length;
 }
 
 /** Share of distinct patients who have booked more than one appointment with this professional. */

@@ -443,6 +443,83 @@
   3. Nenhuma chave nova no `.env` ou nos secrets do Supabase — reaproveita o Client ID/Secret do
      Google que já autentica o login.
 
+  ### Cadastro de paciente (ficha completa)
+
+  Aba **"Cadastro"** do `EHRScreen` (`/profissional/prontuarios`), a primeira das abas ao selecionar
+  um paciente: dados pessoais (nascimento, CPF), endereço/contatos, responsável legal (opcional, pra
+  menores de idade), convênio (opcional), contato de emergência, histórico clínico em texto livre e
+  upload de documentos anexos. Tudo fica em `patient_profiles` (migration `20260707000000`), uma
+  tabela satélite 1:1 de `profiles` no mesmo espírito de `professional_profiles` — RLS libera leitura
+  e escrita tanto pro próprio paciente quanto pro profissional que já tem consulta marcada com ele.
+  Os anexos usam o bucket privado `patient-documents` (migration `20260707000001`), mesmo padrão do
+  bucket `professional-documents`. Não precisa de nenhuma chave nova.
+
+  ### Prontuário em formato SOAP + assinatura digital
+
+  A aba "Notas Seguras" deixou de ser um textarea único e passou a ter os quatro campos do modelo
+  SOAP (Subjetivo/Objetivo/Avaliação/Plano) — migration `20260707000002` adiciona essas colunas em
+  `session_notes`, mantendo a coluna antiga `notes` intacta pra não perder registros anteriores. A
+  aba "Histórico" já existente (`App.tsx`, lista as consultas ordenadas por data) passou a ser o
+  próprio registro cronológico automático: mostra o resumo SOAP e o status de assinatura de cada
+  sessão, sem precisar de nenhuma tabela nova.
+
+  "Assinar digitalmente" pede o nome completo do profissional, calcula um hash SHA-256 do texto SOAP
+  (mesma função `hashDocumentText` já usada pelo consentimento informado) e chama a Edge Function
+  `sign-session-note` (cópia do padrão de `sign-consent`: só ela grava `signed_at`/`typed_name`/
+  `signature_hash`, nunca o cliente direto). Depois de assinada, um trigger no banco
+  (`session_notes_prevent_edit_after_sign`) bloqueia qualquer alteração nos campos SOAP e na própria
+  assinatura — não é só a UI que desabilita os campos, é impossível editar mesmo chamando a API
+  direto. Pra ativar: `supabase functions deploy sign-session-note` (nenhuma chave nova).
+
+  ### Público-alvo no perfil do profissional
+
+  Checkbox fixo (Crianças/Adolescentes/Adultos/Idosos) em "Configurações → Meu perfil profissional",
+  gravado em `professional_profiles.target_audience` (migration `20260707000003`, um `text[]` como
+  `specialties`/`approaches`, mas com vocabulário fechado em vez de texto livre). O diretório público
+  ganhou um filtro "Público-alvo" ao lado dos filtros de convênio/especialidade já existentes. Não
+  precisa de nenhuma chave nova.
+
+  ### Controle de faltas (no-show)
+
+  `appointment_status` ganhou o valor `no_show` (migration `20260707000004` — precisa de
+  `ALTER TYPE ... ADD VALUE`, que só é aplicado depois que a migration termina de rodar). No painel
+  de detalhe de uma consulta na Agenda, ao lado de "Cancelar consulta", tem "Marcar falta" — o
+  paciente simplesmente não compareceu, diferente de um cancelamento avisado com antecedência. Os
+  badges de status (Agenda, Dashboard, Histórico do prontuário, Dashboard Financeiro) já reconhecem
+  o novo status. `src/lib/metrics.ts` ganhou `calculateNoShowRate`, e `calculateAttendanceRate`/
+  `calculateCancellationRate` agora tratam falta como "passado" (conta pra base de cálculo) mas não
+  como comparecimento. Não precisa de nenhuma chave nova.
+
+  ### Lembretes automáticos de consulta por WhatsApp
+
+  Edge Function `send-appointment-reminder`, disparada a cada 15 minutos por um job `pg_cron`
+  (migration `20260707000005`) que chama a função via `pg_net` — Supabase não tem agendador nativo,
+  então o padrão é usar essas duas extensions do Postgres. A função busca consultas `scheduled` que
+  começam entre 23h e 25h à frente, ainda sem lembrete enviado
+  (`appointments.whatsapp_reminder_sent_at`), verifica se o paciente não desativou os lembretes
+  (`patient_profiles.whatsapp_reminders_enabled`, com opt-out em "Configurações → Meus dados") e
+  envia a mensagem via **Meta WhatsApp Cloud API** oficial (`supabase/functions/_shared/whatsapp.ts`)
+  — sem intermediário tipo Twilio/Z-API, foi a opção escolhida pelo time.
+
+  **A Meta exige que toda mensagem enviada fora de uma janela de 24h aberta pelo próprio usuário use
+  um template pré-aprovado no Meta Business Manager** — não dá pra mandar texto livre, e a aprovação
+  do template pode levar de horas a dias. Sem isso configurado, a função simplesmente não envia nada
+  (mesmo "best-effort" das outras integrações).
+
+  Para ativar:
+  1. Configure um número de WhatsApp Business no [Meta Business Manager](https://business.facebook.com)
+     e crie/aprove um template de mensagem com 3 variáveis (nome do paciente, nome do profissional,
+     data/hora da consulta).
+  2. `supabase functions deploy send-appointment-reminder`
+  3. `supabase secrets set CRON_SECRET=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_ACCESS_TOKEN=... WHATSAPP_TEMPLATE_NAME=...`
+  4. Habilite `pg_cron`/`pg_net` no projeto (a migration `20260707000005` já faz isso) e rode, uma
+     vez, no SQL Editor do Supabase (com os mesmos valores usados no passo 3):
+     ```sql
+     select vault.create_secret('https://<project-ref>.supabase.co/functions/v1/send-appointment-reminder', 'reminder_function_url');
+     select vault.create_secret('<mesmo valor do CRON_SECRET>', 'reminder_cron_secret');
+     ```
+     Até esses dois segredos existirem no Vault, o job roda a cada 15 min mas não faz nada.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
@@ -480,6 +557,8 @@
   | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
   | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |
   | *(nenhuma chave nova)* | `notify-admin-document` / `admin-manage-user` reaproveitam `RESEND_API_KEY`/`EMAIL_FROM` e a service role key (injetada automaticamente pelo runtime das Edge Functions) | Notificação de documento novo e suspensão/exclusão de contas |
+  | `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_TEMPLATE_NAME` | Secrets da função `send-appointment-reminder` | Lembrete de consulta por WhatsApp (Meta Cloud API). Sem elas, o job de cron roda mas não envia nada. |
+  | `CRON_SECRET` | Secret da função `send-appointment-reminder` + segredo `reminder_cron_secret` no Vault | Autentica a chamada do `pg_cron` (o endpoint não usa sessão de usuário) |
 
   ### Monitoramento de erros
 

@@ -5,7 +5,7 @@
 export type UserRole = "patient" | "professional" | "admin";
 export type VerificationStatus = "pending" | "verified" | "rejected";
 export type Modality = "online" | "presencial";
-export type AppointmentStatus = "scheduled" | "completed" | "cancelled";
+export type AppointmentStatus = "scheduled" | "completed" | "cancelled" | "no_show";
 export type PaymentStatus = "pending" | "paid" | "refunded";
 
 export interface Database {
@@ -47,6 +47,7 @@ export interface Database {
           years_experience: number;
           created_at: string;
           epsi_declared_at: string | null;
+          target_audience: string[];
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
@@ -84,6 +85,7 @@ export interface Database {
           status: AppointmentStatus;
           price: number;
           google_event_id: string | null;
+          whatsapp_reminder_sent_at: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["appointments"]["Row"]> & {
@@ -120,6 +122,13 @@ export interface Database {
           appointment_id: string;
           professional_id: string;
           notes: string;
+          subjective: string | null;
+          objective: string | null;
+          assessment: string | null;
+          plan: string | null;
+          signed_at: string | null;
+          typed_name: string | null;
+          signature_hash: string | null;
           ai_summary: string | null;
           ai_summary_generated_at: string | null;
           created_at: string;
@@ -273,6 +282,57 @@ export interface Database {
           content: string;
         };
         Update: Partial<Database["public"]["Tables"]["messages"]["Row"]>;
+        Relationships: [];
+      };
+      patient_profiles: {
+        Row: {
+          id: string;
+          birth_date: string | null;
+          cpf: string | null;
+          address_street: string | null;
+          address_number: string | null;
+          address_complement: string | null;
+          address_neighborhood: string | null;
+          address_city: string | null;
+          address_state: string | null;
+          address_zip: string | null;
+          emergency_contact_name: string | null;
+          emergency_contact_phone: string | null;
+          emergency_contact_relationship: string | null;
+          legal_guardian_name: string | null;
+          legal_guardian_cpf: string | null;
+          legal_guardian_phone: string | null;
+          legal_guardian_relationship: string | null;
+          insurance_provider: string | null;
+          insurance_plan: string | null;
+          insurance_card_number: string | null;
+          clinical_history: string | null;
+          whatsapp_reminders_enabled: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["patient_profiles"]["Row"]> & {
+          id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["patient_profiles"]["Row"]>;
+        Relationships: [];
+      };
+      patient_documents: {
+        Row: {
+          id: string;
+          patient_id: string;
+          uploaded_by: string;
+          storage_path: string;
+          file_name: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["patient_documents"]["Row"]> & {
+          patient_id: string;
+          uploaded_by: string;
+          storage_path: string;
+          file_name: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["patient_documents"]["Row"]>;
         Relationships: [];
       };
       consent_signatures: {

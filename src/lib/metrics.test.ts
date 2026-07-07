@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateAttendanceRate, calculateCancellationRate, calculateRetentionRate } from "./metrics";
+import { calculateAttendanceRate, calculateCancellationRate, calculateNoShowRate, calculateRetentionRate } from "./metrics";
 
 describe("calculateAttendanceRate", () => {
   it("returns 0 when there are no past appointments", () => {
@@ -20,6 +20,31 @@ describe("calculateAttendanceRate", () => {
       { status: "completed", patientId: "a" },
       { status: "completed", patientId: "b" },
       { status: "cancelled", patientId: "c" },
+      { status: "cancelled", patientId: "d" },
+    ]);
+    expect(rate).toBe(0.5);
+  });
+
+  it("counts no_show as past but not as attended", () => {
+    const rate = calculateAttendanceRate([
+      { status: "completed", patientId: "a" },
+      { status: "no_show", patientId: "b" },
+    ]);
+    expect(rate).toBe(0.5);
+  });
+});
+
+describe("calculateNoShowRate", () => {
+  it("returns 0 when there are no past appointments", () => {
+    expect(calculateNoShowRate([])).toBe(0);
+    expect(calculateNoShowRate([{ status: "scheduled", patientId: "a" }])).toBe(0);
+  });
+
+  it("computes no_show / (completed + cancelled + no_show)", () => {
+    const rate = calculateNoShowRate([
+      { status: "completed", patientId: "a" },
+      { status: "no_show", patientId: "b" },
+      { status: "no_show", patientId: "c" },
       { status: "cancelled", patientId: "d" },
     ]);
     expect(rate).toBe(0.5);
