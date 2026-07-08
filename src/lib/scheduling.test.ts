@@ -22,6 +22,17 @@ describe("getUpcomingAvailableDays", () => {
     // No weekday matches (availability is a one-off specific_date row), so nothing should come back.
     expect(getUpcomingAvailableDays(availability, now, 14, 5)).toHaveLength(0);
   });
+
+  it("excludes a day fully covered by a time block", () => {
+    // 2026-07-06 is a Monday; block covers the entire day.
+    const now = new Date("2026-07-02T00:00:00");
+    const availability = [{ weekday: 1, start_time: "09:00", end_time: "12:00" }];
+    const blocks = [{ startAt: "2026-07-06T00:00:00", endAt: "2026-07-07T00:00:00" }];
+
+    const days = getUpcomingAvailableDays(availability, now, 14, 5, blocks);
+
+    expect(days.some(d => d.getDate() === 6 && d.getMonth() === 6)).toBe(false);
+  });
 });
 
 describe("generateSlotsForDay", () => {
@@ -43,5 +54,17 @@ describe("generateSlotsForDay", () => {
   it("returns nothing for a weekday with no availability", () => {
     const tuesday = new Date("2026-07-07T00:00:00");
     expect(generateSlotsForDay(availability, tuesday, new Set())).toHaveLength(0);
+  });
+
+  it("marks a slot falling inside a time block as taken", () => {
+    const blocks = [{ startAt: "2026-07-06T08:00:00", endAt: "2026-07-06T12:00:00" }];
+    const slots = generateSlotsForDay(availability, day, new Set(), 50, blocks);
+    expect(slots[0].taken).toBe(true);
+  });
+
+  it("leaves a slot outside any time block untouched", () => {
+    const blocks = [{ startAt: "2026-07-06T14:00:00", endAt: "2026-07-06T18:00:00" }];
+    const slots = generateSlotsForDay(availability, day, new Set(), 50, blocks);
+    expect(slots[0].taken).toBe(false);
   });
 });

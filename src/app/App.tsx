@@ -3,8 +3,8 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { mockPaymentProvider, createMercadoPagoCheckout } from "../lib/payment-provider";
 import type { UserRole, PaymentStatus } from "../lib/database.types";
-import { getUpcomingAvailableDays, generateSlotsForDay } from "../lib/scheduling";
-import { downloadCsv } from "../lib/csv";
+import { getUpcomingAvailableDays, generateSlotsForDay, type TimeBlock } from "../lib/scheduling";
+import { downloadCsv, parseCsv } from "../lib/csv";
 import { getLastMonths, bucketAmountsByMonth } from "../lib/revenue";
 import { calculateAttendanceRate, calculateCancellationRate, calculateNoShowRate, calculateRetentionRate } from "../lib/metrics";
 import { joinWaitlist, leaveWaitlist, listMyWaitlistEntries, notifyWaitlistMatch, type WaitlistEntry } from "../lib/waitlist";
@@ -50,6 +50,7 @@ import {
   type GeneratedDocument,
 } from "../lib/generatedDocuments";
 import { createPatientAccount } from "../lib/professionalPatients";
+import { confirmAttendance } from "../lib/confirmation";
 import {
   listThreadMessages, listAllMessagesFor, sendMessage, markThreadRead, subscribeToMessages, groupIntoConversations,
   listUnreadMessageNotifications, subscribeToMyMessages,
@@ -1037,6 +1038,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
   const [loadError, setLoadError] = useState("");
   const [availability, setAvailability] = useState<{ weekday: number | null; start_time: string; end_time: string }[]>([]);
   const [bookedTimes, setBookedTimes] = useState<Set<string>>(new Set());
+  const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>([]);
   const [reviews, setReviews] = useState<{ name: string; rating: number; comment: string | null }[]>([]);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
@@ -1078,7 +1080,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
     setLoadError("");
 
     (async () => {
-      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }] = await Promise.all([
+      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }, { data: blockData }] = await Promise.all([
         supabase
           .from("professional_profiles")
           .select("id, bio, specialties, approaches, license_type, license_number, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
@@ -1095,6 +1097,10 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
           .eq("professional_id", professionalId)
           .order("created_at", { ascending: false })
           .limit(10),
+        supabase
+          .from("professional_time_blocks")
+          .select("start_at, end_at")
+          .eq("professional_id", professionalId),
       ]);
 
       if (!active) return;
@@ -1123,6 +1129,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
       });
       setAvailability((availData ?? []) as any);
       setReviews(((reviewData ?? []) as any[]).map(r => ({ name: r.profiles?.full_name ?? "Paciente", rating: r.rating, comment: r.comment })));
+      setTimeBlocks(((blockData ?? []) as any[]).map(b => ({ startAt: b.start_at, endAt: b.end_at })));
 
       const now = new Date();
       const in14Days = new Date();
@@ -1144,8 +1151,8 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
     };
   }, [professionalId]);
 
-  const upcomingDays = getUpcomingAvailableDays(availability);
-  const slotsForDay = (day: Date) => generateSlotsForDay(availability, day, bookedTimes);
+  const upcomingDays = getUpcomingAvailableDays(availability, new Date(), 14, 5, timeBlocks);
+  const slotsForDay = (day: Date) => generateSlotsForDay(availability, day, bookedTimes, 50, timeBlocks);
 
   const handleBook = () => {
     if (!pro || !selectedSlot) return;
@@ -1785,6 +1792,75 @@ function ResetPasswordScreen({ onNavigate }: { onNavigate: (s: Screen) => void }
   );
 }
 
+/** Public screen (no login) reached via the WhatsApp confirmation link — patient-confirmation.ts
+ *  hits the confirm-attendance Edge Function directly with the per-appointment token. */
+function ConfirmAttendanceScreen({ token, onNavigate }: { token: string | null; onNavigate: (s: Screen) => void }) {
+  const [status, setStatus] = useState<"loading" | "done" | "error">("loading");
+  const [result, setResult] = useState<{ patientName: string; professionalName: string; scheduledAt: string } | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!token) {
+      setStatus("error");
+      setError("Link inválido.");
+      return;
+    }
+
+    let active = true;
+    void confirmAttendance(token).then(res => {
+      if (!active) return;
+      if (res.ok) {
+        setResult({ patientName: res.patientName, professionalName: res.professionalName, scheduledAt: res.scheduledAt });
+        setStatus("done");
+      } else {
+        setError(res.error);
+        setStatus("error");
+      }
+    });
+
+    return () => { active = false; };
+  }, [token]);
+
+  return (
+    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="w-12 h-12 bg-primary rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Calendar size={22} className="text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-foreground font-display">Confirmação de presença</h1>
+        </div>
+        <Card className="p-8 text-center">
+          {status === "loading" && <p className="text-sm text-muted-foreground">Confirmando sua presença...</p>}
+          {status === "done" && result && (
+            <div className="space-y-4">
+              <CheckCircle size={40} className="mx-auto text-emerald-500" />
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                Presença confirmada! Te esperamos.
+              </div>
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>{result.patientName}, sua consulta com {result.professionalName} está confirmada para:</p>
+                <p className="flex items-center justify-center gap-1 font-medium text-foreground">
+                  <Clock size={14} />
+                  {new Date(result.scheduledAt).toLocaleString("pt-BR", { weekday: "long", day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" })}
+                </p>
+              </div>
+              <Btn variant="primary" className="w-full justify-center" onClick={() => onNavigate("landing")}>Ir para o início</Btn>
+            </div>
+          )}
+          {status === "error" && (
+            <div className="space-y-4">
+              <AlertCircle size={40} className="mx-auto text-red-500" />
+              <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+              <Btn variant="secondary" className="w-full justify-center" onClick={() => onNavigate("landing")}>Ir para o início</Btn>
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // ─── SCREEN: Patient Dashboard ────────────────────────────────────────────────
 
 type PatientAppointment = {
@@ -2127,8 +2203,8 @@ type PatientPayment = {
   professionalName: string;
 };
 
-function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
-  const [dashboardTab, setDashboardTab] = useState<PatientDashboardTab>("inicio");
+function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, initialTab }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void; initialTab?: PatientDashboardTab }) {
+  const [dashboardTab, setDashboardTab] = useState<PatientDashboardTab>(initialTab ?? "inicio");
 
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: dashboardTab === "inicio", onClick: () => { setDashboardTab("inicio"); onNavigate("patient-dashboard"); } },
@@ -3011,7 +3087,16 @@ type CalendarAppointment = {
   patientId: string;
   patientName: string;
   googleEventId: string | null;
+  confirmedAt: string | null;
 };
+
+/** Only "scheduled" appointments starting within 24h and still unconfirmed get the "Não confirmada"
+ *  badge — matches the same ~24h window send-appointment-reminder uses to request confirmation. */
+function needsConfirmation(a: CalendarAppointment): boolean {
+  if (a.status !== "scheduled" || a.confirmedAt) return false;
+  const hoursUntil = (new Date(a.scheduledAt).getTime() - Date.now()) / (60 * 60 * 1000);
+  return hoursUntil <= 24;
+}
 
 const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–19:00
 const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -3036,11 +3121,16 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const [selectedAppointment, setSelectedAppointment] = useState<CalendarAppointment | null>(null);
 
   const [patients, setPatients] = useState<{ id: string; name: string }[]>([]);
+  const [sessionPrice, setSessionPrice] = useState(0);
   const [showNewModal, setShowNewModal] = useState(false);
   const [newPatientId, setNewPatientId] = useState("");
   const [newDate, setNewDate] = useState("");
   const [newTime, setNewTime] = useState("09:00");
   const [newModality, setNewModality] = useState<"online" | "presencial">("online");
+  const [newPrice, setNewPrice] = useState("");
+  const [newRecurring, setNewRecurring] = useState(false);
+  const [newRecurringCount, setNewRecurringCount] = useState(4);
+  const [recurringReview, setRecurringReview] = useState<{ iso: string; conflict: boolean }[] | null>(null);
   const [newError, setNewError] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -3048,6 +3138,108 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const [googleSyncing, setGoogleSyncing] = useState(false);
   const [googleMessage, setGoogleMessage] = useState("");
   const [cancelling, setCancelling] = useState(false);
+
+  const [timeBlocks, setTimeBlocks] = useState<{ id: string; startAt: string; endAt: string; reason: string | null }[]>([]);
+  const [showBlockModal, setShowBlockModal] = useState(false);
+  const [blockStartDate, setBlockStartDate] = useState("");
+  const [blockStartTime, setBlockStartTime] = useState("09:00");
+  const [blockEndDate, setBlockEndDate] = useState("");
+  const [blockEndTime, setBlockEndTime] = useState("18:00");
+  const [blockReason, setBlockReason] = useState("");
+  const [blockError, setBlockError] = useState("");
+  const [blockConflicts, setBlockConflicts] = useState<CalendarAppointment[] | null>(null);
+  const [blocking, setBlocking] = useState(false);
+
+  const reloadTimeBlocks = async () => {
+    const { data } = await supabase
+      .from("professional_time_blocks")
+      .select("id, start_at, end_at, reason")
+      .eq("professional_id", currentUser.id)
+      .gte("end_at", new Date().toISOString())
+      .order("start_at", { ascending: true });
+    setTimeBlocks(((data ?? []) as any[]).map(b => ({ id: b.id, startAt: b.start_at, endAt: b.end_at, reason: b.reason })));
+  };
+
+  const openBlockModal = () => {
+    setBlockError("");
+    setBlockConflicts(null);
+    const today = new Date().toISOString().slice(0, 10);
+    setBlockStartDate(today);
+    setBlockStartTime("09:00");
+    setBlockEndDate(today);
+    setBlockEndTime("18:00");
+    setBlockReason("");
+    setShowBlockModal(true);
+  };
+
+  /** First pass checks for conflicting scheduled appointments and, if any exist, stops to require
+   *  explicit confirmation before cancelling them — a block never auto-cancels a patient's session. */
+  const handleSubmitBlock = async () => {
+    setBlockError("");
+
+    if (!blockStartDate || !blockStartTime || !blockEndDate || !blockEndTime) {
+      setBlockError("Selecione o início e o fim do bloqueio.");
+      return;
+    }
+
+    const startAt = new Date(`${blockStartDate}T${blockStartTime}:00`);
+    const endAt = new Date(`${blockEndDate}T${blockEndTime}:00`);
+
+    if (endAt.getTime() <= startAt.getTime()) {
+      setBlockError("O fim precisa ser depois do início.");
+      return;
+    }
+
+    if (blockConflicts === null) {
+      const conflicts = appointments.filter(a => {
+        if (a.status !== "scheduled") return false;
+        const scheduledAt = new Date(a.scheduledAt).getTime();
+        return scheduledAt >= startAt.getTime() && scheduledAt < endAt.getTime();
+      });
+
+      if (conflicts.length > 0) {
+        setBlockConflicts(conflicts);
+        return;
+      }
+    }
+
+    setBlocking(true);
+
+    for (const conflict of blockConflicts ?? []) {
+      const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", conflict.id);
+      if (!error) void notifyWaitlistMatch(currentUser.id, conflict.scheduledAt);
+    }
+
+    const { error } = await supabase.from("professional_time_blocks").insert({
+      professional_id: currentUser.id,
+      start_at: startAt.toISOString(),
+      end_at: endAt.toISOString(),
+      reason: blockReason || null,
+    });
+
+    setBlocking(false);
+
+    if (error) {
+      reportError(error, { flow: "calendarScreen.createTimeBlock" });
+      setBlockError("Não foi possível criar o bloqueio. Tente novamente.");
+      return;
+    }
+
+    setShowBlockModal(false);
+    setBlockConflicts(null);
+    await Promise.all([reloadAppointments(), reloadTimeBlocks()]);
+  };
+
+  const handleDeleteTimeBlock = async (id: string) => {
+    if (!window.confirm("Remover este bloqueio de horário?")) return;
+    const { error } = await supabase.from("professional_time_blocks").delete().eq("id", id);
+    if (error) {
+      reportError(error, { flow: "calendarScreen.deleteTimeBlock" });
+      window.alert("Não foi possível remover o bloqueio. Tente novamente.");
+      return;
+    }
+    setTimeBlocks(prev => prev.filter(b => b.id !== id));
+  };
 
   const handleCancelAppointment = async () => {
     if (!selectedAppointment) return;
@@ -3156,7 +3348,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     setLoadingAppointments(true);
     const { data } = await supabase
       .from("appointments")
-      .select("id, scheduled_at, duration_minutes, modality, status, patient_id, google_event_id, profiles(full_name)")
+      .select("id, scheduled_at, duration_minutes, modality, status, patient_id, google_event_id, confirmed_at, profiles(full_name)")
       .eq("professional_id", currentUser.id)
       .gte("scheduled_at", monthStart.toISOString())
       .lt("scheduled_at", monthEnd.toISOString())
@@ -3171,6 +3363,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       patientId: a.patient_id,
       patientName: a.profiles?.full_name ?? "Paciente",
       googleEventId: a.google_event_id,
+      confirmedAt: a.confirmed_at,
     })));
     setLoadingAppointments(false);
   };
@@ -3217,6 +3410,13 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       if (active) setGoogleConnected(Boolean(data.session?.provider_token));
     })();
 
+    (async () => {
+      const { data } = await supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle();
+      if (active) setSessionPrice(Number(data?.session_price ?? 0));
+    })();
+
+    void reloadTimeBlocks();
+
     return () => {
       active = false;
     };
@@ -3233,9 +3433,17 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     setNewPatientId(patients[0]?.id ?? "");
     setNewDate(day ? day.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
     setNewTime(hour !== undefined ? `${String(hour).padStart(2, "0")}:00` : "09:00");
+    setNewPrice(String(sessionPrice));
+    setNewRecurring(false);
+    setNewRecurringCount(4);
+    setRecurringReview(null);
     setShowNewModal(true);
   };
 
+  /** Non-recurring: validates + creates in one step, unchanged. Recurring (weekly, 2–12 sessions):
+   *  first pass checks every generated date for conflicts and shows a review list (conflicting
+   *  dates are skipped, never silently double-booked); a second click on the same handler, with
+   *  recurringReview already populated, creates the rows that came back conflict-free. */
   const handleCreateAppointment = async () => {
     setNewError("");
 
@@ -3248,37 +3456,77 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       return;
     }
 
-    const scheduledAt = new Date(`${newDate}T${newTime}:00`);
-    if (scheduledAt.getTime() < Date.now()) {
+    const priceValue = Number(newPrice);
+    if (!newPrice || Number.isNaN(priceValue) || priceValue < 0) {
+      setNewError("Informe um valor válido para a consulta.");
+      return;
+    }
+
+    const firstScheduledAt = new Date(`${newDate}T${newTime}:00`);
+    if (firstScheduledAt.getTime() < Date.now()) {
       setNewError("Escolha uma data e horário no futuro.");
+      return;
+    }
+
+    const count = newRecurring ? Math.min(12, Math.max(2, newRecurringCount)) : 1;
+    const scheduledDates = Array.from({ length: count }, (_, i) => {
+      const d = new Date(firstScheduledAt);
+      d.setDate(d.getDate() + 7 * i);
+      return d;
+    });
+
+    if (count > 1 && recurringReview === null) {
+      setCreating(true);
+      const isoList = scheduledDates.map(d => d.toISOString());
+      const { data: existing } = await supabase
+        .from("appointments")
+        .select("scheduled_at")
+        .eq("professional_id", currentUser.id)
+        .eq("status", "scheduled")
+        .in("scheduled_at", isoList);
+      setCreating(false);
+      const takenSet = new Set((existing ?? []).map(a => a.scheduled_at));
+      setRecurringReview(scheduledDates.map(d => ({ iso: d.toISOString(), conflict: takenSet.has(d.toISOString()) })));
       return;
     }
 
     setCreating(true);
 
-    const { data: conflict } = await supabase
-      .from("appointments")
-      .select("id")
-      .eq("professional_id", currentUser.id)
-      .eq("scheduled_at", scheduledAt.toISOString())
-      .eq("status", "scheduled")
-      .maybeSingle();
+    if (count === 1) {
+      const { data: conflict } = await supabase
+        .from("appointments")
+        .select("id")
+        .eq("professional_id", currentUser.id)
+        .eq("scheduled_at", firstScheduledAt.toISOString())
+        .eq("status", "scheduled")
+        .maybeSingle();
 
-    if (conflict) {
+      if (conflict) {
+        setCreating(false);
+        setNewError("Você já tem uma consulta marcada nesse horário.");
+        return;
+      }
+    }
+
+    const datesToCreate = count > 1
+      ? (recurringReview ?? []).filter(r => !r.conflict).map(r => new Date(r.iso))
+      : scheduledDates;
+
+    if (datesToCreate.length === 0) {
       setCreating(false);
-      setNewError("Você já tem uma consulta marcada nesse horário.");
+      setNewError("Todas as datas selecionadas já têm conflito. Ajuste antes de continuar.");
       return;
     }
 
-    const { data: profile } = await supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle();
-
-    const { error } = await supabase.from("appointments").insert({
-      patient_id: newPatientId,
-      professional_id: currentUser.id,
-      scheduled_at: scheduledAt.toISOString(),
-      modality: newModality,
-      price: Number(profile?.session_price ?? 0),
-    });
+    const { error } = await supabase.from("appointments").insert(
+      datesToCreate.map(d => ({
+        patient_id: newPatientId,
+        professional_id: currentUser.id,
+        scheduled_at: d.toISOString(),
+        modality: newModality,
+        price: priceValue,
+      }))
+    );
 
     setCreating(false);
 
@@ -3289,6 +3537,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     }
 
     setShowNewModal(false);
+    setRecurringReview(null);
     await reloadAppointments();
   };
 
@@ -3397,6 +3646,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
               ))}
             </div>
             <Btn variant="primary" size="sm" onClick={() => openNewAppointmentModal()}><Plus size={15} />Nova consulta</Btn>
+            <Btn variant="outline" size="sm" onClick={openBlockModal}><Lock size={15} />Bloquear horário</Btn>
             {googleConnected ? (
               <Btn variant="outline" size="sm" onClick={handleSyncGoogle} disabled={googleSyncing}><RefreshCw size={15} />{googleSyncing ? "Sincronizando..." : "Sincronizar Google"}</Btn>
             ) : (
@@ -3434,6 +3684,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                           >
                             <p className="font-semibold truncate">{a.patientName}</p>
                             <p className="opacity-70">{a.modality === "online" ? "Online" : "Presencial"}</p>
+                            {needsConfirmation(a) && <p className="mt-0.5 text-amber-700">Não confirmada</p>}
                           </div>
                         ))}
                       </div>
@@ -3458,9 +3709,12 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                       {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>
-                  <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : a.status === "no_show" ? "warning" : "outline"}>
-                    {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status === "no_show" ? "Faltou" : a.modality === "online" ? "Online" : "Presencial"}
-                  </Badge>
+                  <div className="flex items-center gap-1.5">
+                    {needsConfirmation(a) && <Badge variant="warning">Não confirmada</Badge>}
+                    <Badge variant={a.status === "completed" ? "success" : a.status === "cancelled" ? "danger" : a.status === "no_show" ? "warning" : "outline"}>
+                      {a.status === "completed" ? "Concluída" : a.status === "cancelled" ? "Cancelada" : a.status === "no_show" ? "Faltou" : a.modality === "online" ? "Online" : "Presencial"}
+                    </Badge>
+                  </div>
                 </div>
               ))}
             </div>
@@ -3484,6 +3738,27 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
             </div>
           </Card>
         </div>
+
+        {timeBlocks.length > 0 && (
+          <Card className="p-4">
+            <h3 className="text-sm font-semibold text-foreground mb-3">Horários bloqueados</h3>
+            <div className="space-y-2">
+              {timeBlocks.map(b => (
+                <div key={b.id} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="text-foreground font-medium truncate">
+                      {new Date(b.startAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {" – "}
+                      {new Date(b.endAt).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                    {b.reason && <p className="text-xs text-muted-foreground truncate">{b.reason}</p>}
+                  </div>
+                  <button type="button" onClick={() => handleDeleteTimeBlock(b.id)} className="flex-shrink-0 text-muted-foreground hover:text-red-600"><Trash2 size={15} /></button>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
       </div>
 
       {selectedAppointment && (
@@ -3498,9 +3773,12 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 {new Date(selectedAppointment.scheduledAt).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })} · {new Date(selectedAppointment.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
               </p>
               <p className="text-muted-foreground">{selectedAppointment.modality === "online" ? "Online" : "Presencial"}</p>
-              <Badge variant={selectedAppointment.status === "completed" ? "success" : selectedAppointment.status === "cancelled" ? "danger" : selectedAppointment.status === "no_show" ? "warning" : "outline"}>
-                {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : selectedAppointment.status === "no_show" ? "Faltou" : "Agendada"}
-              </Badge>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {needsConfirmation(selectedAppointment) && <Badge variant="warning">Não confirmada</Badge>}
+                <Badge variant={selectedAppointment.status === "completed" ? "success" : selectedAppointment.status === "cancelled" ? "danger" : selectedAppointment.status === "no_show" ? "warning" : "outline"}>
+                  {selectedAppointment.status === "completed" ? "Concluída" : selectedAppointment.status === "cancelled" ? "Cancelada" : selectedAppointment.status === "no_show" ? "Faltou" : "Agendada"}
+                </Badge>
+              </div>
             </div>
             <div className="flex gap-2 mt-5 flex-wrap">
               <Btn variant="outline" onClick={() => { onOpenEhr(selectedAppointment.patientId, selectedAppointment.id); onNavigate("ehr"); }}>Ver prontuário</Btn>
@@ -3554,6 +3832,25 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
               <p className="text-sm text-muted-foreground">
                 Você ainda não tem nenhum paciente. Novos pacientes agendam a primeira consulta pelo diretório público — depois disso você pode marcar consultas de retorno por aqui.
               </p>
+            ) : recurringReview !== null ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Serão criadas {recurringReview.filter(r => !r.conflict).length} de {recurringReview.length} consultas semanais. Datas em conflito são puladas automaticamente.
+                </p>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {recurringReview.map(r => (
+                    <div key={r.iso} className={`rounded-xl border px-3 py-2 text-sm flex items-center justify-between ${r.conflict ? "border-amber-200 bg-amber-50 text-amber-800" : "border-border"}`}>
+                      <span>{new Date(r.iso).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                      {r.conflict && <span className="text-xs">Conflito — pulada</span>}
+                    </div>
+                  ))}
+                </div>
+                {newError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newError}</div>}
+                <div className="flex gap-2">
+                  <Btn variant="outline" className="flex-1 justify-center" onClick={() => setRecurringReview(null)} disabled={creating}>Voltar</Btn>
+                  <Btn variant="primary" className="flex-1 justify-center" onClick={handleCreateAppointment} disabled={creating}>{creating ? "Criando..." : "Confirmar"}</Btn>
+                </div>
+              </div>
             ) : (
               <div className="space-y-4">
                 <div className="flex flex-col gap-1.5">
@@ -3579,8 +3876,76 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                     <button type="button" onClick={() => setNewModality("presencial")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newModality === "presencial" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Presencial</button>
                   </div>
                 </div>
+                <Input label="Valor (R$)" type="number" value={newPrice} onChange={setNewPrice} />
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" id="newRecurring" checked={newRecurring} onChange={e => setNewRecurring(e.target.checked)} className="w-4 h-4" />
+                  <label htmlFor="newRecurring" className="text-sm text-foreground">Repetir semanalmente</label>
+                </div>
+                {newRecurring && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-foreground">Número de sessões (2–12)</label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={12}
+                      value={newRecurringCount}
+                      onChange={e => setNewRecurringCount(Number(e.target.value))}
+                      className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                )}
                 {newError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newError}</div>}
-                <Btn variant="primary" className="w-full justify-center" onClick={handleCreateAppointment} disabled={creating}>{creating ? "Criando..." : "Criar consulta"}</Btn>
+                <Btn variant="primary" className="w-full justify-center" onClick={handleCreateAppointment} disabled={creating}>
+                  {creating ? "Criando..." : newRecurring ? "Revisar consultas" : "Criar consulta"}
+                </Btn>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showBlockModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowBlockModal(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Bloquear horário</h2>
+              <button type="button" onClick={() => setShowBlockModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            {blockConflicts === null ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">Compromisso pessoal, férias ou qualquer período em que você não pode atender. O horário deixa de aparecer como disponível para novos agendamentos.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Início (data)" type="date" value={blockStartDate} onChange={setBlockStartDate} />
+                  <Input label="Início (hora)" type="time" value={blockStartTime} onChange={setBlockStartTime} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Fim (data)" type="date" value={blockEndDate} onChange={setBlockEndDate} />
+                  <Input label="Fim (hora)" type="time" value={blockEndTime} onChange={setBlockEndTime} />
+                </div>
+                <Input label="Motivo (opcional)" placeholder="Ex.: Compromisso pessoal" value={blockReason} onChange={setBlockReason} />
+                {blockError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{blockError}</div>}
+                <Btn variant="primary" className="w-full justify-center" onClick={handleSubmitBlock} disabled={blocking}>{blocking ? "Bloqueando..." : "Bloquear horário"}</Btn>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Este período tem {blockConflicts.length} consulta{blockConflicts.length > 1 ? "s" : ""} agendada{blockConflicts.length > 1 ? "s" : ""}. Bloquear o horário vai cancelá-la{blockConflicts.length > 1 ? "s" : ""}.
+                </div>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {blockConflicts.map(a => (
+                    <div key={a.id} className="rounded-xl border border-border px-3 py-2 text-sm">
+                      <p className="font-medium text-foreground">{a.patientName}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(a.scheduledAt).toLocaleString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+                    </div>
+                  ))}
+                </div>
+                {blockError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{blockError}</div>}
+                <div className="flex gap-2">
+                  <Btn variant="outline" className="flex-1 justify-center" onClick={() => setBlockConflicts(null)} disabled={blocking}>Voltar</Btn>
+                  <Btn variant="danger" className="flex-1 justify-center" onClick={handleSubmitBlock} disabled={blocking}>
+                    {blocking ? "Cancelando..." : "Cancelar e bloquear"}
+                  </Btn>
+                </div>
               </div>
             )}
           </div>
@@ -3841,6 +4206,85 @@ function PatientsScreen({
     ]);
   };
 
+  const handleDownloadCsvTemplate = () => {
+    downloadCsv("modelo-importacao-pacientes.csv", [
+      ["Nome", "E-mail", "Telefone", "Valor da consulta"],
+      ["Ana Silva", "ana@example.com", "(11) 90000-0000", "150"],
+    ]);
+  };
+
+  type CsvImportRow = { rowNumber: number; fullName: string; email: string; phone: string; price: string };
+  type CsvImportError = { rowNumber: number; message: string };
+  type CsvImportResult = { row: CsvImportRow; ok: boolean; error?: string };
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRows, setImportRows] = useState<CsvImportRow[]>([]);
+  const [importErrors, setImportErrors] = useState<CsvImportError[]>([]);
+  const [importResults, setImportResults] = useState<CsvImportResult[] | null>(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleImportFileSelected = async (file: File) => {
+    const text = await file.text();
+    const rows = parseCsv(text);
+    const dataRows = rows.slice(1); // first row is the header
+    const errors: CsvImportError[] = [];
+    const seenEmails = new Set<string>();
+    const valid: CsvImportRow[] = [];
+
+    dataRows.forEach((cols, idx) => {
+      const rowNumber = idx + 2; // 1-indexed, +1 for the header row
+      const [fullName = "", email = "", phone = "", price = ""] = cols;
+
+      if (!fullName.trim() || !email.trim()) {
+        errors.push({ rowNumber, message: "Nome e e-mail são obrigatórios." });
+        return;
+      }
+      const normalizedEmail = email.trim().toLowerCase();
+      if (seenEmails.has(normalizedEmail)) {
+        errors.push({ rowNumber, message: `E-mail duplicado no arquivo: ${email.trim()}` });
+        return;
+      }
+      seenEmails.add(normalizedEmail);
+      valid.push({ rowNumber, fullName: fullName.trim(), email: email.trim(), phone: phone.trim(), price: price.trim() });
+    });
+
+    setImportRows(valid);
+    setImportErrors(errors);
+    setImportResults(null);
+    setShowImportModal(true);
+  };
+
+  /** Every imported patient needs a first appointment (create-patient-account's bootstrap
+   *  requirement — that's what makes them visible everywhere else in the app), but a spreadsheet
+   *  import has no session date to use, so each one gets the same placeholder a week out; this is
+   *  disclosed on screen before the professional confirms, and every date is freely editable
+   *  afterward from the Agenda. */
+  const handleConfirmImport = async () => {
+    setImporting(true);
+    const results: CsvImportResult[] = [];
+
+    for (const row of importRows) {
+      const scheduledAt = new Date();
+      scheduledAt.setDate(scheduledAt.getDate() + 7);
+      scheduledAt.setHours(9, 0, 0, 0);
+
+      const result = await createPatientAccount({
+        fullName: row.fullName,
+        email: row.email,
+        phone: row.phone || undefined,
+        scheduledAt: scheduledAt.toISOString(),
+        modality: "online",
+        price: row.price ? Number(row.price) : undefined,
+      });
+
+      results.push({ row, ok: result.ok, error: result.ok ? undefined : result.error });
+    }
+
+    setImportResults(results);
+    setImporting(false);
+    await loadPatients();
+  };
+
   const [showNewPatientModal, setShowNewPatientModal] = useState(false);
   const [newPatientName, setNewPatientName] = useState("");
   const [newPatientEmail, setNewPatientEmail] = useState("");
@@ -3848,9 +4292,10 @@ function PatientsScreen({
   const [newPatientDate, setNewPatientDate] = useState("");
   const [newPatientTime, setNewPatientTime] = useState("09:00");
   const [newPatientModality, setNewPatientModality] = useState<"online" | "presencial">("online");
+  const [newPatientPrice, setNewPatientPrice] = useState("");
   const [creatingPatient, setCreatingPatient] = useState(false);
   const [newPatientError, setNewPatientError] = useState("");
-  const [createdPatientPassword, setCreatedPatientPassword] = useState<string | null>(null);
+  const [patientInvited, setPatientInvited] = useState(false);
 
   const openNewPatientModal = () => {
     setNewPatientError("");
@@ -3860,8 +4305,11 @@ function PatientsScreen({
     setNewPatientDate(new Date().toISOString().slice(0, 10));
     setNewPatientTime("09:00");
     setNewPatientModality("online");
-    setCreatedPatientPassword(null);
+    setNewPatientPrice("");
+    setPatientInvited(false);
     setShowNewPatientModal(true);
+    void supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle()
+      .then(({ data }) => setNewPatientPrice(data?.session_price != null ? String(data.session_price) : ""));
   };
 
   const handleCreatePatient = async () => {
@@ -3883,6 +4331,7 @@ function PatientsScreen({
       phone: newPatientPhone.trim() || undefined,
       scheduledAt: scheduledAt.toISOString(),
       modality: newPatientModality,
+      price: newPatientPrice ? Number(newPatientPrice) : undefined,
     });
     setCreatingPatient(false);
 
@@ -3891,17 +4340,8 @@ function PatientsScreen({
       return;
     }
 
-    setCreatedPatientPassword(result.defaultPassword);
+    setPatientInvited(true);
     await loadPatients();
-  };
-
-  const copyDefaultPassword = async () => {
-    if (!createdPatientPassword) return;
-    try {
-      await navigator.clipboard.writeText(createdPatientPassword);
-    } catch {
-      // Best-effort: the password is still shown on screen to copy manually.
-    }
   };
 
   return (
@@ -3928,6 +4368,17 @@ function PatientsScreen({
         ) : <div />}
         <div className="flex gap-2">
           <Btn variant="ghost" size="sm" onClick={handleExportCsv} disabled={filteredPatients.length === 0}><Download size={14} />Exportar CSV</Btn>
+          <label className="cursor-pointer">
+            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium border border-border text-foreground hover:bg-muted">
+              <Upload size={14} />Importar CSV
+            </span>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void handleImportFileSelected(file); }}
+            />
+          </label>
           <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
         </div>
       </div>
@@ -3942,23 +4393,16 @@ function PatientsScreen({
       {showNewPatientModal && (
         <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowNewPatientModal(false)}>
           <div className="bg-white rounded-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
-            {createdPatientPassword ? (
+            {patientInvited ? (
               <>
                 <div className="flex items-start justify-between mb-4">
                   <h2 className="text-lg font-bold text-foreground font-display">Paciente cadastrado</h2>
                   <button type="button" onClick={() => setShowNewPatientModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
                 </div>
                 <p className="text-sm text-muted-foreground mb-3">
-                  A primeira consulta já foi agendada. Repasse essas credenciais pro paciente — recomende trocar a senha no primeiro acesso (Configurações → Alterar senha).
+                  A primeira consulta já foi agendada. Um e-mail de convite foi enviado para <span className="font-medium text-foreground">{newPatientEmail}</span> — o paciente define a própria senha por lá.
                 </p>
-                <div className="p-3 bg-secondary rounded-xl text-sm text-foreground mb-3 space-y-1">
-                  <p><span className="text-muted-foreground">Login: </span>{newPatientEmail}</p>
-                  <p><span className="text-muted-foreground">Senha: </span>{createdPatientPassword}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Btn variant="outline" className="flex-1 justify-center" onClick={copyDefaultPassword}><Copy size={14} />Copiar senha</Btn>
-                  <Btn variant="primary" className="flex-1 justify-center" onClick={() => setShowNewPatientModal(false)}>Concluir</Btn>
-                </div>
+                <Btn variant="primary" className="w-full justify-center" onClick={() => setShowNewPatientModal(false)}>Concluir</Btn>
               </>
             ) : (
               <>
@@ -3967,7 +4411,7 @@ function PatientsScreen({
                   <button type="button" onClick={() => setShowNewPatientModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
                 </div>
                 <p className="text-xs text-muted-foreground mb-4">
-                  Cria a conta do paciente (login pelo e-mail, senha padrão) e já agenda a primeira consulta com você.
+                  Envia um convite por e-mail pro paciente (ele define a própria senha) e já agenda a primeira consulta com você.
                 </p>
                 <div className="space-y-3">
                   <Input label="Nome completo" value={newPatientName} onChange={setNewPatientName} />
@@ -3981,12 +4425,78 @@ function PatientsScreen({
                     <button type="button" onClick={() => setNewPatientModality("online")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newPatientModality === "online" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Online</button>
                     <button type="button" onClick={() => setNewPatientModality("presencial")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newPatientModality === "presencial" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Presencial</button>
                   </div>
+                  <Input label="Valor da consulta (R$)" type="number" value={newPatientPrice} onChange={setNewPatientPrice} />
                   {newPatientError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newPatientError}</div>}
                   <Btn variant="primary" className="w-full justify-center" onClick={handleCreatePatient} disabled={creatingPatient}>
                     {creatingPatient ? "Cadastrando..." : "Cadastrar e agendar"}
                   </Btn>
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showImportModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => !importing && setShowImportModal(false)}>
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Importar pacientes via CSV</h2>
+              {!importing && <button type="button" onClick={() => setShowImportModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>}
+            </div>
+
+            {importResults ? (
+              <div className="space-y-3">
+                <p className="text-sm text-foreground">
+                  {importResults.filter(r => r.ok).length} de {importResults.length} pacientes importados com sucesso.
+                </p>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {importResults.map(r => (
+                    <div key={r.row.rowNumber} className={`rounded-xl border px-3 py-2 text-sm ${r.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-700"}`}>
+                      <p className="font-medium">Linha {r.row.rowNumber} · {r.row.fullName}</p>
+                      {!r.ok && <p className="text-xs mt-0.5">{r.error}</p>}
+                    </div>
+                  ))}
+                </div>
+                <Btn variant="primary" className="w-full justify-center" onClick={() => setShowImportModal(false)}>Concluir</Btn>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Colunas esperadas: Nome, E-mail, Telefone (opcional), Valor da consulta (opcional).{" "}
+                  <button type="button" onClick={handleDownloadCsvTemplate} className="underline text-primary">Baixar modelo</button>
+                </p>
+
+                {importErrors.length > 0 && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 space-y-1">
+                    <p className="font-medium">{importErrors.length} linha{importErrors.length > 1 ? "s" : ""} com problema — não {importErrors.length > 1 ? "serão" : "será"} importada{importErrors.length > 1 ? "s" : ""}:</p>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {importErrors.map((e, i) => <p key={i} className="text-xs">Linha {e.rowNumber}: {e.message}</p>)}
+                    </div>
+                  </div>
+                )}
+
+                {importRows.length > 0 ? (
+                  <>
+                    <div className="rounded-xl border border-border px-3 py-2 text-xs text-muted-foreground">
+                      Cada paciente importado já entra com uma 1ª consulta marcada para daqui a 7 dias, às 09:00 — é só um vínculo inicial, ajuste a data depois na Agenda.
+                    </div>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {importRows.map(row => (
+                        <div key={row.rowNumber} className="rounded-xl border border-border px-3 py-2 text-sm">
+                          <p className="font-medium text-foreground">{row.fullName}</p>
+                          <p className="text-xs text-muted-foreground">{row.email}{row.phone ? ` · ${row.phone}` : ""}{row.price ? ` · R$${row.price}` : ""}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <Btn variant="primary" className="w-full justify-center" onClick={handleConfirmImport} disabled={importing}>
+                      {importing ? "Importando..." : `Importar ${importRows.length} paciente${importRows.length > 1 ? "s" : ""}`}
+                    </Btn>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Nenhuma linha válida encontrada no arquivo.</p>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -4056,6 +4566,27 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [patients, setPatients] = useState<EhrPatient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+
+  const [showUpdateLinkModal, setShowUpdateLinkModal] = useState(false);
+  const [updateLinkEmail, setUpdateLinkEmail] = useState("");
+  const [sendingUpdateLink, setSendingUpdateLink] = useState(false);
+  const [updateLinkMessage, setUpdateLinkMessage] = useState("");
+
+  const handleSendUpdateLink = async () => {
+    setUpdateLinkMessage("");
+    if (!updateLinkEmail.trim()) return;
+    setSendingUpdateLink(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(updateLinkEmail.trim(), {
+      redirectTo: `${window.location.origin}/atualizar-cadastro`,
+    });
+    setSendingUpdateLink(false);
+    if (error) {
+      reportError(error, { flow: "ehr.sendUpdateLink" });
+      setUpdateLinkMessage("Não foi possível enviar o link. Confira o e-mail e tente novamente.");
+      return;
+    }
+    setUpdateLinkMessage("Link enviado! O paciente recebe um e-mail com o acesso direto à ficha cadastral.");
+  };
 
   const [tags, setTags] = useState<PatientTag[]>([]);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -4769,9 +5300,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                     <Card className="p-6"><p className="text-sm text-muted-foreground">Carregando ficha cadastral...</p></Card>
                   ) : (
                     <>
-                      <p className="text-xs text-muted-foreground -mt-2">
-                        Preenchido pelo próprio paciente em Configurações — só leitura aqui.
-                      </p>
+                      <div className="flex items-center justify-between gap-3 -mt-2">
+                        <p className="text-xs text-muted-foreground">
+                          Preenchido pelo próprio paciente em Configurações — só leitura aqui.
+                        </p>
+                        <Btn variant="outline" size="sm" onClick={() => { setUpdateLinkEmail(""); setUpdateLinkMessage(""); setShowUpdateLinkModal(true); }}>
+                          <Link2 size={13} />Enviar link de atualização
+                        </Btn>
+                      </div>
 
                       <Card className="p-5 space-y-4">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><User size={16} />Dados Pessoais</h3>
@@ -5292,6 +5828,31 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
           )}
         </div>
       </div>
+
+      {showUpdateLinkModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowUpdateLinkModal(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Enviar link de atualização</h2>
+              <button type="button" onClick={() => setShowUpdateLinkModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              O paciente recebe um e-mail com um link que já abre direto na ficha cadastral dele, autenticado — sem precisar digitar senha.
+            </p>
+            <div className="space-y-3">
+              <Input label="E-mail do paciente" type="email" value={updateLinkEmail} onChange={setUpdateLinkEmail} />
+              {updateLinkMessage && (
+                <div className={`rounded-xl border px-3 py-2 text-sm ${updateLinkMessage.startsWith("Não") ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                  {updateLinkMessage}
+                </div>
+              )}
+              <Btn variant="primary" className="w-full justify-center" onClick={handleSendUpdateLink} disabled={sendingUpdateLink}>
+                {sendingUpdateLink ? "Enviando..." : "Enviar link"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
@@ -6588,7 +7149,73 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   const [loading, setLoading] = useState(true);
   const [appointments, setAppointments] = useState<{ id: string; status: string; patientId: string }[]>([]);
   const [recentPayments, setRecentPayments] = useState<{ amount: number; platformFee: number; createdAt: string }[]>([]);
-  const [revenueData, setRevenueData] = useState<{ month: string; bruto: number; liquido: number }[]>([]);
+  const [revenueData, setRevenueData] = useState<{ month: string; bruto: number; liquido: number; liquidoAposDespesas: number }[]>([]);
+
+  const [expenses, setExpenses] = useState<{ id: string; category: string; amount: number; expenseDate: string; notes: string | null }[]>([]);
+  const [loadingExpenses, setLoadingExpenses] = useState(true);
+  const [newExpenseCategory, setNewExpenseCategory] = useState("");
+  const [newExpenseAmount, setNewExpenseAmount] = useState("");
+  const [newExpenseDate, setNewExpenseDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [newExpenseNotes, setNewExpenseNotes] = useState("");
+  const [expenseError, setExpenseError] = useState("");
+  const [savingExpense, setSavingExpense] = useState(false);
+
+  const reloadExpenses = async () => {
+    setLoadingExpenses(true);
+    const { data } = await supabase
+      .from("expenses")
+      .select("id, category, amount, expense_date, notes")
+      .eq("professional_id", currentUser.id)
+      .order("expense_date", { ascending: false });
+    setExpenses(((data ?? []) as any[]).map(e => ({ id: e.id, category: e.category, amount: Number(e.amount), expenseDate: e.expense_date, notes: e.notes })));
+    setLoadingExpenses(false);
+  };
+
+  const handleAddExpense = async () => {
+    setExpenseError("");
+    const amountValue = Number(newExpenseAmount);
+    if (!newExpenseCategory.trim() || !newExpenseAmount || Number.isNaN(amountValue) || amountValue <= 0 || !newExpenseDate) {
+      setExpenseError("Preencha categoria, valor e data.");
+      return;
+    }
+
+    setSavingExpense(true);
+    const { error } = await supabase.from("expenses").insert({
+      professional_id: currentUser.id,
+      category: newExpenseCategory.trim(),
+      amount: amountValue,
+      expense_date: newExpenseDate,
+      notes: newExpenseNotes.trim() || null,
+    });
+    setSavingExpense(false);
+
+    if (error) {
+      reportError(error, { flow: "financial.addExpense" });
+      setExpenseError("Não foi possível salvar a despesa. Tente novamente.");
+      return;
+    }
+
+    setNewExpenseCategory("");
+    setNewExpenseAmount("");
+    setNewExpenseNotes("");
+    await reloadExpenses();
+  };
+
+  const handleDeleteExpense = async (id: string) => {
+    if (!window.confirm("Remover esta despesa?")) return;
+    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    if (error) {
+      reportError(error, { flow: "financial.deleteExpense" });
+      window.alert("Não foi possível remover a despesa. Tente novamente.");
+      return;
+    }
+    setExpenses(prev => prev.filter(e => e.id !== id));
+  };
+
+  useEffect(() => {
+    void reloadExpenses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
 
   useEffect(() => {
     let active = true;
@@ -6617,7 +7244,20 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
       const months = getLastMonths(7);
       const brutoByMonth = bucketAmountsByMonth(payments.map(p => ({ amount: p.amount, dateIso: p.createdAt })), months);
       const liquidoByMonth = bucketAmountsByMonth(payments.map(p => ({ amount: p.amount - p.platformFee, dateIso: p.createdAt })), months);
-      setRevenueData(months.map((m, i) => ({ month: m.label, bruto: brutoByMonth[i].total, liquido: liquidoByMonth[i].total })));
+
+      const { data: expenseRows } = await supabase.from("expenses").select("amount, expense_date").eq("professional_id", currentUser.id);
+      if (!active) return;
+      const expensesByMonth = bucketAmountsByMonth(
+        ((expenseRows ?? []) as any[]).map(e => ({ amount: Number(e.amount), dateIso: e.expense_date })),
+        months
+      );
+
+      setRevenueData(months.map((m, i) => ({
+        month: m.label,
+        bruto: brutoByMonth[i].total,
+        liquido: liquidoByMonth[i].total,
+        liquidoAposDespesas: liquidoByMonth[i].total - expensesByMonth[i].total,
+      })));
 
       setLoading(false);
     })();
@@ -6781,6 +7421,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
             <div className="flex items-center gap-4 text-xs">
               <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-primary" />Bruto</span>
               <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-accent" />Líquido (após comissão)</span>
+              <span className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-amber-500" />Líquido após despesas</span>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={220}>
@@ -6788,13 +7429,18 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
               <defs>
                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#1B7A48" stopOpacity={0.15} /><stop offset="95%" stopColor="#1B7A48" stopOpacity={0} /></linearGradient>
                 <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3B6FA8" stopOpacity={0.15} /><stop offset="95%" stopColor="#3B6FA8" stopOpacity={0} /></linearGradient>
+                <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#E8A33D" stopOpacity={0.15} /><stop offset="95%" stopColor="#E8A33D" stopOpacity={0} /></linearGradient>
               </defs>
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} tickFormatter={v => `R$${(v / 1000).toFixed(1)}k`} />
               <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
-              <Tooltip formatter={(v: number, n: string) => [`R$${v.toLocaleString()}`, n === "bruto" ? "Bruto" : "Líquido"]} contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+              <Tooltip
+                formatter={(v: number, n: string) => [`R$${v.toLocaleString()}`, n === "bruto" ? "Bruto" : n === "liquido" ? "Líquido" : "Líquido após despesas"]}
+                contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }}
+              />
               <Area type="monotone" dataKey="bruto" stroke="#1B7A48" fill="url(#g1)" strokeWidth={2} dot={false} />
               <Area type="monotone" dataKey="liquido" stroke="#3B6FA8" fill="url(#g2)" strokeWidth={2} dot={false} />
+              <Area type="monotone" dataKey="liquidoAposDespesas" stroke="#E8A33D" fill="url(#g3)" strokeWidth={2} dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
@@ -6884,6 +7530,39 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
                 </div>
               );
             })}
+          </div>
+        </Card>
+
+        <Card className="p-6">
+          <h3 className="font-semibold text-foreground font-display mb-1">Despesas</h3>
+          <p className="text-xs text-muted-foreground mb-4">Lance seus custos (aluguel, materiais, assinaturas) para acompanhar o líquido real após despesas.</p>
+          <div className="grid sm:grid-cols-4 gap-3 mb-4">
+            <Input label="Categoria" placeholder="Ex.: Aluguel" value={newExpenseCategory} onChange={setNewExpenseCategory} />
+            <Input label="Valor (R$)" type="number" value={newExpenseAmount} onChange={setNewExpenseAmount} />
+            <Input label="Data" type="date" value={newExpenseDate} onChange={setNewExpenseDate} />
+            <Input label="Observações (opcional)" value={newExpenseNotes} onChange={setNewExpenseNotes} />
+          </div>
+          {expenseError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3">{expenseError}</div>}
+          <Btn variant="outline" size="sm" onClick={handleAddExpense} disabled={savingExpense}><Plus size={14} />{savingExpense ? "Salvando..." : "Lançar despesa"}</Btn>
+
+          {loadingExpenses && <p className="text-sm text-muted-foreground mt-4">Carregando despesas...</p>}
+          {!loadingExpenses && expenses.length === 0 && <p className="text-sm text-muted-foreground mt-4">Nenhuma despesa lançada ainda.</p>}
+          <div className="divide-y divide-border mt-2">
+            {expenses.map(e => (
+              <div key={e.id} className="py-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">{e.category}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(`${e.expenseDate}T00:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+                    {e.notes ? ` · ${e.notes}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  <p className="text-sm font-bold text-foreground font-display">R${e.amount.toFixed(2).replace(".", ",")}</p>
+                  <button type="button" onClick={() => handleDeleteExpense(e.id)} className="text-muted-foreground hover:text-red-600"><Trash2 size={15} /></button>
+                </div>
+              </div>
+            ))}
           </div>
         </Card>
       </div>
@@ -7121,6 +7800,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [logoError, setLogoError] = useState("");
   const [cpf, setCpf] = useState("");
   const [passFeeToPatient, setPassFeeToPatient] = useState(false);
+  const [autoChargeEnabled, setAutoChargeEnabled] = useState(false);
+  const [autoChargeDaysBefore, setAutoChargeDaysBefore] = useState("1");
   const [licenseType, setLicenseType] = useState("CRP");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [bio, setBio] = useState("");
@@ -7176,7 +7857,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cpf, pass_fee_to_patient")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cpf, pass_fee_to_patient, auto_charge_enabled, auto_charge_days_before")
         .eq("id", currentUser.id)
         .maybeSingle();
 
@@ -7199,6 +7880,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setLogoUrl(data.logo_url ?? "");
         setCpf(data.cpf ?? "");
         setPassFeeToPatient(Boolean(data.pass_fee_to_patient));
+        setAutoChargeEnabled(Boolean(data.auto_charge_enabled));
+        setAutoChargeDaysBefore(String(data.auto_charge_days_before ?? 1));
       } else {
         // This account's professional_profiles row was never created (e.g. it predates the
         // signup trigger that now creates it automatically). Without it, saving availability
@@ -7244,6 +7927,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         target_audience: targetAudience,
         cpf: cpf.trim() || null,
         pass_fee_to_patient: passFeeToPatient,
+        auto_charge_enabled: autoChargeEnabled,
+        auto_charge_days_before: Math.max(1, Number(autoChargeDaysBefore) || 1),
       })
       .eq("id", currentUser.id);
 
@@ -7507,6 +8192,30 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
               </span>
             </span>
           </label>
+
+          <label className="flex items-start gap-2 text-sm text-foreground pt-2 border-t border-border cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoChargeEnabled}
+              onChange={e => setAutoChargeEnabled(e.target.checked)}
+              className="mt-0.5 accent-primary"
+            />
+            <span>
+              Cobrança automática via Pix
+              <span className="block text-xs text-muted-foreground mt-0.5">
+                Gera a cobrança Pix sozinha alguns dias antes de cada sessão agendada — sem repetir se o paciente não pagar.
+              </span>
+            </span>
+          </label>
+          {autoChargeEnabled && (
+            <Input
+              label="Dias de antecedência"
+              type="number"
+              value={autoChargeDaysBefore}
+              onChange={setAutoChargeDaysBefore}
+              className="max-w-xs"
+            />
+          )}
 
           <Btn variant="primary" onClick={handleSaveProfile} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Btn>
         </Card>
@@ -7933,6 +8642,8 @@ export default function App() {
   const [selectedProfessionalId, setSelectedProfessionalIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.professionalId ?? null);
   const [bookingDraft, setBookingDraft] = useState<BookingDraft | null>(null);
   const [activeAppointmentId, setActiveAppointmentIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.appointmentId ?? null);
+  const [confirmationToken, setConfirmationToken] = useState<string | null>(() => pathToScreen(window.location.pathname)?.confirmationToken ?? null);
+  const [openPatientSettingsOnLoad, setOpenPatientSettingsOnLoad] = useState(false);
   const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
   // Separate from activeAppointmentId (used by the video screen) so jumping to EHR from Calendar
   // never overwrites an in-progress video call's id if the user switches between the two screens.
@@ -7975,6 +8686,7 @@ export default function App() {
       setScreen(parsed?.screen ?? "landing");
       if (parsed?.professionalId) setSelectedProfessionalId(parsed.professionalId);
       if (parsed?.appointmentId) setActiveAppointmentId(parsed.appointmentId);
+      if (parsed?.confirmationToken) setConfirmationToken(parsed.confirmationToken);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -7988,7 +8700,7 @@ export default function App() {
     }
   }, []);
 
-  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "financial", "admin", "professional-settings"];
+  const noTopNavScreens: Screen[] = ["video", "patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "financial", "admin", "professional-settings", "confirm-attendance"];
   const protectedScreens: Screen[] = ["patient-dashboard", "pro-dashboard", "calendar", "patients", "ehr", "ai-assistant", "video", "checkout", "financial", "library", "admin", "professional-settings"];
   // Screens restricted to specific roles; screens absent from this map are open to any authenticated user (e.g. video, shared by patient + professional).
   const screenRoles: Partial<Record<Screen, UserRole[]>> = {
@@ -8064,7 +8776,15 @@ export default function App() {
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (event === "PASSWORD_RECOVERY") {
-        navigate("reset-password");
+        // "Link de atualização de cadastro" reuses this same recovery mechanism but with its own
+        // redirect path — landing here means a patient clicked that link (not "esqueci minha
+        // senha"), so send them straight to the ficha cadastral instead of the password-reset screen.
+        if (window.location.pathname === "/atualizar-cadastro") {
+          setOpenPatientSettingsOnLoad(true);
+          navigate("patient-dashboard");
+        } else {
+          navigate("reset-password");
+        }
       }
       void loadAppUser(nextSession);
     });
@@ -8176,7 +8896,16 @@ export default function App() {
       {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} currentUser={currentUser} />}
       {screen === "login" && <LoginPage onNavigate={navigate} initialInfo={suspendedNotice} />}
       {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
-      {screen === "patient-dashboard" && currentUser && <PatientDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
+      {screen === "confirm-attendance" && <ConfirmAttendanceScreen token={confirmationToken} onNavigate={navigate} />}
+      {screen === "patient-dashboard" && currentUser && (
+        <PatientDashboard
+          onNavigate={navigate}
+          currentUser={currentUser}
+          onSignOut={handleSignOut}
+          onEnterVideo={setActiveAppointmentId}
+          initialTab={openPatientSettingsOnLoad ? "configuracoes" : undefined}
+        />
+      )}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
       {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr} />}
       {screen === "patients" && currentUser && <PatientsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onOpenEhr={onOpenEhr} />}

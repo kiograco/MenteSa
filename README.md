@@ -767,6 +767,65 @@
   precisa do mesmo par de segredos no Vault que o lembrete de consulta já usa (ver seção acima),
   só que com nomes próprios: `birthday_function_url`/`birthday_cron_secret`.
 
+  ### Fase 2 do roadmap de concorrência (Agenda e Financeiro avançados)
+
+  Dez itens de agenda/financeiro mais avançados, em cima da base da Fase 1:
+
+  - **Confirmação de presença**: `appointments.confirmed_at`/`confirmation_token` (migration
+    `20260717000000`) — o job `send-appointment-reminder` manda, junto do lembrete de ~24h, uma
+    segunda mensagem WhatsApp (`WHATSAPP_CONFIRMATION_TEMPLATE_NAME`,
+    `sendConfirmationRequestWhatsApp`) com um link público `{APP_BASE_URL}/confirmar/{token}`. A
+    rota é servida por `ConfirmAttendanceScreen` (sem login) + a nova Edge Function pública
+    `confirm-attendance` (`--no-verify-jwt`, token é o único credencial). A Agenda mostra um badge
+    "Não confirmada" (âmbar) quando a consulta está a menos de 24h e ainda não foi confirmada.
+  - **Bloqueio de horários**: tabela `professional_time_blocks` (migration `20260717000001`,
+    leitura pública como `professional_availability`, escrita só do dono) — botão "Bloquear
+    horário" na Agenda cria um intervalo (com motivo opcional) que some da lista de horários
+    disponíveis (`generateSlotsForDay`/`getUpcomingAvailableDays` em `src/lib/scheduling.ts`
+    ganharam um parâmetro `blocks`). Se o intervalo tiver consultas já marcadas, o profissional vê a
+    lista e precisa confirmar explicitamente "cancelar e bloquear" — nunca cancela sozinho; cada
+    consulta cancelada dispara `notifyWaitlistMatch`, igual ao cancelamento manual.
+  - **Sessões recorrentes**: checkbox "Repetir semanalmente" (2 a 12 sessões) no modal "Nova
+    consulta" da Agenda — gera as N datas, checa conflito em cada uma (`.in("scheduled_at", ...)`) e
+    mostra uma tela de revisão antes de criar; datas em conflito são puladas automaticamente. Cada
+    linha criada é uma consulta independente (sem tabela de "série").
+  - **Preço customizado por consulta**: campo "Valor (R$)" editável no modal "Nova consulta" e no
+    cadastro de paciente novo, pré-preenchido com `session_price` mas livre pra mudar por consulta —
+    `appointments.price` já era um valor livre por linha, não precisou de migration.
+  - **Gestão de despesas**: tabela `expenses` (migration `20260717000002`, só do dono) — novo card
+    em `/profissional/financeiro` pra lançar categoria/valor/data/observações, e o gráfico de receita
+    ganhou uma terceira série "líquido após despesas" (líquido do mês menos despesas do mês).
+  - **Cobrança automática via Pix**: `professional_profiles.auto_charge_enabled`/`auto_charge_days_before`
+    (migration `20260717000003`) configurável em "Configurações → Faturamento e recibos". A lógica de
+    fee/reuso de QR/insert em `payments` que já existia em `create-pix-charge` foi extraída pra
+    `supabase/functions/_shared/pixCharge.ts` (`createPixChargeForAppointment`), reaproveitada tanto
+    pelo endpoint HTTP quanto pela nova Edge Function `auto-charge-sessions` (cron diário, migration
+    `20260717000004`, mesmo esquema pg_cron/pg_net/Vault dos jobs anteriores). Sem retry: uma
+    consulta que já tem pagamento `pending`/`paid` é pulada, então só dispara uma vez.
+  - **Link de atualização de cadastro**: sem tabela nem Edge Function nova — botão "Enviar link de
+    atualização" na aba "Cadastro" do prontuário chama `supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: ".../atualizar-cadastro" })` (mesma primitiva do "Esqueci minha senha"). O evento
+    `PASSWORD_RECOVERY` reconhece esse caminho específico e manda o paciente direto pra aba
+    "Configurações" do dashboard dele (ficha cadastral) em vez da tela de trocar senha.
+  - **Importação de pacientes via CSV**: botão "Importar CSV" em `/profissional/pacientes`, ao lado
+    do "Exportar CSV". `src/lib/csv.ts` ganhou `parseCsv` (inverso de `toCsv`), com validação de
+    linha (nome/e-mail obrigatórios, e-mail único no arquivo) antes de importar. Cada linha válida
+    chama a mesma Edge Function `create-patient-account` uma vez, com uma data de 1ª consulta padrão
+    (7 dias à frente, 09:00) — disclosed na tela antes de confirmar, já que uma planilha de
+    importação não tem hora de sessão.
+  - **Convite de paciente por e-mail**: `create-patient-account` trocou `auth.admin.createUser` com
+    senha padrão fixa por `auth.admin.inviteUserByEmail` (nativo do Supabase, e-mail de convite via
+    `RESEND_API_KEY` já configurado) — o paciente define a própria senha ao clicar no link
+    (`{APP_BASE_URL}/definir-senha`, que reaproveita a tela de "Definir nova senha" já existente).
+    Isso substitui o comportamento de senha padrão da Fase 1.
+
+  Para ativar os itens com Edge Function nova/modificada: `supabase functions deploy
+  confirm-attendance --no-verify-jwt`, `supabase functions deploy auto-charge-sessions
+  --no-verify-jwt`, e reaplicar `supabase functions deploy send-appointment-reminder --no-verify-jwt`
+  / `create-pix-charge` / `create-patient-account` (mudaram de comportamento, mesmos flags de antes).
+  A cobrança automática precisa do mesmo esquema de Vault dos jobs anteriores, com nomes próprios:
+  `auto_charge_function_url`/`auto_charge_cron_secret`.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
@@ -811,6 +870,10 @@
   | *(nenhuma chave nova)* | `ai-improve-text` reaproveita `GEMINI_API_KEY`/`GEMINI_MODEL` | Botão "Melhorar com IA" nos campos SOAP e no gerador de documentos |
   | `WHATSAPP_BIRTHDAY_TEMPLATE_NAME` | Secret da função `send-birthday-greeting` (reaproveita `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN`) | Template aprovado no Meta Business Manager pro parabéns de aniversário — precisa ser diferente do template de lembrete de consulta |
   | `CRON_SECRET` (já existente) + segredos `birthday_function_url`/`birthday_cron_secret` no Vault | Mesmo secret da função, mais Vault | Autentica o cron diário de aniversário, mesmo esquema do lembrete de consulta |
+  | `WHATSAPP_CONFIRMATION_TEMPLATE_NAME` | Secret da função `send-appointment-reminder` (reaproveita `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN`) | Template aprovado no Meta Business Manager pro pedido de confirmação de presença — precisa ser diferente dos templates de lembrete e aniversário |
+  | `APP_BASE_URL` (já existente) | Secret de `send-appointment-reminder` e `create-patient-account` | Monta o link de confirmação de presença (`/confirmar/:token`) e o redirect do convite de paciente (`/definir-senha`) |
+  | *(nenhuma chave nova)* | `create-pix-charge` e `auto-charge-sessions` reaproveitam `MERCADOPAGO_ACCESS_TOKEN` via `_shared/pixCharge.ts` | Cobrança avulsa e cobrança automática via Pix |
+  | `CRON_SECRET` (já existente) + segredos `auto_charge_function_url`/`auto_charge_cron_secret` no Vault | Mesmo secret das funções, mais Vault | Autentica o cron diário de cobrança automática, mesmo esquema dos jobs anteriores |
 
   ## Monitoramento de erros
 

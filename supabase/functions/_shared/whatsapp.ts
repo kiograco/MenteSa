@@ -86,3 +86,54 @@ export async function sendBirthdayGreetingWhatsApp(phone: string, patientName: s
     return false;
   }
 }
+
+/** Same Cloud API call, its own pre-approved template (WHATSAPP_CONFIRMATION_TEMPLATE_NAME) with
+ *  the confirmation link as a 4th body parameter — kept as a plain text parameter (not a template
+ *  URL-button component) to match the same simple body-only shape as the other two templates here,
+ *  rather than dealing with Meta's separate dynamic-URL-button parameter syntax. */
+export async function sendConfirmationRequestWhatsApp(
+  phone: string,
+  patientName: string,
+  professionalName: string,
+  scheduledLabel: string,
+  confirmationUrl: string
+): Promise<boolean> {
+  const phoneNumberId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
+  const accessToken = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
+  const templateName = Deno.env.get("WHATSAPP_CONFIRMATION_TEMPLATE_NAME");
+  if (!phoneNumberId || !accessToken || !templateName) return false;
+
+  const digitsOnly = phone.replace(/\D/g, "");
+  if (!digitsOnly) return false;
+  const to = digitsOnly.startsWith("55") ? digitsOnly : `55${digitsOnly}`;
+
+  try {
+    const response = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: "pt_BR" },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: patientName },
+                { type: "text", text: professionalName },
+                { type: "text", text: scheduledLabel },
+                { type: "text", text: confirmationUrl },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}

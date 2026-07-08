@@ -2,11 +2,12 @@ export type Screen =
   | "landing" | "directory" | "profile" | "patient-dashboard"
   | "pro-dashboard" | "calendar" | "patients" | "ehr" | "ai-assistant"
   | "video" | "pricing" | "checkout" | "financial" | "library" | "admin" | "login"
-  | "reset-password" | "professional-settings";
+  | "reset-password" | "professional-settings" | "confirm-attendance";
 
 export type RouteParams = {
   professionalId?: string | null;
   appointmentId?: string | null;
+  confirmationToken?: string | null;
 };
 
 const SCREEN_TO_PATH: Record<Screen, string> = {
@@ -28,6 +29,7 @@ const SCREEN_TO_PATH: Record<Screen, string> = {
   pricing: "/precos",
   checkout: "/checkout",
   admin: "/admin",
+  "confirm-attendance": "/confirmar",
 };
 
 /** Builds the URL path for a screen, embedding an id where the screen needs one to be restorable
@@ -36,15 +38,21 @@ export function screenToPath(screen: Screen, params: RouteParams = {}): string {
   const base = SCREEN_TO_PATH[screen];
   if (screen === "profile" && params.professionalId) return `${base}/${params.professionalId}`;
   if (screen === "video" && params.appointmentId) return `${base}/${params.appointmentId}`;
+  if (screen === "confirm-attendance" && params.confirmationToken) return `${base}/${params.confirmationToken}`;
   return base;
 }
 
 /** Inverse of screenToPath. Returns null for an unrecognized path (caller should fall back to "landing"). */
-export function pathToScreen(pathname: string): { screen: Screen; professionalId?: string; appointmentId?: string } | null {
+export function pathToScreen(pathname: string): { screen: Screen; professionalId?: string; appointmentId?: string; confirmationToken?: string } | null {
   const segments = pathname.split("/").filter(Boolean);
 
+  // "Definir senha" is where a patient invite email (create-patient-account) lands — it reuses the
+  // "esqueci minha senha" screen since both just need an authenticated session to call
+  // supabase.auth.updateUser({ password }); the only difference is how that session was created.
+  if (segments[0] === "definir-senha") return { screen: "reset-password" };
   if (segments[0] === "perfil") return { screen: "profile", professionalId: segments[1] };
   if (segments[0] === "video") return { screen: "video", appointmentId: segments[1] };
+  if (segments[0] === "confirmar") return { screen: "confirm-attendance", confirmationToken: segments[1] };
   if (segments[0] === "profissional" && segments[1] === "agenda") return { screen: "calendar" };
   if (segments[0] === "profissional" && segments[1] === "pacientes") return { screen: "patients" };
   if (segments[0] === "profissional" && segments[1] === "prontuarios") return { screen: "ehr" };

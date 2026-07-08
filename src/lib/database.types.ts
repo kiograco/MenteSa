@@ -51,6 +51,8 @@ export interface Database {
           logo_url: string | null;
           cpf: string | null;
           pass_fee_to_patient: boolean;
+          auto_charge_enabled: boolean;
+          auto_charge_days_before: number;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
@@ -77,6 +79,42 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["professional_availability"]["Row"]>;
         Relationships: [];
       };
+      professional_time_blocks: {
+        Row: {
+          id: string;
+          professional_id: string;
+          start_at: string;
+          end_at: string;
+          reason: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["professional_time_blocks"]["Row"]> & {
+          professional_id: string;
+          start_at: string;
+          end_at: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["professional_time_blocks"]["Row"]>;
+        Relationships: [];
+      };
+      expenses: {
+        Row: {
+          id: string;
+          professional_id: string;
+          category: string;
+          amount: number;
+          expense_date: string;
+          notes: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["expenses"]["Row"]> & {
+          professional_id: string;
+          category: string;
+          amount: number;
+          expense_date: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["expenses"]["Row"]>;
+        Relationships: [];
+      };
       appointments: {
         Row: {
           id: string;
@@ -90,6 +128,8 @@ export interface Database {
           google_event_id: string | null;
           whatsapp_reminder_sent_at: string | null;
           previous_scheduled_at: string | null;
+          confirmed_at: string | null;
+          confirmation_token: string;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["appointments"]["Row"]> & {

@@ -5,9 +5,9 @@
 // Deploy: supabase functions deploy send-appointment-reminder --no-verify-jwt
 // (--no-verify-jwt is required: pg_cron/pg_net calls this without a Supabase auth token, only the
 // x-cron-secret header checked above)
-// Secrets: supabase secrets set CRON_SECRET=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_ACCESS_TOKEN=... WHATSAPP_TEMPLATE_NAME=...
+// Secrets: supabase secrets set CRON_SECRET=... WHATSAPP_PHONE_NUMBER_ID=... WHATSAPP_ACCESS_TOKEN=... WHATSAPP_TEMPLATE_NAME=... WHATSAPP_CONFIRMATION_TEMPLATE_NAME=... APP_BASE_URL=...
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { sendAppointmentReminderWhatsApp } from "../_shared/whatsapp.ts";
+import { sendAppointmentReminderWhatsApp, sendConfirmationRequestWhatsApp } from "../_shared/whatsapp.ts";
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -27,9 +27,11 @@ Deno.serve(async req => {
     const windowStart = new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString();
     const windowEnd = new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString();
 
+    const appBaseUrl = Deno.env.get("APP_BASE_URL") ?? "";
+
     const { data: appointments, error } = await adminClient
       .from("appointments")
-      .select("id, scheduled_at, patient_id, profiles(full_name, phone), professional_profiles(profiles(full_name))")
+      .select("id, scheduled_at, patient_id, confirmed_at, confirmation_token, profiles(full_name, phone), professional_profiles(profiles(full_name))")
       .eq("status", "scheduled")
       .is("whatsapp_reminder_sent_at", null)
       .gte("scheduled_at", windowStart)
@@ -60,6 +62,13 @@ Deno.serve(async req => {
       if (ok) {
         await adminClient.from("appointments").update({ whatsapp_reminder_sent_at: new Date().toISOString() }).eq("id", appt.id);
         sent += 1;
+      }
+
+      // Best-effort, sent alongside the reminder (not gated on the reminder having succeeded) —
+      // only if not already confirmed and the app has a base URL to build the link with.
+      if (!appt.confirmed_at && appBaseUrl) {
+        const confirmationUrl = `${appBaseUrl}/confirmar/${appt.confirmation_token}`;
+        await sendConfirmationRequestWhatsApp(phone, patientName, professionalName, scheduledLabel, confirmationUrl).catch(() => false);
       }
     }
 

@@ -10,15 +10,34 @@ export type GeneratedSlot = {
   taken: boolean;
 };
 
+export type TimeBlock = {
+  startAt: string;
+  endAt: string;
+};
+
+/** True when a block covers the entire calendar day (used to drop the day from the picker
+ *  outright, e.g. a vacation range), as opposed to a partial-day block that only takes out a
+ *  few slots (handled by generateSlotsForDay instead). */
+function isFullyBlockedDay(day: Date, blocks: TimeBlock[]): boolean {
+  const dayStart = new Date(day);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+
+  return blocks.some(b => new Date(b.startAt) <= dayStart && new Date(b.endAt) >= dayEnd);
+}
+
 /**
  * Returns the next calendar days (within `horizonDays`) that match a weekday the
- * professional has recurring availability for, capped at `maxDays`.
+ * professional has recurring availability for, capped at `maxDays`. Days fully covered by a
+ * time block (e.g. a vacation range) are excluded.
  */
 export function getUpcomingAvailableDays(
   availability: AvailabilitySlot[],
   now: Date = new Date(),
   horizonDays = 14,
-  maxDays = 5
+  maxDays = 5,
+  blocks: TimeBlock[] = []
 ): Date[] {
   const weekdays = new Set(availability.map(a => a.weekday));
   const days: Date[] = [];
@@ -27,7 +46,7 @@ export function getUpcomingAvailableDays(
     const d = new Date(now);
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() + i);
-    if (weekdays.has(d.getDay())) days.push(d);
+    if (weekdays.has(d.getDay()) && !isFullyBlockedDay(d, blocks)) days.push(d);
   }
 
   return days;
@@ -35,13 +54,15 @@ export function getUpcomingAvailableDays(
 
 /**
  * Generates 50-minute session slots for a given day from the professional's recurring
- * availability windows, marking slots already present in `bookedIsoTimes` as taken.
+ * availability windows, marking slots already present in `bookedIsoTimes` — or falling inside a
+ * time block — as taken.
  */
 export function generateSlotsForDay(
   availability: AvailabilitySlot[],
   day: Date,
   bookedIsoTimes: Set<string>,
-  sessionMinutes = 50
+  sessionMinutes = 50,
+  blocks: TimeBlock[] = []
 ): GeneratedSlot[] {
   const dayAvailability = availability.filter(a => a.weekday === day.getDay());
   const slots: GeneratedSlot[] = [];
@@ -56,10 +77,11 @@ export function generateSlotsForDay(
       const slotDate = new Date(day);
       slotDate.setHours(Math.floor(cursorMinutes / 60), cursorMinutes % 60, 0, 0);
       const iso = slotDate.toISOString();
+      const blocked = blocks.some(b => slotDate >= new Date(b.startAt) && slotDate < new Date(b.endAt));
       slots.push({
         time: `${String(Math.floor(cursorMinutes / 60)).padStart(2, "0")}:${String(cursorMinutes % 60).padStart(2, "0")}`,
         iso,
-        taken: bookedIsoTimes.has(iso),
+        taken: bookedIsoTimes.has(iso) || blocked,
       });
       cursorMinutes += sessionMinutes;
     }
