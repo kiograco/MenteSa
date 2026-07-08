@@ -92,6 +92,18 @@ export async function createPixCharge(appointmentId: string): Promise<PixChargeR
   return { ok: true, qrCode: data.qrCode, qrCodeBase64: data.qrCodeBase64 ?? null, expiresAt: data.expiresAt ?? null };
 }
 
+/** Calls mark-appointment-paid — records a payment that happened outside the platform (cash,
+ *  transfer). Same explicit-action-surfaces-errors reasoning as createPixCharge. */
+export async function markAppointmentPaid(appointmentId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data, error } = await supabase.functions.invoke<{ ok?: boolean }>("mark-appointment-paid", { body: { appointmentId } });
+
+  if (error || !data?.ok) {
+    return { ok: false, error: (await extractFunctionErrorMessage(error)) ?? "Não foi possível marcar como pago." };
+  }
+
+  return { ok: true };
+}
+
 export type NotaFiscalResult = { status: "unavailable" | "pending" | "issued" | "failed"; message: string; pdfUrl?: string | null };
 
 export async function requestNotaFiscal(paymentId: string): Promise<NotaFiscalResult> {

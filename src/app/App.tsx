@@ -35,7 +35,7 @@ import {
   type PatientDocument,
 } from "../lib/patientDocuments";
 import {
-  listAppointmentsWithPaymentStatus, createPixCharge, requestNotaFiscal, getPayment,
+  listAppointmentsWithPaymentStatus, createPixCharge, requestNotaFiscal, getPayment, markAppointmentPaid,
   type AppointmentWithPaymentStatus,
 } from "../lib/payments";
 import { generateReceiptPdf, missingReceitaSaudeFields } from "../lib/receipt";
@@ -6448,6 +6448,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [liveKitAccess, setLiveKitAccess] = useState<LiveKitRoomAccess | null>(null);
+  const [mockReason, setMockReason] = useState("");
 
   const exitScreen: Screen = currentUser.role === "professional" ? "pro-dashboard" : "patient-dashboard";
 
@@ -6482,9 +6483,13 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
         : item.professional_profiles?.profiles?.full_name ?? "Profissional";
 
       // Tries LiveKit first (real video); falls back to the mock room below if it's not configured.
-      const access = await getLiveKitRoomAccess(appointmentId);
+      const liveKitResult = await getLiveKitRoomAccess(appointmentId);
       if (!active) return;
-      setLiveKitAccess(access);
+      if (liveKitResult.ok) {
+        setLiveKitAccess(liveKitResult.access);
+      } else {
+        setMockReason(liveKitResult.reason);
+      }
 
       let { data: room } = await supabase
         .from("video_rooms")
@@ -6492,7 +6497,7 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
         .eq("appointment_id", appointmentId)
         .maybeSingle();
 
-      if (!room && !access) {
+      if (!room && !liveKitResult.ok) {
         const roomId = `room-${appointmentId}`;
         const { data: createdRoom } = await supabase
           .from("video_rooms")
@@ -6558,6 +6563,11 @@ function VideoScreen({ onNavigate, currentUser, appointmentId }: {
 
   return (
     <div className="h-screen bg-[#0D1117] flex flex-col overflow-hidden">
+      {mockReason && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-xs px-6 py-2">
+          Sala de demonstração (não é a videochamada real): {mockReason}
+        </div>
+      )}
       {/* Top bar */}
       <div className="flex items-center justify-between px-6 py-3 bg-[#161B22] border-b border-white/10">
         <div className="flex items-center gap-3">
@@ -7327,6 +7337,19 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
     setLinkModal(url);
   };
 
+  const handleMarkPaid = async (session: AppointmentWithPaymentStatus) => {
+    if (!window.confirm(`Confirma que recebeu R$${session.price.toFixed(2).replace(".", ",")} por essa consulta fora da plataforma (dinheiro, transferência etc.)? Isso marca a consulta como paga e libera a videochamada real.`)) return;
+    setSessionsError("");
+    setBusyAppointmentId(session.appointmentId);
+    const result = await markAppointmentPaid(session.appointmentId);
+    setBusyAppointmentId(null);
+    if (!result.ok) {
+      setSessionsError(result.error);
+      return;
+    }
+    await loadSessions();
+  };
+
   const handleIssueReceipt = async (session: AppointmentWithPaymentStatus) => {
     if (!session.paymentId) return;
     setSessionsError("");
@@ -7513,6 +7536,9 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
                         </Btn>
                         <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleGenerateLink(s.appointmentId)}>
                           <Link2 size={13} />Gerar link
+                        </Btn>
+                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleMarkPaid(s)}>
+                          <Check size={13} />Marcar como pago
                         </Btn>
                       </>
                     )}
