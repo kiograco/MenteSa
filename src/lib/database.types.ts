@@ -48,6 +48,9 @@ export interface Database {
           created_at: string;
           epsi_declared_at: string | null;
           target_audience: string[];
+          logo_url: string | null;
+          cpf: string | null;
+          pass_fee_to_patient: boolean;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
@@ -86,6 +89,7 @@ export interface Database {
           price: number;
           google_event_id: string | null;
           whatsapp_reminder_sent_at: string | null;
+          previous_scheduled_at: string | null;
           created_at: string;
         };
         Insert: Partial<Database["public"]["Tables"]["appointments"]["Row"]> & {
@@ -313,6 +317,7 @@ export interface Database {
           insurance_card_number: string | null;
           clinical_history: string | null;
           whatsapp_reminders_enabled: boolean;
+          last_birthday_greeted_year: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -338,6 +343,23 @@ export interface Database {
           file_name: string;
         };
         Update: Partial<Database["public"]["Tables"]["patient_documents"]["Row"]>;
+        Relationships: [];
+      };
+      patient_tags: {
+        Row: {
+          id: string;
+          professional_id: string;
+          patient_id: string;
+          label: string;
+          color: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["patient_tags"]["Row"]> & {
+          professional_id: string;
+          patient_id: string;
+          label: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["patient_tags"]["Row"]>;
         Relationships: [];
       };
       nota_fiscal_requests: {

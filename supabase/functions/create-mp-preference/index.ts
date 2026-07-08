@@ -11,6 +11,8 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+const PLATFORM_FEE_RATE = 0.1;
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...CORS_HEADERS } });
 }
@@ -43,7 +45,7 @@ Deno.serve(async req => {
     // patient/professional/admin — if the row comes back, the caller is allowed to pay for it.
     const { data: appointment, error: apptError } = await supabase
       .from("appointments")
-      .select("id, patient_id, price, professional_profiles(profiles(full_name))")
+      .select("id, patient_id, price, professional_profiles(pass_fee_to_patient, profiles(full_name))")
       .eq("id", appointmentId)
       .maybeSingle();
 
@@ -53,6 +55,13 @@ Deno.serve(async req => {
     }
 
     const professionalName = (appointment as any).professional_profiles?.profiles?.full_name ?? "profissional";
+    // When the professional opts to pass the platform commission on to the patient, the surcharge
+    // is added here (what MP actually charges); mercadopago-webhook computes payments.platform_fee
+    // from the appointment's base price, not from this charged total, so what the professional
+    // nets is the same either way — only who pays the commission changes.
+    const passFeeToPatient = Boolean((appointment as any).professional_profiles?.pass_fee_to_patient);
+    const basePrice = Number(appointment.price);
+    const chargedAmount = passFeeToPatient ? Number((basePrice * (1 + PLATFORM_FEE_RATE)).toFixed(2)) : basePrice;
 
     const preferenceResponse = await fetch("https://api.mercadopago.com/checkout/preferences", {
       method: "POST",
@@ -60,10 +69,12 @@ Deno.serve(async req => {
       body: JSON.stringify({
         items: [
           {
-            title: `Consulta com ${professionalName} — MindCare`,
+            title: passFeeToPatient
+              ? `Consulta com ${professionalName} — MindCare (inclui taxa da plataforma)`
+              : `Consulta com ${professionalName} — MindCare`,
             quantity: 1,
             currency_id: "BRL",
-            unit_price: Number(appointment.price),
+            unit_price: chargedAmount,
           },
         ],
         external_reference: appointmentId,

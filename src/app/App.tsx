@@ -15,8 +15,14 @@ import { hashDocumentText, signConsent } from "../lib/consent";
 import { signSessionNote } from "../lib/sessionSignature";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
+import { uploadLogo } from "../lib/logo";
+import {
+  listTagsForProfessional, createPatientTag, deletePatientTag,
+  PATIENT_TAG_COLORS, PATIENT_TAG_COLOR_CLASSES,
+  type PatientTag, type PatientTagColor,
+} from "../lib/patientTags";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
-import { getAISessionSummary, type AISessionSummary } from "../lib/ai";
+import { getAISessionSummary, improveTextWithAI, type AISessionSummary } from "../lib/ai";
 import { PHQ9_QUESTIONS, GAD7_QUESTIONS, ANSWER_OPTIONS, scoreInstrument, instrumentLabel, type Instrument } from "../lib/assessments";
 import {
   uploadPatientMaterial, listMaterialsForProfessional, deletePatientMaterial, getMaterialSignedUrl,
@@ -32,7 +38,7 @@ import {
   listAppointmentsWithPaymentStatus, createPixCharge, requestNotaFiscal, getPayment,
   type AppointmentWithPaymentStatus,
 } from "../lib/payments";
-import { generateReceiptPdf } from "../lib/receipt";
+import { generateReceiptPdf, missingReceitaSaudeFields } from "../lib/receipt";
 import {
   listEffectiveTemplates, saveTemplateCustomization, fillTemplate, buildAutoFillData,
   DOCUMENT_TEMPLATE_TYPES, DOCUMENT_TEMPLATE_LABELS, TEMPLATE_PLACEHOLDERS,
@@ -2690,6 +2696,15 @@ type ProAppointment = {
 const STATUS_COLORS: Record<string, string> = { scheduled: "#1B7A48", completed: "#5B8DEF", cancelled: "#D9E4DE", no_show: "#E8A33D" };
 const STATUS_LABELS: Record<string, string> = { scheduled: "Agendadas", completed: "Concluídas", cancelled: "Canceladas", no_show: "Faltas" };
 
+/** Shared by FinancialDashboard's "Sessões" list and EHRScreen's per-patient "Financeiro do
+ *  paciente" statement — both render the same AppointmentWithPaymentStatus rows. */
+const PAYMENT_STATUS_BADGE: Record<AppointmentWithPaymentStatus["paymentStatus"], { label: string; variant: "success" | "warning" | "outline" | "danger" }> = {
+  paid: { label: "Pago", variant: "success" },
+  pending: { label: "Pendente", variant: "warning" },
+  refunded: { label: "Estornado", variant: "danger" },
+  uncharged: { label: "Sem cobrança", variant: "outline" },
+};
+
 function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("pro-dashboard") },
@@ -3051,6 +3066,71 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   };
 
   const [markingNoShow, setMarkingNoShow] = useState(false);
+
+  const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleTime, setRescheduleTime] = useState("");
+  const [rescheduleError, setRescheduleError] = useState("");
+  const [rescheduling, setRescheduling] = useState(false);
+
+  const openRescheduleModal = () => {
+    if (!selectedAppointment) return;
+    const current = new Date(selectedAppointment.scheduledAt);
+    setRescheduleDate(current.toISOString().slice(0, 10));
+    setRescheduleTime(current.toTimeString().slice(0, 5));
+    setRescheduleError("");
+    setShowRescheduleModal(true);
+  };
+
+  const handleRescheduleAppointment = async () => {
+    if (!selectedAppointment) return;
+    setRescheduleError("");
+
+    if (!rescheduleDate || !rescheduleTime) {
+      setRescheduleError("Selecione data e horário.");
+      return;
+    }
+
+    const newScheduledAt = new Date(`${rescheduleDate}T${rescheduleTime}:00`);
+    if (newScheduledAt.getTime() < Date.now()) {
+      setRescheduleError("Escolha uma data e horário no futuro.");
+      return;
+    }
+
+    setRescheduling(true);
+
+    const { data: conflict } = await supabase
+      .from("appointments")
+      .select("id")
+      .eq("professional_id", currentUser.id)
+      .eq("scheduled_at", newScheduledAt.toISOString())
+      .eq("status", "scheduled")
+      .neq("id", selectedAppointment.id)
+      .maybeSingle();
+
+    if (conflict) {
+      setRescheduling(false);
+      setRescheduleError("Você já tem uma consulta marcada nesse horário.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("appointments")
+      .update({ scheduled_at: newScheduledAt.toISOString(), previous_scheduled_at: selectedAppointment.scheduledAt })
+      .eq("id", selectedAppointment.id);
+
+    setRescheduling(false);
+
+    if (error) {
+      reportError(error, { flow: "calendarScreen.rescheduleAppointment" });
+      setRescheduleError("Não foi possível reagendar. Tente novamente.");
+      return;
+    }
+
+    setShowRescheduleModal(false);
+    setSelectedAppointment(null);
+    await reloadAppointments();
+  };
 
   const handleMarkNoShow = async () => {
     if (!selectedAppointment) return;
@@ -3429,10 +3509,35 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
               )}
               {selectedAppointment.status === "scheduled" && (
                 <>
+                  <Btn variant="outline" onClick={openRescheduleModal}><RefreshCw size={14} />Reagendar</Btn>
                   <Btn variant="outline" disabled={markingNoShow} onClick={handleMarkNoShow}>{markingNoShow ? "Marcando..." : "Marcar falta"}</Btn>
                   <Btn variant="danger" disabled={cancelling} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRescheduleModal && selectedAppointment && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowRescheduleModal(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">Reagendar consulta</h2>
+              <button type="button" onClick={() => setShowRescheduleModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              {selectedAppointment.patientName} — o horário muda, mas notas e histórico da consulta continuam os mesmos.
+            </p>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Nova data" type="date" value={rescheduleDate} onChange={setRescheduleDate} />
+                <Input label="Novo horário" type="time" value={rescheduleTime} onChange={setRescheduleTime} />
+              </div>
+              {rescheduleError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{rescheduleError}</div>}
+              <Btn variant="primary" className="w-full justify-center" onClick={handleRescheduleAppointment} disabled={rescheduling}>
+                {rescheduling ? "Reagendando..." : "Confirmar novo horário"}
+              </Btn>
             </div>
           </div>
         </div>
@@ -3696,6 +3801,8 @@ function PatientsScreen({
 
   const [patients, setPatients] = useState<EhrPatient[]>([]);
   const [loadingPatients, setLoadingPatients] = useState(true);
+  const [tags, setTags] = useState<PatientTag[]>([]);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   const loadPatients = async () => {
     setLoadingPatients(true);
@@ -3716,8 +3823,23 @@ function PatientsScreen({
 
   useEffect(() => {
     void loadPatients();
+    listTagsForProfessional(currentUser.id).then(setTags).catch(error => reportError(error, { flow: "patients.loadTags" }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id]);
+
+  const tagsByPatient = tags.reduce<Record<string, PatientTag[]>>((acc, tag) => {
+    (acc[tag.patientId] ??= []).push(tag);
+    return acc;
+  }, {});
+  const allTagLabels = Array.from(new Set(tags.map(t => t.label))).sort();
+  const filteredPatients = tagFilter ? patients.filter(p => (tagsByPatient[p.id] ?? []).some(t => t.label === tagFilter)) : patients;
+
+  const handleExportCsv = () => {
+    downloadCsv("meus-pacientes.csv", [
+      ["Nome", "Sessões", "Tags"],
+      ...filteredPatients.map(p => [p.name, String(p.sessionsCount), (tagsByPatient[p.id] ?? []).map(t => t.label).join("; ")]),
+    ]);
+  };
 
   const [showNewPatientModal, setShowNewPatientModal] = useState(false);
   const [newPatientName, setNewPatientName] = useState("");
@@ -3784,13 +3906,35 @@ function PatientsScreen({
 
   return (
     <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
-      <div className="flex justify-end mb-3">
-        <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        {allTagLabels.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setTagFilter(null)}
+              className={`px-2 py-0.5 rounded-full text-xs border ${!tagFilter ? "border-primary text-primary bg-secondary" : "border-border text-muted-foreground"}`}
+            >
+              Todos
+            </button>
+            {allTagLabels.map(label => (
+              <button
+                key={label}
+                onClick={() => setTagFilter(prev => (prev === label ? null : label))}
+                className={`px-2 py-0.5 rounded-full text-xs border ${tagFilter === label ? "border-primary text-primary bg-secondary" : "border-border text-muted-foreground"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : <div />}
+        <div className="flex gap-2">
+          <Btn variant="ghost" size="sm" onClick={handleExportCsv} disabled={filteredPatients.length === 0}><Download size={14} />Exportar CSV</Btn>
+          <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+        </div>
       </div>
       <MessagingPanel
         currentUser={currentUser}
         role="professional"
-        counterparts={patients}
+        counterparts={filteredPatients}
         loadingCounterparts={loadingPatients}
         onOpenRecord={(patientId) => { onOpenEhr(patientId, ""); onNavigate("ehr"); }}
       />
@@ -3913,6 +4057,54 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [loadingPatients, setLoadingPatients] = useState(true);
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
 
+  const [tags, setTags] = useState<PatientTag[]>([]);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [newTagLabel, setNewTagLabel] = useState("");
+  const [newTagColor, setNewTagColor] = useState<PatientTagColor>("green");
+  const [savingTag, setSavingTag] = useState(false);
+
+  const loadTags = async () => {
+    try {
+      setTags(await listTagsForProfessional(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "ehr.loadTags" });
+    }
+  };
+
+  useEffect(() => {
+    void loadTags();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const tagsByPatient = tags.reduce<Record<string, PatientTag[]>>((acc, tag) => {
+    (acc[tag.patientId] ??= []).push(tag);
+    return acc;
+  }, {});
+  const allTagLabels = Array.from(new Set(tags.map(t => t.label))).sort();
+
+  const handleAddTag = async () => {
+    if (!selectedPatientId || !newTagLabel.trim()) return;
+    setSavingTag(true);
+    try {
+      await createPatientTag(currentUser.id, selectedPatientId, newTagLabel.trim(), newTagColor);
+      setNewTagLabel("");
+      await loadTags();
+    } catch (error) {
+      reportError(error, { flow: "ehr.addTag" });
+    } finally {
+      setSavingTag(false);
+    }
+  };
+
+  const handleDeleteTag = async (tagId: string) => {
+    try {
+      await deletePatientTag(tagId);
+      await loadTags();
+    } catch (error) {
+      reportError(error, { flow: "ehr.deleteTag" });
+    }
+  };
+
   const [sessions, setSessions] = useState<EhrSession[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -3925,6 +4117,28 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [showSignModal, setShowSignModal] = useState(false);
   const [signTypedName, setSignTypedName] = useState("");
   const [signing, setSigning] = useState(false);
+
+  const [improvingField, setImprovingField] = useState<"subjective" | "objective" | "assessment" | "plan" | null>(null);
+
+  const SOAP_FIELD_SETTERS = {
+    subjective: setSubjectiveDraft,
+    objective: setObjectiveDraft,
+    assessment: setAssessmentDraft,
+    plan: setPlanDraft,
+  } as const;
+
+  const handleImproveSoapField = async (field: "subjective" | "objective" | "assessment" | "plan", currentValue: string) => {
+    if (!currentValue.trim()) return;
+    setImprovingField(field);
+    try {
+      const improved = await improveTextWithAI(currentValue);
+      if (improved) SOAP_FIELD_SETTERS[field](improved);
+    } catch (error) {
+      reportError(error, { flow: "ehr.improveSoapField" });
+    } finally {
+      setImprovingField(null);
+    }
+  };
 
   const [assessments, setAssessments] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
   const [loadingAssessmentsForPatient, setLoadingAssessmentsForPatient] = useState(false);
@@ -4037,7 +4251,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   // ─ Biblioteca de Modelos: gera e assina declarações/relatórios/pareceres/laudos/encaminhamentos
   // a partir dos dados já carregados desta tela (paciente selecionado + ficha cadastral).
   const [templates, setTemplates] = useState<EffectiveTemplate[]>([]);
-  const [professionalMeta, setProfessionalMeta] = useState({ license: "", city: "" });
+  const [professionalMeta, setProfessionalMeta] = useState({ license: "", city: "", logoUrl: null as string | null });
   const [generatedDocs, setGeneratedDocs] = useState<GeneratedDocument[]>([]);
   const [loadingGeneratedDocs, setLoadingGeneratedDocs] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
@@ -4046,15 +4260,29 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [generateTypedName, setGenerateTypedName] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState("");
+  const [improvingGenerateText, setImprovingGenerateText] = useState(false);
+
+  const handleImproveGenerateText = async () => {
+    if (!generatePreview.trim()) return;
+    setImprovingGenerateText(true);
+    try {
+      const improved = await improveTextWithAI(generatePreview);
+      if (improved) setGeneratePreview(improved);
+    } catch (error) {
+      reportError(error, { flow: "ehr.improveGenerateText" });
+    } finally {
+      setImprovingGenerateText(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
       const [templateList, { data: profRow }] = await Promise.all([
         listEffectiveTemplates(currentUser.id).catch(() => []),
-        supabase.from("professional_profiles").select("license_type, license_number, city").eq("id", currentUser.id).maybeSingle(),
+        supabase.from("professional_profiles").select("license_type, license_number, city, logo_url").eq("id", currentUser.id).maybeSingle(),
       ]);
       setTemplates(templateList);
-      if (profRow) setProfessionalMeta({ license: `${profRow.license_type} ${profRow.license_number}`.trim(), city: profRow.city ?? "" });
+      if (profRow) setProfessionalMeta({ license: `${profRow.license_type} ${profRow.license_number}`.trim(), city: profRow.city ?? "", logoUrl: profRow.logo_url });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id]);
@@ -4074,6 +4302,23 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     if (selectedPatientId) void loadGeneratedDocuments(selectedPatientId);
     else setGeneratedDocs([]);
   }, [selectedPatientId]);
+
+  const [patientFinancials, setPatientFinancials] = useState<AppointmentWithPaymentStatus[]>([]);
+  const [loadingPatientFinancials, setLoadingPatientFinancials] = useState(false);
+
+  useEffect(() => {
+    if (!selectedPatientId) {
+      setPatientFinancials([]);
+      return;
+    }
+    let active = true;
+    setLoadingPatientFinancials(true);
+    (async () => {
+      const data = await listAppointmentsWithPaymentStatus(currentUser.id, selectedPatientId).catch(() => []);
+      if (active) { setPatientFinancials(data); setLoadingPatientFinancials(false); }
+    })();
+    return () => { active = false; };
+  }, [selectedPatientId, currentUser.id]);
 
   const openGenerateModal = () => {
     setGenerateError("");
@@ -4129,6 +4374,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
         professionalId: currentUser.id,
         appointmentId: sessions[0]?.id ?? null,
         typedName: generateTypedName.trim(),
+        professionalLogoUrl: professionalMeta.logoUrl,
       });
       if (!result.signed) {
         setGenerateError("O documento foi gerado, mas não foi possível assinar. Tente novamente.");
@@ -4411,7 +4657,9 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     }
   };
 
-  const filteredPatients = patients.filter(p => p.name.toLowerCase().includes(patientSearch.trim().toLowerCase()));
+  const filteredPatients = patients
+    .filter(p => p.name.toLowerCase().includes(patientSearch.trim().toLowerCase()))
+    .filter(p => !tagFilter || (tagsByPatient[p.id] ?? []).some(t => t.label === tagFilter));
   const selectedPatient = patients.find(p => p.id === selectedPatientId) ?? null;
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
@@ -4423,6 +4671,25 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
           <div className="mb-3">
             <Input placeholder="Buscar paciente..." icon={<Search size={15} />} value={patientSearch} onChange={setPatientSearch} />
           </div>
+          {allTagLabels.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              <button
+                onClick={() => setTagFilter(null)}
+                className={`px-2 py-0.5 rounded-full text-xs border ${!tagFilter ? "border-primary text-primary bg-secondary" : "border-border text-muted-foreground"}`}
+              >
+                Todos
+              </button>
+              {allTagLabels.map(label => (
+                <button
+                  key={label}
+                  onClick={() => setTagFilter(prev => (prev === label ? null : label))}
+                  className={`px-2 py-0.5 rounded-full text-xs border ${tagFilter === label ? "border-primary text-primary bg-secondary" : "border-border text-muted-foreground"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {loadingPatients && <p className="text-xs text-muted-foreground">Carregando pacientes...</p>}
           {!loadingPatients && filteredPatients.length === 0 && <p className="text-xs text-muted-foreground">Nenhum paciente encontrado.</p>}
           <div className="space-y-2">
@@ -4430,9 +4697,16 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
               <button key={pt.id} onClick={() => setSelectedPatientId(pt.id)}
                 className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all ${selectedPatientId === pt.id ? "bg-secondary border border-border" : "hover:bg-muted"}`}>
                 <Avatar name={pt.name} src={pt.img || undefined} size="sm" />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold text-foreground truncate">{pt.name}</p>
                   <p className="text-xs text-muted-foreground">{pt.sessionsCount} sessões</p>
+                  {(tagsByPatient[pt.id] ?? []).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {(tagsByPatient[pt.id] ?? []).map(t => (
+                        <span key={t.id} className={`px-1.5 py-0.5 rounded-full text-[10px] border ${PATIENT_TAG_COLOR_CLASSES[t.color]}`}>{t.label}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </button>
             ))}
@@ -4455,6 +4729,30 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                     </div>
                   </div>
                 </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                  {(tagsByPatient[selectedPatient.id] ?? []).map(t => (
+                    <span key={t.id} className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${PATIENT_TAG_COLOR_CLASSES[t.color]}`}>
+                      {t.label}
+                      <button type="button" onClick={() => handleDeleteTag(t.id)} className="hover:opacity-70"><X size={10} /></button>
+                    </span>
+                  ))}
+                  <Input placeholder="Nova tag" value={newTagLabel} onChange={setNewTagLabel} className="w-28" />
+                  <div className="flex gap-1">
+                    {PATIENT_TAG_COLORS.map(color => (
+                      <button
+                        key={color}
+                        type="button"
+                        onClick={() => setNewTagColor(color)}
+                        className={`w-4 h-4 rounded-full border-2 ${PATIENT_TAG_COLOR_CLASSES[color]} ${newTagColor === color ? "ring-2 ring-offset-1 ring-primary" : ""}`}
+                      />
+                    ))}
+                  </div>
+                  <Btn variant="ghost" size="sm" disabled={!newTagLabel.trim() || savingTag} onClick={handleAddTag}>
+                    <Plus size={12} />Tag
+                  </Btn>
+                </div>
+
                 <div className="flex gap-1 border-t border-border pt-3">
                   {(["cadastro", "historico", "notas", "escalas", "materiais"] as const).map(t => (
                     <button key={t} onClick={() => setEhrTab(t)}
@@ -4537,6 +4835,32 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       <Card className="p-5 space-y-2">
                         <h3 className="font-semibold text-foreground font-display flex items-center gap-2"><Clipboard size={16} />Histórico</h3>
                         <p className="text-sm text-foreground whitespace-pre-wrap">{profileForm.clinicalHistory.trim() || "—"}</p>
+                      </Card>
+
+                      <Card className="p-5">
+                        <h3 className="font-semibold text-foreground font-display mb-3 flex items-center gap-2"><DollarSign size={16} />Financeiro do paciente</h3>
+                        {loadingPatientFinancials && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                        {!loadingPatientFinancials && patientFinancials.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma consulta registrada ainda.</p>}
+                        <div className="divide-y divide-border">
+                          {patientFinancials.map(f => {
+                            const badge = PAYMENT_STATUS_BADGE[f.paymentStatus];
+                            return (
+                              <div key={f.appointmentId} className="py-2.5 flex items-center justify-between gap-3">
+                                <p className="text-sm text-foreground">
+                                  {new Date(f.scheduledAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+                                  <span className="text-muted-foreground"> · R${f.price.toFixed(2).replace(".", ",")}</span>
+                                </p>
+                                <Badge variant={badge.variant}>{badge.label}</Badge>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {patientFinancials.length > 0 && (
+                          <div className="flex justify-between text-sm font-medium text-foreground border-t border-border mt-2 pt-2">
+                            <span>Total pago</span>
+                            <span>R${patientFinancials.filter(f => f.paymentStatus === "paid").reduce((sum, f) => sum + f.price, 0).toFixed(2).replace(".", ",")}</span>
+                          </div>
+                        )}
                       </Card>
 
                       <Card className="p-5">
@@ -4630,7 +4954,12 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                         </select>
                       </div>
                       <div className="flex flex-col gap-1.5">
-                        <label className="text-sm font-medium text-foreground">Conteúdo (revise antes de exportar)</label>
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm font-medium text-foreground">Conteúdo (revise antes de exportar)</label>
+                          <Btn variant="ghost" size="sm" disabled={!generatePreview.trim() || improvingGenerateText} onClick={handleImproveGenerateText}>
+                            <Brain size={12} />{improvingGenerateText ? "Melhorando..." : "Melhorar com IA"}
+                          </Btn>
+                        </div>
                         <textarea
                           value={generatePreview}
                           onChange={e => setGeneratePreview(e.target.value)}
@@ -4849,7 +5178,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
 
                       <div className="space-y-3">
                         <div className="flex flex-col gap-1.5">
-                          <label className="text-sm font-medium text-foreground">Subjetivo</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-foreground">Subjetivo</label>
+                            {!selectedSession?.signedAt && (
+                              <Btn variant="ghost" size="sm" disabled={!subjectiveDraft.trim() || improvingField === "subjective"} onClick={() => handleImproveSoapField("subjective", subjectiveDraft)}>
+                                <Brain size={12} />{improvingField === "subjective" ? "Melhorando..." : "Melhorar com IA"}
+                              </Btn>
+                            )}
+                          </div>
                           <textarea
                             value={subjectiveDraft}
                             onChange={e => setSubjectiveDraft(e.target.value)}
@@ -4859,7 +5195,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           />
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <label className="text-sm font-medium text-foreground">Objetivo</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-foreground">Objetivo</label>
+                            {!selectedSession?.signedAt && (
+                              <Btn variant="ghost" size="sm" disabled={!objectiveDraft.trim() || improvingField === "objective"} onClick={() => handleImproveSoapField("objective", objectiveDraft)}>
+                                <Brain size={12} />{improvingField === "objective" ? "Melhorando..." : "Melhorar com IA"}
+                              </Btn>
+                            )}
+                          </div>
                           <textarea
                             value={objectiveDraft}
                             onChange={e => setObjectiveDraft(e.target.value)}
@@ -4869,7 +5212,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           />
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <label className="text-sm font-medium text-foreground">Avaliação</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-foreground">Avaliação</label>
+                            {!selectedSession?.signedAt && (
+                              <Btn variant="ghost" size="sm" disabled={!assessmentDraft.trim() || improvingField === "assessment"} onClick={() => handleImproveSoapField("assessment", assessmentDraft)}>
+                                <Brain size={12} />{improvingField === "assessment" ? "Melhorando..." : "Melhorar com IA"}
+                              </Btn>
+                            )}
+                          </div>
                           <textarea
                             value={assessmentDraft}
                             onChange={e => setAssessmentDraft(e.target.value)}
@@ -4879,7 +5229,14 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           />
                         </div>
                         <div className="flex flex-col gap-1.5">
-                          <label className="text-sm font-medium text-foreground">Plano</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium text-foreground">Plano</label>
+                            {!selectedSession?.signedAt && (
+                              <Btn variant="ghost" size="sm" disabled={!planDraft.trim() || improvingField === "plan"} onClick={() => handleImproveSoapField("plan", planDraft)}>
+                                <Brain size={12} />{improvingField === "plan" ? "Melhorando..." : "Melhorar com IA"}
+                              </Btn>
+                            )}
+                          </div>
                           <textarea
                             value={planDraft}
                             onChange={e => setPlanDraft(e.target.value)}
@@ -5857,6 +6214,23 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
   const [signingConsent, setSigningConsent] = useState(false);
   const [consentError, setConsentError] = useState("");
 
+  const [passFeeToPatient, setPassFeeToPatient] = useState(false);
+
+  useEffect(() => {
+    if (!bookingDraft) return;
+    let active = true;
+    (async () => {
+      const { data } = await supabase.from("professional_profiles").select("pass_fee_to_patient").eq("id", bookingDraft.professionalId).maybeSingle();
+      if (active) setPassFeeToPatient(Boolean(data?.pass_fee_to_patient));
+    })();
+    return () => {
+      active = false;
+    };
+  }, [bookingDraft?.professionalId]);
+
+  const platformFeeAmount = passFeeToPatient && bookingDraft ? Number((bookingDraft.price * 0.1).toFixed(2)) : 0;
+  const totalWithFee = bookingDraft ? bookingDraft.price + platformFeeAmount : 0;
+
   useEffect(() => {
     if (!bookingDraft) return;
     let active = true;
@@ -6180,7 +6554,10 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
               </div>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-muted-foreground">Sessão individual</span><span>R${bookingDraft.price.toFixed(2).replace(".", ",")}</span></div>
-                <div className="flex justify-between font-bold text-foreground border-t border-border pt-2 mt-2"><span>Total</span><span className="font-display">R${bookingDraft.price.toFixed(2).replace(".", ",")}</span></div>
+                {passFeeToPatient && (
+                  <div className="flex justify-between"><span className="text-muted-foreground">Taxa da plataforma</span><span>R${platformFeeAmount.toFixed(2).replace(".", ",")}</span></div>
+                )}
+                <div className="flex justify-between font-bold text-foreground border-t border-border pt-2 mt-2"><span>Total</span><span className="font-display">R${totalWithFee.toFixed(2).replace(".", ",")}</span></div>
               </div>
               <div className="mt-4 p-3 bg-primary/5 rounded-xl flex items-start gap-2">
                 <Shield size={14} className="text-primary flex-shrink-0 mt-0.5" />
@@ -6253,6 +6630,8 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   const [sessions, setSessions] = useState<AppointmentWithPaymentStatus[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [professionalLicense, setProfessionalLicense] = useState("");
+  const [professionalCpf, setProfessionalCpf] = useState<string | null>(null);
+  const [professionalLogoUrl, setProfessionalLogoUrl] = useState<string | null>(null);
   const [busyAppointmentId, setBusyAppointmentId] = useState<string | null>(null);
   const [sessionsError, setSessionsError] = useState("");
   const [pixModal, setPixModal] = useState<{ qrCode: string; qrCodeBase64: string | null; expiresAt: string | null } | null>(null);
@@ -6273,8 +6652,12 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   useEffect(() => {
     void loadSessions();
     (async () => {
-      const { data } = await supabase.from("professional_profiles").select("license_type, license_number").eq("id", currentUser.id).maybeSingle();
-      if (data) setProfessionalLicense(`${data.license_type} ${data.license_number}`.trim());
+      const { data } = await supabase.from("professional_profiles").select("license_type, license_number, cpf, logo_url").eq("id", currentUser.id).maybeSingle();
+      if (data) {
+        setProfessionalLicense(`${data.license_type} ${data.license_number}`.trim());
+        setProfessionalCpf(data.cpf);
+        setProfessionalLogoUrl(data.logo_url);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.id]);
@@ -6313,6 +6696,8 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
         getPatientProfile(session.patientId).catch(() => null),
         getPayment(session.paymentId),
       ]);
+      const receiptFields = { patientCpf: patientProfile?.cpf ?? null, professionalCpf };
+      const missing = missingReceitaSaudeFields(receiptFields);
       const url = await generateReceiptPdf({
         patientId: session.patientId,
         patientName: session.patientName,
@@ -6320,6 +6705,8 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
         professionalId: currentUser.id,
         professionalName: currentUser.fullName,
         professionalLicense: professionalLicense || "CRP",
+        professionalCpf,
+        professionalLogoUrl,
         appointmentId: session.appointmentId,
         scheduledAt: session.scheduledAt,
         paymentId: session.paymentId,
@@ -6328,6 +6715,9 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
         paidAt: payment?.createdAt ?? session.scheduledAt,
       });
       window.open(url, "_blank", "noopener,noreferrer");
+      if (missing.length) {
+        setSessionsError(`Recibo gerado, mas faltam campos pro Receita Saúde: ${missing.join("; ")}.`);
+      }
     } catch (error) {
       reportError(error, { flow: "financial.issueReceipt" });
       setSessionsError("Não foi possível gerar o recibo.");
@@ -6352,13 +6742,6 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
       // Best-effort: clipboard API can be unavailable (older browsers, non-HTTPS) — the modal
       // still shows the text to copy manually.
     }
-  };
-
-  const PAYMENT_STATUS_BADGE: Record<AppointmentWithPaymentStatus["paymentStatus"], { label: string; variant: "success" | "warning" | "outline" | "danger" }> = {
-    paid: { label: "Pago", variant: "success" },
-    pending: { label: "Pendente", variant: "warning" },
-    refunded: { label: "Estornado", variant: "danger" },
-    uncharged: { label: "Sem cobrança", variant: "outline" },
   };
 
   const currentMonthBruto = revenueData[revenueData.length - 1]?.bruto ?? 0;
@@ -6547,6 +6930,18 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
 
 // ─── SCREEN: Biblioteca de Modelos ────────────────────────────────────────────
 
+/** Real Canva collection pages (confirmed to exist, not guessed query-string URLs — Canva doesn't
+ *  publish a documented search-by-query URL format) to pair with post ideas the professional can
+ *  adapt. Each opens Canva's own template gallery for that theme; MindCare has no Canva Connect
+ *  API integration, this is just a shortcut into Canva's existing public template library. */
+const MARKETING_POST_IDEAS: { theme: string; caption: string; canvaUrl: string }[] = [
+  { theme: "Saúde mental (geral)", caption: "Um lembrete de que cuidar da saúde mental é tão importante quanto cuidar do corpo.", canvaUrl: "https://www.canva.com/templates/s/mental-health/" },
+  { theme: "Psicologia", caption: "Apresente sua abordagem e especialidades pro seu público.", canvaUrl: "https://www.canva.com/templates/s/psychology/" },
+  { theme: "Pôster de conscientização", caption: "Um pôster sobre sinais de alerta e quando buscar ajuda.", canvaUrl: "https://www.canva.com/posters/templates/mental-health/" },
+  { theme: "Panfleto informativo", caption: "Explique um tema clínico (ansiedade, luto, autoestima) de forma acessível.", canvaUrl: "https://www.canva.com/brochures/templates/mental-health/" },
+  { theme: "Flyer de divulgação", caption: "Divulgue sua agenda aberta ou um novo grupo terapêutico.", canvaUrl: "https://www.canva.com/flyers/templates/mental-health/" },
+];
+
 function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
@@ -6559,6 +6954,7 @@ function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScre
     { icon: <Settings size={18} />, label: "Configurações", onClick: () => onNavigate("professional-settings") },
   ];
 
+  const [libraryTab, setLibraryTab] = useState<"modelos" | "marketing">("modelos");
   const [templates, setTemplates] = useState<EffectiveTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedType, setSelectedType] = useState<DocumentTemplateType>("declaracao_comparecimento");
@@ -6608,6 +7004,28 @@ function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScre
 
   return (
     <AppShell title="Biblioteca de Modelos" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      <div className="flex gap-1 mb-4 border-b border-border">
+        <button onClick={() => setLibraryTab("modelos")} className={`px-3 py-2 text-sm font-medium transition-all ${libraryTab === "modelos" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}>
+          Modelos de documentos
+        </button>
+        <button onClick={() => setLibraryTab("marketing")} className={`px-3 py-2 text-sm font-medium transition-all ${libraryTab === "marketing" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}>
+          Marketing
+        </button>
+      </div>
+
+      {libraryTab === "marketing" ? (
+        <div className="grid md:grid-cols-2 gap-4">
+          {MARKETING_POST_IDEAS.map(idea => (
+            <Card key={idea.theme} className="p-5 space-y-3">
+              <h3 className="font-semibold text-foreground font-display">{idea.theme}</h3>
+              <p className="text-sm text-muted-foreground">{idea.caption}</p>
+              <a href={idea.canvaUrl} target="_blank" rel="noopener noreferrer">
+                <Btn variant="outline" size="sm">Criar no Canva</Btn>
+              </a>
+            </Card>
+          ))}
+        </div>
+      ) : (
       <div className="flex gap-6 h-full">
         <div className="w-64 flex-shrink-0 space-y-2">
           {DOCUMENT_TEMPLATE_TYPES.map(type => {
@@ -6661,6 +7079,7 @@ function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScre
           )}
         </div>
       </div>
+      )}
     </AppShell>
   );
 }
@@ -6697,6 +7116,11 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [avatarUrl, setAvatarUrl] = useState("");
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [logoError, setLogoError] = useState("");
+  const [cpf, setCpf] = useState("");
+  const [passFeeToPatient, setPassFeeToPatient] = useState(false);
   const [licenseType, setLicenseType] = useState("CRP");
   const [licenseNumber, setLicenseNumber] = useState("");
   const [bio, setBio] = useState("");
@@ -6752,7 +7176,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cpf, pass_fee_to_patient")
         .eq("id", currentUser.id)
         .maybeSingle();
 
@@ -6772,6 +7196,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setModalityOnline((data.modalities ?? []).includes("online"));
         setModalityPresencial((data.modalities ?? []).includes("presencial"));
         setTargetAudience(data.target_audience ?? []);
+        setLogoUrl(data.logo_url ?? "");
+        setCpf(data.cpf ?? "");
+        setPassFeeToPatient(Boolean(data.pass_fee_to_patient));
       } else {
         // This account's professional_profiles row was never created (e.g. it predates the
         // signup trigger that now creates it automatically). Without it, saving availability
@@ -6815,6 +7242,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         insurances: insurances.split(",").map(s => s.trim()).filter(Boolean),
         years_experience: Number(yearsExperience) || 0,
         target_audience: targetAudience,
+        cpf: cpf.trim() || null,
+        pass_fee_to_patient: passFeeToPatient,
       })
       .eq("id", currentUser.id);
 
@@ -6840,6 +7269,20 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setAvatarError(error instanceof Error ? error.message : "Não foi possível enviar a foto.");
     } finally {
       setUploadingAvatar(false);
+    }
+  };
+
+  const handleUploadLogo = async (file: File) => {
+    setLogoError("");
+    setUploadingLogo(true);
+    try {
+      const url = await uploadLogo(currentUser.id, file);
+      setLogoUrl(url);
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.uploadLogo" });
+      setLogoError(error instanceof Error ? error.message : "Não foi possível enviar o logo.");
+    } finally {
+      setUploadingLogo(false);
     }
   };
 
@@ -6950,6 +7393,30 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
             </div>
           </div>
 
+          <div className="flex items-center gap-4">
+            {logoUrl ? (
+              <img src={logoUrl} alt="Logo" className="w-20 h-20 rounded-2xl object-contain bg-secondary p-2" />
+            ) : (
+              <div className="w-20 h-20 rounded-2xl bg-secondary flex items-center justify-center text-muted-foreground text-xs text-center px-2">Sem logo</div>
+            )}
+            <div>
+              <label className="cursor-pointer">
+                <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingLogo ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload size={14} />{uploadingLogo ? "Enviando..." : logoUrl ? "Trocar logo" : "Enviar logo"}
+                </span>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  disabled={uploadingLogo}
+                  onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadLogo(file); e.target.value = ""; }}
+                />
+              </label>
+              <p className="text-xs text-muted-foreground mt-1.5">Aparece nos recibos e documentos em PDF e no seu perfil público.</p>
+              {logoError && <p className="text-xs text-red-600 mt-1">{logoError}</p>}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-foreground">Tipo de registro</label>
@@ -7018,6 +7485,30 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
             <p className={`text-xs ${saveMessage.includes("não") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>
           )}
           <Btn variant="primary" onClick={handleSaveProfile} disabled={saving}>{saving ? "Salvando..." : "Salvar perfil"}</Btn>
+        </Card>
+
+        <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Faturamento e recibos</h2>
+
+          <Input label="CPF" placeholder="000.000.000-00" value={cpf} onChange={setCpf} className="max-w-xs" />
+          <p className="text-xs text-muted-foreground -mt-2">Necessário pro recibo em PDF sair completo pra usar no app Receita Saúde.</p>
+
+          <label className="flex items-start gap-2 text-sm text-foreground pt-2 border-t border-border cursor-pointer">
+            <input
+              type="checkbox"
+              checked={passFeeToPatient}
+              onChange={e => setPassFeeToPatient(e.target.checked)}
+              className="mt-0.5 accent-primary"
+            />
+            <span>
+              Repassar a taxa da plataforma ao paciente
+              <span className="block text-xs text-muted-foreground mt-0.5">
+                Com isso ligado, a taxa é somada ao valor cobrado do paciente no checkout em vez de ser descontada do seu repasse — o que você recebe por sessão não muda.
+              </span>
+            </span>
+          </label>
+
+          <Btn variant="primary" onClick={handleSaveProfile} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Btn>
         </Card>
 
         <Card className="p-6 space-y-4">

@@ -57,6 +57,20 @@ Deno.serve(async req => {
 
     const adminClient = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+    // When the professional opts to pass the platform commission on to the patient, the surcharge
+    // is added to what's actually charged via Pix; mercadopago-webhook (and the platform_fee below)
+    // always derive the commission from the appointment's base price, not the charged total, so
+    // what the professional nets is the same either way.
+    const { data: profRow } = await adminClient
+      .from("professional_profiles")
+      .select("pass_fee_to_patient")
+      .eq("id", appointment.professional_id)
+      .maybeSingle();
+    const passFeeToPatient = Boolean(profRow?.pass_fee_to_patient);
+    const basePrice = Number(appointment.price);
+    const feeAmount = Number((basePrice * PLATFORM_FEE_RATE).toFixed(2));
+    const chargedAmount = passFeeToPatient ? Number((basePrice + feeAmount).toFixed(2)) : basePrice;
+
     // Reuse an existing not-yet-expired Pix charge instead of generating a new QR code every time
     // "Cobrar via Pix" is clicked (avoids leaving a trail of abandoned MP payments per appointment).
     const { data: existing } = await adminClient
@@ -84,8 +98,8 @@ Deno.serve(async req => {
         "X-Idempotency-Key": crypto.randomUUID(),
       },
       body: JSON.stringify({
-        transaction_amount: Number(appointment.price),
-        description: "Consulta — MindCare",
+        transaction_amount: chargedAmount,
+        description: passFeeToPatient ? "Consulta — MindCare (inclui taxa da plataforma)" : "Consulta — MindCare",
         payment_method_id: "pix",
         external_reference: appointmentId,
         payer: { email: payerEmail },
@@ -102,13 +116,12 @@ Deno.serve(async req => {
       return json({ error: "Mercado Pago não retornou um QR code Pix para esta cobrança." }, 502);
     }
 
-    const amount = Number(appointment.price);
     const { error: insertError } = await adminClient.from("payments").insert({
       appointment_id: appointmentId,
       status: "pending",
       method: "pix",
-      amount,
-      platform_fee: Number((amount * PLATFORM_FEE_RATE).toFixed(2)),
+      amount: chargedAmount,
+      platform_fee: feeAmount,
       provider: "mercadopago",
       provider_payment_id: String(payment.id),
       pix_qr_code: transactionData.qr_code,

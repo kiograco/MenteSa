@@ -717,6 +717,56 @@
   `generated_documents_select_patient` exige `sent_to_patient_at is not null`), então um laudo ainda
   em revisão ou um parecer preparado pra terceiros não vaza pro paciente só por existir.
 
+  ### Fase 1 do roadmap de concorrência (`PLANO_IMPLEMENTACAO_FUNCIONALIDADES.md`)
+
+  Dez itens "quick win" implementados numa leva só:
+
+  - **Reagendamento explícito**: botão "Reagendar" no modal de detalhe da Agenda edita
+    `scheduled_at` da mesma consulta (preserva notas/histórico) em vez de cancelar + criar outra —
+    mesma checagem de conflito de horário já usada em "Nova consulta". `appointments.previous_scheduled_at`
+    (migration `20260716000000`) guarda o horário anterior só pra auditoria/suporte.
+  - **Financeiro por paciente**: `listAppointmentsWithPaymentStatus` (`src/lib/payments.ts`) ganhou
+    um segundo parâmetro `patientId` opcional; a aba "Cadastro" do prontuário mostra o extrato de
+    consultas/pagamentos daquele paciente específico.
+  - **Logo do profissional**: bucket público `logos` (migration `20260716000001`, mesmo padrão do
+    bucket `avatars`) + `professional_profiles.logo_url`, estampado no canto superior direito de
+    todo PDF gerado (recibo, declarações, laudos etc. — `src/lib/pdf.ts`, `loadImageAsDataUrl`).
+  - **Tags de pacientes**: tabela `patient_tags` (migration `20260716000004`, só do profissional —
+    paciente não vê), com filtro por tag tanto no prontuário quanto na lista de pacientes.
+  - **Exportação CSV de pacientes**: botão em `/profissional/pacientes`, reaproveita `downloadCsv`
+    (`src/lib/csv.ts`, mesmo padrão já usado pelo painel admin).
+  - **Repasse de taxa da plataforma ao paciente**: toggle em "Configurações → Faturamento e
+    recibos" (`professional_profiles.pass_fee_to_patient`, migration `20260716000003`). Quando
+    ligado, `create-mp-preference`/`create-pix-charge` cobram `preço × 1,10` do paciente, mas
+    `mercadopago-webhook` sempre calcula `platform_fee` a partir do preço **base** da consulta (não
+    do valor cobrado) — o que o profissional recebe líquido nunca muda, só quem paga a comissão.
+  - **Lembrete de aniversário**: novo par Edge Function/cron (`send-birthday-greeting`,
+    `supabase/functions/_shared/whatsapp.ts#sendBirthdayGreetingWhatsApp`, migration
+    `20260716000006`) — dispara diariamente às 9h, mesma arquitetura de
+    `send-appointment-reminder`, mas com seu próprio template WhatsApp e sua própria marca de "já
+    enviado este ano" (`patient_profiles.last_birthday_greeted_year`, migration `20260716000005`).
+  - **Melhorar texto com IA**: nova Edge Function `ai-improve-text` (mesmo padrão de
+    `ai-summarize-session`, reaproveita `GEMINI_API_KEY`/`GEMINI_MODEL`) — botão "Melhorar com IA"
+    nos 4 campos SOAP e no conteúdo do modal "Gerar documento". Sem vínculo com uma consulta
+    específica (é um reescrever stateless), só exige que quem chama seja um profissional logado e
+    não suspenso.
+  - **Marketing**: nova aba "Marketing" dentro da Biblioteca de Modelos — galeria de temas de post
+    com link direto pras coleções reais de templates do Canva sobre saúde mental/psicologia
+    (`canva.com/templates/s/mental-health`, `/psychology` etc. — sem Canva Connect API, é atalho
+    pro catálogo público deles).
+  - **Recibo pronto pro Receita Saúde**: `professional_profiles.cpf` (migration `20260716000002`),
+    numeração sequencial (`countReceiptsForProfessional`) e descrição de serviço mais específica no
+    corpo do recibo (`src/lib/receipt.ts`). Importante: **o MindCare não emite pelo Receita Saúde
+    em nome do profissional** (esse app da Receita Federal exige login gov.br individual) — o
+    recibo em PDF só chega com todos os campos prontos pra copiar rapidinho pro app oficial;
+    `missingReceitaSaudeFields` avisa quando falta CPF de alguém.
+
+  Para ativar os itens com Edge Function nova: `supabase functions deploy ai-improve-text` e
+  `supabase functions deploy send-birthday-greeting --no-verify-jwt` (mesmo motivo do
+  `send-appointment-reminder` — o cron chama sem sessão de usuário). O lembrete de aniversário
+  precisa do mesmo par de segredos no Vault que o lembrete de consulta já usa (ver seção acima),
+  só que com nomes próprios: `birthday_function_url`/`birthday_cron_secret`.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar
@@ -758,6 +808,9 @@
   | `CRON_SECRET` | Secret da função `send-appointment-reminder` + segredo `reminder_cron_secret` no Vault | Autentica a chamada do `pg_cron` (o endpoint não usa sessão de usuário) |
   | *(nenhuma chave nova)* | `create-pix-charge` reaproveita `MERCADOPAGO_ACCESS_TOKEN` | Cobrança avulsa via Pix no Financeiro |
   | `NOTA_FISCAL_PROVIDER` / `NOTA_FISCAL_API_KEY` (ainda sem provedor real) | Secrets da função `request-nota-fiscal` | Emissão de nota fiscal. Sem elas (hoje sempre), a função responde "indisponível" — é o estado esperado até um provedor (eNotas/Focus NFe/etc.) ser escolhido e integrado. |
+  | *(nenhuma chave nova)* | `ai-improve-text` reaproveita `GEMINI_API_KEY`/`GEMINI_MODEL` | Botão "Melhorar com IA" nos campos SOAP e no gerador de documentos |
+  | `WHATSAPP_BIRTHDAY_TEMPLATE_NAME` | Secret da função `send-birthday-greeting` (reaproveita `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN`) | Template aprovado no Meta Business Manager pro parabéns de aniversário — precisa ser diferente do template de lembrete de consulta |
+  | `CRON_SECRET` (já existente) + segredos `birthday_function_url`/`birthday_cron_secret` no Vault | Mesmo secret da função, mais Vault | Autentica o cron diário de aniversário, mesmo esquema do lembrete de consulta |
 
   ## Monitoramento de erros
 

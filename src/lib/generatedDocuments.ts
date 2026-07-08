@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 import { hashDocumentText } from "./consent";
-import { pdfToFile, renderTextDocumentToPdf } from "./pdf";
+import { pdfToFile, renderTextDocumentToPdf, loadImageAsDataUrl } from "./pdf";
 
 const BUCKET = "generated-documents";
 
@@ -143,6 +143,19 @@ export async function generateReceiptDocument(params: {
   return uploadGeneratedDocument({ ...params, documentType: "recibo" });
 }
 
+/** Sequential numbering for recibos (Receita Saúde expects a receipt number) — just a count of
+ *  this professional's past recibos, not a gapless invoice sequence (a deleted row would shift
+ *  it, but nothing here ever deletes a generated_documents row). */
+export async function countReceiptsForProfessional(professionalId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from("generated_documents")
+    .select("id", { count: "exact", head: true })
+    .eq("professional_id", professionalId)
+    .eq("document_type", "recibo");
+  if (error) throw error;
+  return count ?? 0;
+}
+
 /** Renders the filled template to PDF, uploads it, then signs it via the sign-generated-document
  *  Edge Function — same trust model as sign-session-note: only the function ever writes
  *  signed_at/typed_name/signature_hash, so the signature record can be trusted. Returns null if
@@ -156,11 +169,13 @@ export async function generateAndSignDocument(params: {
   professionalId: string;
   appointmentId?: string | null;
   typedName: string;
+  professionalLogoUrl?: string | null;
 }): Promise<{ documentId: string; storagePath: string; signed: boolean }> {
+  const logoDataUrl = params.professionalLogoUrl ? await loadImageAsDataUrl(params.professionalLogoUrl) : null;
   const doc = renderTextDocumentToPdf(params.title, params.filledBody, [
     `Assinado digitalmente por ${params.typedName}`,
     new Date().toLocaleString("pt-BR"),
-  ]);
+  ], logoDataUrl);
   const fileName = `${params.documentType}-${Date.now()}.pdf`;
   const file = pdfToFile(doc, fileName);
 

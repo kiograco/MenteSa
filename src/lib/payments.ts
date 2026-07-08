@@ -19,13 +19,18 @@ export type AppointmentWithPaymentStatus = {
  *  denormalized "paid" flag on appointments, so this mirrors what FinancialDashboard already
  *  queries but keeps every status (not just "paid") and reduces payments to one row per
  *  appointment (the latest by created_at), since a single appointment can have more than one
- *  payments row (e.g. a retried or superseded charge). */
-export async function listAppointmentsWithPaymentStatus(professionalId: string): Promise<AppointmentWithPaymentStatus[]> {
-  const { data: appts, error: apptError } = await supabase
+ *  payments row (e.g. a retried or superseded charge). Pass `patientId` to scope this down to one
+ *  patient's own statement (used by the "Financeiro do paciente" section in EHRScreen). */
+export async function listAppointmentsWithPaymentStatus(professionalId: string, patientId?: string): Promise<AppointmentWithPaymentStatus[]> {
+  let query = supabase
     .from("appointments")
     .select("id, patient_id, scheduled_at, price, status, profiles(full_name)")
     .eq("professional_id", professionalId)
     .order("scheduled_at", { ascending: false });
+
+  if (patientId) query = query.eq("patient_id", patientId);
+
+  const { data: appts, error: apptError } = await query;
 
   if (apptError) throw apptError;
   if (!appts?.length) return [];

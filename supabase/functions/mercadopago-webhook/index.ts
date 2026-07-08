@@ -48,7 +48,15 @@ Deno.serve(async req => {
     // Service role: this request has no user session (it's Mercado Pago calling us), so RLS can't apply here.
     const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
+    // amount is whatever MP actually charged/received — with "repassar taxa ao paciente" on, that
+    // already includes the commission surcharge (create-mp-preference/create-pix-charge). The
+    // commission itself is always computed off the appointment's own base price, never off the
+    // charged total, so what the professional nets (amount - platform_fee) stays the session price
+    // either way — only who paid the extra 10% changes.
     const amount = Number(payment.transaction_amount ?? 0);
+    const { data: appointmentRow } = await supabase.from("appointments").select("price").eq("id", appointmentId).maybeSingle();
+    const basePrice = Number(appointmentRow?.price ?? amount);
+    const platformFee = Number((basePrice * PLATFORM_FEE_RATE).toFixed(2));
 
     const { data: existingPayment } = await supabase
       .from("payments")
@@ -63,7 +71,7 @@ Deno.serve(async req => {
         status,
         method: payment.payment_type_id ?? "mercadopago",
         amount,
-        platform_fee: Number((amount * PLATFORM_FEE_RATE).toFixed(2)),
+        platform_fee: platformFee,
         provider: "mercadopago",
         provider_payment_id: String(payment.id),
       },

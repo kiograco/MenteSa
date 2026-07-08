@@ -19,3 +19,12 @@ export async function getAISessionSummary(appointmentId: string, notes: string):
 
   return { keyPoints: data.keyPoints, actionItems: data.actionItems, clinicalNote: data.clinicalNote };
 }
+
+/** Calls the ai-improve-text Edge Function to rewrite/clean up a piece of text the professional
+ *  already wrote (a SOAP field, a Biblioteca de Modelos preview). Returns null if AI isn't
+ *  configured or the call fails, so callers just leave the original text untouched. */
+export async function improveTextWithAI(text: string): Promise<string | null> {
+  const { data, error } = await supabase.functions.invoke<{ improvedText?: string }>("ai-improve-text", { body: { text } });
+  if (error || !data?.improvedText) return null;
+  return data.improvedText;
+}
