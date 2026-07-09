@@ -59,6 +59,7 @@ import {
 import { formatAiSummaryText } from "../lib/aiSummary";
 import { type Screen, screenToPath, pathToScreen } from "../lib/routing";
 import { getWeekStart, getWeekDays, isSameDay, formatWeekRangeLabel } from "../lib/calendar";
+import { canEnterSession } from "../lib/sessionAccess";
 import type { VerificationStatus } from "../lib/database.types";
 import {
   Brain, Search, Star, Shield, Video, Calendar, FileText, CreditCard,
@@ -85,6 +86,17 @@ type AuthenticatedScreenProps = {
   currentUser: AppUser;
   onSignOut: () => void;
 };
+
+function useCurrentTime(refreshIntervalMs = 15_000): number {
+  const [currentTime, setCurrentTime] = useState(Date.now);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setCurrentTime(Date.now()), refreshIntervalMs);
+    return () => window.clearInterval(intervalId);
+  }, [refreshIntervalMs]);
+
+  return currentTime;
+}
 
 type BookingDraft = {
   professionalId: string;
@@ -2204,6 +2216,7 @@ type PatientPayment = {
 };
 
 function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, initialTab }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void; initialTab?: PatientDashboardTab }) {
+  const currentTime = useCurrentTime();
   const [dashboardTab, setDashboardTab] = useState<PatientDashboardTab>(initialTab ?? "inicio");
 
   const navItems = [
@@ -2456,7 +2469,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
     };
   }, [currentUser.id]);
 
-  const now = new Date();
+  const now = new Date(currentTime);
   const upcoming = appointments.filter(a => a.status === "scheduled" && new Date(a.scheduledAt) >= now);
   const past = appointments.filter(a => a.status !== "scheduled" || new Date(a.scheduledAt) < now);
   const completedCount = appointments.filter(a => a.status === "completed").length;
@@ -2526,7 +2539,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
                   </p>
                 </div>
                 <div className="flex gap-2">
-                  {a.modality === "online" && (
+                  {a.modality === "online" && canEnterSession(a.scheduledAt, currentTime) && (
                     <Btn variant="primary" size="sm" onClick={() => { onEnterVideo(a.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
                   )}
                   <Btn variant="outline" size="sm" disabled={cancellingId === a.id} onClick={() => handleCancelAppointment(a.id)}>
@@ -2782,6 +2795,7 @@ const PAYMENT_STATUS_BADGE: Record<AppointmentWithPaymentStatus["paymentStatus"]
 };
 
 function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void }) {
+  const currentTime = useCurrentTime();
   const navItems = [
     { icon: <Home size={18} />, label: "Início", active: true, onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -2897,7 +2911,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
     };
   }, [currentUser.id]);
 
-  const now = new Date();
+  const now = new Date(currentTime);
   const upcoming = appointments.filter(a => a.status === "scheduled" && new Date(a.scheduledAt) >= now).slice(0, 5);
   const distinctPatients = new Set(appointments.map(a => a.patientName)).size;
   const thisMonthSessions = appointments.filter(a => {
@@ -3044,7 +3058,7 @@ function ProfessionalDashboard({ onNavigate, currentUser, onSignOut, onEnterVide
                       {new Date(a.scheduledAt).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })} · {new Date(a.scheduledAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </div>
-                  {a.modality === "online" && (
+                  {a.modality === "online" && canEnterSession(a.scheduledAt, currentTime) && (
                     <Btn variant="ghost" size="sm" onClick={() => { onEnterVideo(a.id); onNavigate("video"); }}><Video size={14} /></Btn>
                   )}
                 </div>
@@ -3102,6 +3116,7 @@ const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–1
 const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
 function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void; onOpenEhr: (patientId: string, appointmentId: string) => void }) {
+  const currentTime = useCurrentTime();
   const [view, setView] = useState<"week" | "month" | "day">("week");
   const [anchorDate, setAnchorDate] = useState(() => new Date());
   const navItems = [
@@ -3782,7 +3797,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
             </div>
             <div className="flex gap-2 mt-5 flex-wrap">
               <Btn variant="outline" onClick={() => { onOpenEhr(selectedAppointment.patientId, selectedAppointment.id); onNavigate("ehr"); }}>Ver prontuário</Btn>
-              {selectedAppointment.modality === "online" && selectedAppointment.status === "scheduled" && (
+              {selectedAppointment.modality === "online" && selectedAppointment.status === "scheduled" && canEnterSession(selectedAppointment.scheduledAt, currentTime) && (
                 <Btn variant="primary" onClick={() => { onEnterVideo(selectedAppointment.id); onNavigate("video"); }}><Video size={14} />Entrar</Btn>
               )}
               {selectedAppointment.status === "scheduled" && (

@@ -59,11 +59,17 @@ Deno.serve(async req => {
 
     const { data: appointment, error: apptError } = await supabase
       .from("appointments")
-      .select("id, patient_id, professional_id, profiles(full_name), professional_profiles(profiles(full_name))")
+      .select("id, patient_id, professional_id, scheduled_at, status, profiles(full_name), professional_profiles(profiles(full_name))")
       .eq("id", appointmentId)
       .maybeSingle();
 
     if (apptError || !appointment) return json({ error: "Consulta não encontrada ou acesso negado." }, 404);
+
+    const item = appointment as any;
+    const entryOpensAt = new Date(item.scheduled_at).getTime() - 5 * 60 * 1000;
+    if (item.status !== "scheduled" || !Number.isFinite(entryOpensAt) || Date.now() < entryOpensAt) {
+      return json({ error: "A sala fica disponível 5 minutos antes do horário da consulta." }, 403);
+    }
 
     // A real video room/token must never be handed out for an unpaid appointment — appointments
     // are created (status "scheduled") before the patient finishes checkout, so "the appointment
@@ -77,7 +83,6 @@ Deno.serve(async req => {
 
     if (!payment) return json({ error: "Pagamento da consulta ainda não confirmado." }, 402);
 
-    const item = appointment as any;
     const displayName = userData.user.id === item.patient_id
       ? item.profiles?.full_name ?? "Paciente"
       : item.professional_profiles?.profiles?.full_name ?? "Profissional";
