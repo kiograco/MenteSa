@@ -2,6 +2,8 @@
 // Once a real Supabase project is connected, regenerate with:
 //   supabase gen types typescript --project-id <ref> > src/lib/database.types.ts
 
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
 export type UserRole = "patient" | "professional" | "admin";
 export type VerificationStatus = "pending" | "verified" | "rejected";
 export type Modality = "online" | "presencial";
@@ -77,6 +79,47 @@ export interface Database {
           end_time: string;
         };
         Update: Partial<Database["public"]["Tables"]["professional_availability"]["Row"]>;
+        Relationships: [];
+      };
+      professional_locations: {
+        Row: {
+          id: string;
+          professional_id: string;
+          label: string;
+          address_street: string | null;
+          address_number: string | null;
+          address_complement: string | null;
+          address_neighborhood: string | null;
+          address_city: string | null;
+          address_state: string | null;
+          address_zip: string | null;
+          is_primary: boolean;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["professional_locations"]["Row"]> & {
+          professional_id: string;
+          label: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["professional_locations"]["Row"]>;
+        Relationships: [];
+      };
+      professional_services: {
+        Row: {
+          id: string;
+          professional_id: string;
+          name: string;
+          duration_minutes: number;
+          price: number;
+          modality: Modality | null;
+          active: boolean;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["professional_services"]["Row"]> & {
+          professional_id: string;
+          name: string;
+          price: number;
+        };
+        Update: Partial<Database["public"]["Tables"]["professional_services"]["Row"]>;
         Relationships: [];
       };
       professional_time_blocks: {
@@ -171,10 +214,10 @@ export interface Database {
           appointment_id: string;
           professional_id: string;
           notes: string;
-          subjective: string | null;
-          objective: string | null;
-          assessment: string | null;
-          plan: string | null;
+          subjective: Json | null;
+          objective: Json | null;
+          assessment: Json | null;
+          plan: Json | null;
           signed_at: string | null;
           typed_name: string | null;
           signature_hash: string | null;
@@ -241,11 +284,30 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["professional_documents"]["Row"]>;
         Relationships: [];
       };
+      assessment_templates: {
+        Row: {
+          id: string;
+          professional_id: string | null;
+          name: string;
+          questions: string[];
+          answer_options: { value: number; label: string }[];
+          severity_bands: { max: number | null; label: string }[];
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["assessment_templates"]["Row"]> & {
+          name: string;
+          questions: string[];
+          answer_options: { value: number; label: string }[];
+          severity_bands: { max: number | null; label: string }[];
+        };
+        Update: Partial<Database["public"]["Tables"]["assessment_templates"]["Row"]>;
+        Relationships: [];
+      };
       assessment_responses: {
         Row: {
           id: string;
           patient_id: string;
-          instrument: string;
+          template_id: string;
           answers: number[];
           total_score: number;
           severity: string;
@@ -253,7 +315,7 @@ export interface Database {
         };
         Insert: Partial<Database["public"]["Tables"]["assessment_responses"]["Row"]> & {
           patient_id: string;
-          instrument: string;
+          template_id: string;
           answers: number[];
           total_score: number;
           severity: string;

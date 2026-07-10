@@ -16,6 +16,10 @@
   "dependencies": {
     "@sentry/react": "^8.55.2",
     "@supabase/supabase-js": "2.110.0",
+    "@tiptap/extension-image": "^3.27.3",
+    "@tiptap/pm": "^3.27.3",
+    "@tiptap/react": "^3.27.3",
+    "@tiptap/starter-kit": "^3.27.3",
     "jspdf": "^4.2.1",
     "livekit-client": "^2.20.0",
     "lucide-react": "0.487.0",

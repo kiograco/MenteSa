@@ -826,6 +826,53 @@
   A cobrança automática precisa do mesmo esquema de Vault dos jobs anteriores, com nomes próprios:
   `auto_charge_function_url`/`auto_charge_cron_secret`.
 
+  ### Fase 3 do roadmap de concorrência (Prontuário e IA)
+
+  Seis itens de prontuário e IA (Educacional/Aulas ficou de fora — sem conteúdo real pra popular):
+
+  - **Motor de instrumentos clínicos personalizados**: tabela `assessment_templates` (migration
+    `20260718000000`) substitui os antigos PHQ-9/GAD-7 hardcoded em `src/lib/assessments.ts` — cada
+    template tem perguntas, opções de resposta e faixas de severidade como dados, não código.
+    PHQ-9/GAD-7 continuam existindo, agora como linhas com `professional_id null` (built-in,
+    protegidas contra edição pela própria RLS — só o dono de um template pode escrevê-lo, e ninguém
+    é dono de `null`). `assessment_responses.instrument` foi substituído por `template_id`
+    (migration `20260718000001`, com backfill dos dados antigos antes de derrubar a coluna).
+    `scoreFromTemplate` (`src/lib/assessments.ts`) é a versão genérica de
+    `scorePhq9`/`scoreGad7`/`scoreInstrument`. Profissional cria/edita/exclui os próprios modelos
+    na aba "Escalas" do prontuário ("Meus modelos").
+  - **Prontuário rico**: os 4 campos SOAP (`session_notes.subjective/objective/assessment/plan`)
+    viraram `jsonb` (migration `20260718000002`, texto antigo convertido em um doc Tiptap mínimo de
+    um parágrafo — nada se perde) editados por um `RichTextEditor` (Tiptap:
+    `@tiptap/react`/`@tiptap/starter-kit`/`@tiptap/extension-image`, negrito/itálico/lista/imagem).
+    `src/lib/richText.ts` (`tiptapJsonToPlainText`/`plainTextToTiptapJson`) faz a ponte pros lugares
+    que só entendem texto puro: hash da assinatura digital, "Melhorar com IA", "Planejar sessão com
+    IA" e a linha do tempo do Diário de Bordo. Imagens embutidas usam o bucket `patient-documents`
+    já existente com URL assinada de 7 dias (limitação conhecida: uma nota reaberta depois disso
+    mostra a imagem quebrada — resolver isso direito exigiria re-resolver a URL na renderização, fora
+    de escopo por ora).
+  - **Transcrição de manuscrito (OCR)**: nova Edge Function `ocr-handwriting` (mesmo padrão de
+    `ai-improve-text`, mas manda a imagem como `inlineData` pro Gemini multimodal em vez de só
+    texto). Botão "Transcrever foto" ao lado de cada campo SOAP — o texto retornado sempre cai no
+    editor pra revisão antes de salvar, nunca é gravado direto.
+  - **Cadastro de Locais e Serviços**: tabelas `professional_locations`/`professional_services`
+    (migration `20260718000003`, leitura pública como `professional_availability`, escrita só do
+    dono) — nova seção em "Configurações", exibida como cards informativos no perfil público, e um
+    seletor opcional de serviço no modal "Nova consulta" da Agenda que pré-preenche preço e duração
+    (`appointments.duration_minutes` agora é editável pela primeira vez — antes sempre ficava no
+    default de 50min).
+  - **Planejar sessão com IA**: nova Edge Function `ai-plan-session` (mesmo padrão de auth de
+    `ai-summarize-session`, mas com ownership por paciente em vez de por consulta) — lê as últimas
+    ~5 notas SOAP e escalas respondidas de um paciente e sugere pauta pra próxima sessão. Mesmo
+    padrão de checkbox de consentimento por geração já usado em `AIAssistantScreen`, deixando
+    explícito que isso lê várias sessões de uma vez, não só uma.
+  - **Diário de Bordo e Evoluções**: nova aba no prontuário (aditiva — não substitui "Histórico" nem
+    "Escalas") combinando um gráfico de linha (pontuação de cada instrumento ao longo do tempo) com
+    uma linha do tempo única intercalando notas de sessão e respostas de escala.
+
+  Para ativar os itens com Edge Function nova: `supabase functions deploy ocr-handwriting` e
+  `supabase functions deploy ai-plan-session` (ambas reaproveitam `GEMINI_API_KEY`/`GEMINI_MODEL`,
+  sem secret novo). Nenhum cron novo nesta fase.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar

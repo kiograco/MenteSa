@@ -22,8 +22,17 @@ import {
   type PatientTag, type PatientTagColor,
 } from "../lib/patientTags";
 import { getLiveKitRoomAccess, type LiveKitRoomAccess } from "../lib/video";
-import { getAISessionSummary, improveTextWithAI, type AISessionSummary } from "../lib/ai";
-import { PHQ9_QUESTIONS, GAD7_QUESTIONS, ANSWER_OPTIONS, scoreInstrument, instrumentLabel, type Instrument } from "../lib/assessments";
+import { getAISessionSummary, improveTextWithAI, transcribeHandwriting, planSessionWithAI, type AISessionSummary, type SessionPlan } from "../lib/ai";
+import { plainTextToTiptapJson, tiptapJsonToPlainText } from "../lib/richText";
+import { useEditor, EditorContent, type JSONContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import TiptapImage from "@tiptap/extension-image";
+import { scoreFromTemplate, type AnswerOption, type SeverityBand } from "../lib/assessments";
+import { listTemplates, createTemplate, updateTemplate, deleteTemplate, type AssessmentTemplate } from "../lib/assessmentTemplates";
+import {
+  listLocations, createLocation, deleteLocation, listServices, createService, deleteService,
+  type ProfessionalLocation, type ProfessionalService,
+} from "../lib/professionalLocations";
 import {
   uploadPatientMaterial, listMaterialsForProfessional, deletePatientMaterial, getMaterialSignedUrl,
   listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
@@ -70,9 +79,9 @@ import {
   AlertCircle, CheckCircle, User, LogOut, Home, Activity, Clipboard,
   Camera, Send, Paperclip, MoreHorizontal, Edit3, Trash2, RefreshCw,
   ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon,
-  Copy, Link2, QrCode, Receipt, Printer,
+  Copy, Link2, QrCode, Receipt, Printer, List, Image as ImageIcon, Bold, Italic, Sparkles, ScanText, MapPinned,
 } from "lucide-react";
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+import { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
 type AppUser = {
   id: string;
@@ -254,6 +263,67 @@ function ReadOnlyField({ label, value, className = "" }: { label: string; value:
     <div className={`flex flex-col gap-1 ${className}`}>
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="text-sm text-foreground">{value.trim() || "—"}</span>
+    </div>
+  );
+}
+
+const EMPTY_TIPTAP_DOC: JSONContent = { type: "doc", content: [{ type: "paragraph" }] };
+
+/** Minimal Tiptap wrapper used for the 4 SOAP fields (Prontuário rico) — bold/italic/lists plus
+ *  optional inline images. `onImageUpload` is injected by the caller (needs a patient id to scope
+ *  the upload to) and should resolve to a URL the browser can load directly. */
+function RichTextEditor({ content, onChange, disabled, onImageUpload }: {
+  content: JSONContent;
+  onChange: (doc: JSONContent) => void;
+  disabled?: boolean;
+  onImageUpload?: () => Promise<string | null>;
+}) {
+  const editor = useEditor({
+    extensions: [StarterKit, TiptapImage],
+    content,
+    editable: !disabled,
+    onUpdate: ({ editor }) => onChange(editor.getJSON()),
+  });
+
+  useEffect(() => {
+    editor?.setEditable(!disabled);
+  }, [editor, disabled]);
+
+  // Re-syncs the editor when the caller swaps in different content (switching sessions) — but not
+  // on every keystroke, since onUpdate above already reflects those back into `content` and
+  // re-applying our own output would reset the cursor position.
+  useEffect(() => {
+    if (!editor) return;
+    if (JSON.stringify(editor.getJSON()) !== JSON.stringify(content)) {
+      editor.commands.setContent(content, { emitUpdate: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content, editor]);
+
+  if (!editor) return null;
+
+  return (
+    <div className={`border border-border rounded-xl overflow-hidden ${disabled ? "bg-muted/30" : "bg-white"}`}>
+      {!disabled && (
+        <div className="flex items-center gap-1 px-2 py-1.5 bg-muted/50 border-b border-border">
+          <button type="button" onClick={() => editor.chain().focus().toggleBold().run()} className={`p-1.5 rounded ${editor.isActive("bold") ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}><Bold size={14} /></button>
+          <button type="button" onClick={() => editor.chain().focus().toggleItalic().run()} className={`p-1.5 rounded ${editor.isActive("italic") ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}><Italic size={14} /></button>
+          <button type="button" onClick={() => editor.chain().focus().toggleBulletList().run()} className={`p-1.5 rounded ${editor.isActive("bulletList") ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}><List size={14} /></button>
+          {onImageUpload && (
+            <button
+              type="button"
+              onClick={async () => {
+                const url = await onImageUpload();
+                if (url) editor.chain().focus().setImage({ src: url }).run();
+              }}
+              className="p-1.5 rounded text-muted-foreground hover:bg-muted"
+            >
+              <ImageIcon size={14} />
+            </button>
+          )}
+        </div>
+      )}
+      <EditorContent editor={editor} className="px-3 py-2 text-sm text-foreground min-h-[80px] max-h-64 overflow-y-auto [&_.ProseMirror]:outline-none [&_img]:max-w-full [&_img]:rounded-lg [&_ul]:list-disc [&_ul]:pl-5" />
     </div>
   );
 }
@@ -1051,6 +1121,8 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
   const [availability, setAvailability] = useState<{ weekday: number | null; start_time: string; end_time: string }[]>([]);
   const [bookedTimes, setBookedTimes] = useState<Set<string>>(new Set());
   const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>([]);
+  const [locations, setLocations] = useState<ProfessionalLocation[]>([]);
+  const [services, setServices] = useState<ProfessionalService[]>([]);
   const [reviews, setReviews] = useState<{ name: string; rating: number; comment: string | null }[]>([]);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
@@ -1092,7 +1164,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
     setLoadError("");
 
     (async () => {
-      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }, { data: blockData }] = await Promise.all([
+      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }, { data: blockData }, locData, svcData] = await Promise.all([
         supabase
           .from("professional_profiles")
           .select("id, bio, specialties, approaches, license_type, license_number, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
@@ -1113,6 +1185,8 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
           .from("professional_time_blocks")
           .select("start_at, end_at")
           .eq("professional_id", professionalId),
+        listLocations(professionalId).catch(() => []),
+        listServices(professionalId).catch(() => []),
       ]);
 
       if (!active) return;
@@ -1142,6 +1216,8 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
       setAvailability((availData ?? []) as any);
       setReviews(((reviewData ?? []) as any[]).map(r => ({ name: r.profiles?.full_name ?? "Paciente", rating: r.rating, comment: r.comment })));
       setTimeBlocks(((blockData ?? []) as any[]).map(b => ({ startAt: b.start_at, endAt: b.end_at })));
+      setLocations(locData);
+      setServices(svcData);
 
       const now = new Date();
       const in14Days = new Date();
@@ -1287,10 +1363,39 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
         {/* Main content */}
         <div className="lg:col-span-2 space-y-6">
           {tab === "sobre" && (
-            <Card className="p-6">
-              <h2 className="font-semibold text-foreground font-display mb-3">Sobre mim</h2>
-              <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{pro.bio}</p>
-            </Card>
+            <div className="space-y-4">
+              <Card className="p-6">
+                <h2 className="font-semibold text-foreground font-display mb-3">Sobre mim</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{pro.bio}</p>
+              </Card>
+
+              {locations.length > 0 && (
+                <Card className="p-6">
+                  <h2 className="font-semibold text-foreground font-display mb-3 flex items-center gap-2"><MapPinned size={16} />Atendo em</h2>
+                  <div className="space-y-1.5">
+                    {locations.map(l => (
+                      <p key={l.id} className="text-sm text-muted-foreground">
+                        <span className="text-foreground font-medium">{l.label}</span>
+                        {(l.addressCity || l.addressState) && ` — ${[l.addressCity, l.addressState].filter(Boolean).join(", ")}`}
+                      </p>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
+              {services.length > 0 && (
+                <Card className="p-6">
+                  <h2 className="font-semibold text-foreground font-display mb-3">Serviços</h2>
+                  <div className="space-y-1.5">
+                    {services.filter(s => s.active).map(s => (
+                      <p key={s.id} className="text-sm text-muted-foreground">
+                        <span className="text-foreground font-medium">{s.name}</span> — {s.durationMinutes}min · R${s.price.toFixed(2).replace(".", ",")}
+                      </p>
+                    ))}
+                  </div>
+                </Card>
+              )}
+            </div>
           )}
 
           {tab === "abordagens" && (
@@ -2234,30 +2339,41 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
   const [loading, setLoading] = useState(true);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
-  const [assessmentHistory, setAssessmentHistory] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
+  const [assessmentHistory, setAssessmentHistory] = useState<{ id: string; templateName: string; totalScore: number; severity: string; createdAt: string }[]>([]);
   const [loadingAssessments, setLoadingAssessments] = useState(true);
-  const [selectedInstrument, setSelectedInstrument] = useState<Instrument>("phq9");
-  const questions = selectedInstrument === "phq9" ? PHQ9_QUESTIONS : GAD7_QUESTIONS;
-  const [answers, setAnswers] = useState<number[]>(() => new Array(PHQ9_QUESTIONS.length).fill(-1));
+  const [templates, setTemplates] = useState<AssessmentTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const selectedTemplate = templates.find(t => t.id === selectedTemplateId) ?? null;
+  const questions = selectedTemplate?.questions ?? [];
+  const [answers, setAnswers] = useState<number[]>([]);
   const [submittingAssessment, setSubmittingAssessment] = useState(false);
   const [assessmentMessage, setAssessmentMessage] = useState("");
 
-  const handleSelectInstrument = (instrument: Instrument) => {
-    setSelectedInstrument(instrument);
-    setAnswers(new Array(instrument === "phq9" ? PHQ9_QUESTIONS.length : GAD7_QUESTIONS.length).fill(-1));
+  const handleSelectTemplate = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    const template = templates.find(t => t.id === templateId);
+    setAnswers(new Array(template?.questions.length ?? 0).fill(-1));
     setAssessmentMessage("");
   };
+
+  useEffect(() => {
+    listTemplates().then(list => {
+      setTemplates(list);
+      if (list.length > 0) handleSelectTemplate(list[0].id);
+    }).catch(error => reportError(error, { flow: "patientDashboard.loadTemplates" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
 
   const loadAssessments = async () => {
     setLoadingAssessments(true);
     const { data } = await supabase
       .from("assessment_responses")
-      .select("id, instrument, total_score, severity, created_at")
+      .select("id, total_score, severity, created_at, assessment_templates(name)")
       .eq("patient_id", currentUser.id)
       .order("created_at", { ascending: false });
-    setAssessmentHistory((data ?? []).map(d => ({
+    setAssessmentHistory(((data ?? []) as any[]).map(d => ({
       id: d.id,
-      instrument: d.instrument as Instrument,
+      templateName: d.assessment_templates?.name ?? "Escala removida",
       totalScore: d.total_score,
       severity: d.severity,
       createdAt: d.created_at,
@@ -2270,16 +2386,17 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
   }, [currentUser.id]);
 
   const handleSubmitAssessment = async () => {
+    if (!selectedTemplate) return;
     if (answers.some(a => a < 0)) {
       setAssessmentMessage("Responda todas as perguntas antes de enviar.");
       return;
     }
     setSubmittingAssessment(true);
     setAssessmentMessage("");
-    const { totalScore, severity } = scoreInstrument(selectedInstrument, answers);
+    const { totalScore, severity } = scoreFromTemplate(answers, selectedTemplate.severityBands);
     const { error } = await supabase.from("assessment_responses").insert({
       patient_id: currentUser.id,
-      instrument: selectedInstrument,
+      template_id: selectedTemplate.id,
       answers,
       total_score: totalScore,
       severity,
@@ -2641,20 +2758,21 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
               <p className="text-xs text-muted-foreground mb-4">
                 Respostas ficam visíveis para o profissional que te atende, ajudando a acompanhar sua evolução ao longo do tempo.
               </p>
-              <div className="flex gap-2 mb-4">
-                {(["phq9", "gad7"] as const).map(inst => (
-                  <button key={inst} onClick={() => handleSelectInstrument(inst)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${selectedInstrument === inst ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-secondary"}`}>
-                    {instrumentLabel(inst)}
+              <div className="flex flex-wrap gap-2 mb-4">
+                {templates.map(t => (
+                  <button key={t.id} onClick={() => handleSelectTemplate(t.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${selectedTemplateId === t.id ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-secondary"}`}>
+                    {t.name}
                   </button>
                 ))}
               </div>
+              {templates.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma escala disponível ainda.</p>}
               <div className="space-y-4">
                 {questions.map((q, i) => (
                   <div key={i}>
                     <p className="text-sm text-foreground mb-2">{i + 1}. {q}</p>
                     <div className="flex flex-wrap gap-2">
-                      {ANSWER_OPTIONS.map(opt => (
+                      {(selectedTemplate?.answerOptions ?? []).map(opt => (
                         <button
                           key={opt.value}
                           onClick={() => setAnswers(prev => prev.map((v, idx) => (idx === i ? opt.value : v)))}
@@ -2667,9 +2785,11 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
                   </div>
                 ))}
               </div>
-              <Btn variant="primary" className="w-full justify-center mt-5" disabled={submittingAssessment} onClick={handleSubmitAssessment}>
-                {submittingAssessment ? "Enviando..." : "Enviar respostas"}
-              </Btn>
+              {selectedTemplate && (
+                <Btn variant="primary" className="w-full justify-center mt-5" disabled={submittingAssessment} onClick={handleSubmitAssessment}>
+                  {submittingAssessment ? "Enviando..." : "Enviar respostas"}
+                </Btn>
+              )}
               {assessmentMessage && <p className="text-xs text-emerald-700 mt-2">{assessmentMessage}</p>}
             </Card>
 
@@ -2683,7 +2803,7 @@ function PatientDashboard({ onNavigate, currentUser, onSignOut, onEnterVideo, in
                 {assessmentHistory.map(a => (
                   <div key={a.id} className="py-3 flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-medium text-foreground">{instrumentLabel(a.instrument)}</p>
+                      <p className="text-sm font-medium text-foreground">{a.templateName}</p>
                       <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
                     </div>
                     <div className="text-right">
@@ -3143,6 +3263,9 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   const [newTime, setNewTime] = useState("09:00");
   const [newModality, setNewModality] = useState<"online" | "presencial">("online");
   const [newPrice, setNewPrice] = useState("");
+  const [newDurationMinutes, setNewDurationMinutes] = useState(50);
+  const [services, setServices] = useState<ProfessionalService[]>([]);
+  const [newServiceId, setNewServiceId] = useState("");
   const [newRecurring, setNewRecurring] = useState(false);
   const [newRecurringCount, setNewRecurringCount] = useState(4);
   const [recurringReview, setRecurringReview] = useState<{ iso: string; conflict: boolean }[] | null>(null);
@@ -3430,6 +3553,8 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       if (active) setSessionPrice(Number(data?.session_price ?? 0));
     })();
 
+    listServices(currentUser.id).then(list => { if (active) setServices(list.filter(s => s.active)); }).catch(() => {});
+
     void reloadTimeBlocks();
 
     return () => {
@@ -3449,10 +3574,22 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     setNewDate(day ? day.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
     setNewTime(hour !== undefined ? `${String(hour).padStart(2, "0")}:00` : "09:00");
     setNewPrice(String(sessionPrice));
+    setNewDurationMinutes(50);
+    setNewServiceId("");
     setNewRecurring(false);
     setNewRecurringCount(4);
     setRecurringReview(null);
     setShowNewModal(true);
+  };
+
+  const handleSelectService = (serviceId: string) => {
+    setNewServiceId(serviceId);
+    const service = services.find(s => s.id === serviceId);
+    if (service) {
+      setNewPrice(String(service.price));
+      setNewDurationMinutes(service.durationMinutes);
+      if (service.modality) setNewModality(service.modality);
+    }
   };
 
   /** Non-recurring: validates + creates in one step, unchanged. Recurring (weekly, 2–12 sessions):
@@ -3540,6 +3677,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
         scheduled_at: d.toISOString(),
         modality: newModality,
         price: priceValue,
+        duration_minutes: newDurationMinutes,
       }))
     );
 
@@ -3891,7 +4029,31 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                     <button type="button" onClick={() => setNewModality("presencial")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${newModality === "presencial" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Presencial</button>
                   </div>
                 </div>
-                <Input label="Valor (R$)" type="number" value={newPrice} onChange={setNewPrice} />
+                {services.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-foreground">Serviço (opcional)</label>
+                    <select
+                      value={newServiceId}
+                      onChange={e => handleSelectService(e.target.value)}
+                      className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    >
+                      <option value="">Valor e duração padrão</option>
+                      {services.map(s => <option key={s.id} value={s.id}>{s.name} — {s.durationMinutes}min · R${s.price.toFixed(2).replace(".", ",")}</option>)}
+                    </select>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="Valor (R$)" type="number" value={newPrice} onChange={setNewPrice} />
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-foreground">Duração (min)</label>
+                    <input
+                      type="number"
+                      value={newDurationMinutes}
+                      onChange={e => setNewDurationMinutes(Number(e.target.value) || 50)}
+                      className="px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   <input type="checkbox" id="newRecurring" checked={newRecurring} onChange={e => setNewRecurring(e.target.checked)} className="w-4 h-4" />
                   <label htmlFor="newRecurring" className="text-sm text-foreground">Repetir semanalmente</label>
@@ -4525,7 +4687,7 @@ function PatientsScreen({
 type EhrPatient = { id: string; name: string; img: string; sessionsCount: number };
 type EhrSession = {
   id: string; scheduledAt: string; modality: string; status: string; notes: string; aiSummary: string | null;
-  subjective?: string; objective?: string; assessment?: string; plan?: string;
+  subjective?: JSONContent | null; objective?: JSONContent | null; assessment?: JSONContent | null; plan?: JSONContent | null;
   signedAt?: string | null; typedName?: string | null;
 };
 
@@ -4566,7 +4728,7 @@ function patientProfileToFormState(profile: PatientProfile): PatientProfileFormS
 
 function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
   const [patientSearch, setPatientSearch] = useState("");
-  const [ehrTab, setEhrTab] = useState<"cadastro" | "historico" | "notas" | "escalas" | "materiais">("historico");
+  const [ehrTab, setEhrTab] = useState<"cadastro" | "historico" | "notas" | "escalas" | "diario" | "materiais">("historico");
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -4654,10 +4816,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [sessions, setSessions] = useState<EhrSession[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [subjectiveDraft, setSubjectiveDraft] = useState("");
-  const [objectiveDraft, setObjectiveDraft] = useState("");
-  const [assessmentDraft, setAssessmentDraft] = useState("");
-  const [planDraft, setPlanDraft] = useState("");
+  const [subjectiveDraft, setSubjectiveDraft] = useState<JSONContent>(EMPTY_TIPTAP_DOC);
+  const [objectiveDraft, setObjectiveDraft] = useState<JSONContent>(EMPTY_TIPTAP_DOC);
+  const [assessmentDraft, setAssessmentDraft] = useState<JSONContent>(EMPTY_TIPTAP_DOC);
+  const [planDraft, setPlanDraft] = useState<JSONContent>(EMPTY_TIPTAP_DOC);
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const [showSignModal, setShowSignModal] = useState(false);
@@ -4665,6 +4827,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const [signing, setSigning] = useState(false);
 
   const [improvingField, setImprovingField] = useState<"subjective" | "objective" | "assessment" | "plan" | null>(null);
+  const [transcribingField, setTranscribingField] = useState<"subjective" | "objective" | "assessment" | "plan" | null>(null);
 
   const SOAP_FIELD_SETTERS = {
     subjective: setSubjectiveDraft,
@@ -4673,12 +4836,13 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     plan: setPlanDraft,
   } as const;
 
-  const handleImproveSoapField = async (field: "subjective" | "objective" | "assessment" | "plan", currentValue: string) => {
-    if (!currentValue.trim()) return;
+  const handleImproveSoapField = async (field: "subjective" | "objective" | "assessment" | "plan", currentValue: JSONContent) => {
+    const plainText = tiptapJsonToPlainText(currentValue);
+    if (!plainText.trim()) return;
     setImprovingField(field);
     try {
-      const improved = await improveTextWithAI(currentValue);
-      if (improved) SOAP_FIELD_SETTERS[field](improved);
+      const improved = await improveTextWithAI(plainText);
+      if (improved) SOAP_FIELD_SETTERS[field](plainTextToTiptapJson(improved));
     } catch (error) {
       reportError(error, { flow: "ehr.improveSoapField" });
     } finally {
@@ -4686,7 +4850,21 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     }
   };
 
-  const [assessments, setAssessments] = useState<{ id: string; instrument: Instrument; totalScore: number; severity: string; createdAt: string }[]>([]);
+  const handleTranscribeSoapField = async (field: "subjective" | "objective" | "assessment" | "plan", file: File) => {
+    setTranscribingField(field);
+    try {
+      const text = await transcribeHandwriting(file);
+      if (text) SOAP_FIELD_SETTERS[field](plainTextToTiptapJson(text));
+      else window.alert("Não foi possível transcrever a imagem. Tente outra foto, com boa iluminação e foco.");
+    } catch (error) {
+      reportError(error, { flow: "ehr.transcribeSoapField" });
+      window.alert("Não foi possível transcrever a imagem.");
+    } finally {
+      setTranscribingField(null);
+    }
+  };
+
+  const [assessments, setAssessments] = useState<{ id: string; templateName: string; totalScore: number; severity: string; createdAt: string }[]>([]);
   const [loadingAssessmentsForPatient, setLoadingAssessmentsForPatient] = useState(false);
 
   useEffect(() => {
@@ -4699,13 +4877,13 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     (async () => {
       const { data } = await supabase
         .from("assessment_responses")
-        .select("id, instrument, total_score, severity, created_at")
+        .select("id, total_score, severity, created_at, assessment_templates(name)")
         .eq("patient_id", selectedPatientId)
         .order("created_at", { ascending: true });
       if (!active) return;
-      setAssessments((data ?? []).map(d => ({
+      setAssessments(((data ?? []) as any[]).map(d => ({
         id: d.id,
-        instrument: d.instrument as Instrument,
+        templateName: d.assessment_templates?.name ?? "Escala removida",
         totalScore: d.total_score,
         severity: d.severity,
         createdAt: d.created_at,
@@ -4716,6 +4894,106 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       active = false;
     };
   }, [selectedPatientId]);
+
+  const DEFAULT_ANSWER_OPTIONS: AnswerOption[] = [
+    { value: 0, label: "Nunca" },
+    { value: 1, label: "Vários dias" },
+    { value: 2, label: "Mais da metade dos dias" },
+    { value: 3, label: "Quase todos os dias" },
+  ];
+
+  const [myTemplates, setMyTemplates] = useState<AssessmentTemplate[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [templateName, setTemplateName] = useState("");
+  const [templateQuestions, setTemplateQuestions] = useState<string[]>([""]);
+  const [templateBands, setTemplateBands] = useState<{ max: string; label: string }[]>([{ max: "", label: "" }]);
+  const [templateError, setTemplateError] = useState("");
+  const [savingTemplate, setSavingTemplate] = useState(false);
+
+  const loadMyTemplates = async () => {
+    setLoadingTemplates(true);
+    try {
+      setMyTemplates(await listTemplates());
+    } catch (error) {
+      reportError(error, { flow: "ehr.loadTemplates" });
+    } finally {
+      setLoadingTemplates(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadMyTemplates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const openNewTemplateModal = () => {
+    setEditingTemplateId(null);
+    setTemplateName("");
+    setTemplateQuestions([""]);
+    setTemplateBands([{ max: "", label: "" }]);
+    setTemplateError("");
+    setShowTemplateModal(true);
+  };
+
+  const openEditTemplateModal = (t: AssessmentTemplate) => {
+    setEditingTemplateId(t.id);
+    setTemplateName(t.name);
+    setTemplateQuestions(t.questions.length ? t.questions : [""]);
+    setTemplateBands(
+      t.severityBands.length ? t.severityBands.map(b => ({ max: b.max === null ? "" : String(b.max), label: b.label })) : [{ max: "", label: "" }]
+    );
+    setTemplateError("");
+    setShowTemplateModal(true);
+  };
+
+  const handleSaveTemplate = async () => {
+    setTemplateError("");
+    const questions = templateQuestions.map(q => q.trim()).filter(Boolean);
+    if (!templateName.trim() || questions.length === 0) {
+      setTemplateError("Informe um nome e pelo menos uma pergunta.");
+      return;
+    }
+    const filledBands = templateBands.filter(b => b.label.trim());
+    if (filledBands.length === 0) {
+      setTemplateError("Informe pelo menos uma faixa de severidade.");
+      return;
+    }
+    // The last band is always the catch-all (max: null) — whatever "até pontuação" was typed for
+    // it is ignored, since a severity scale needs an open-ended top band by definition.
+    const bands: SeverityBand[] = filledBands.map((b, i) => ({
+      max: i === filledBands.length - 1 ? null : Number(b.max) || 0,
+      label: b.label.trim(),
+    }));
+
+    setSavingTemplate(true);
+    try {
+      if (editingTemplateId) {
+        await updateTemplate(editingTemplateId, templateName.trim(), questions, DEFAULT_ANSWER_OPTIONS, bands);
+      } else {
+        await createTemplate(currentUser.id, templateName.trim(), questions, DEFAULT_ANSWER_OPTIONS, bands);
+      }
+      setShowTemplateModal(false);
+      await loadMyTemplates();
+    } catch (error) {
+      reportError(error, { flow: "ehr.saveTemplate" });
+      setTemplateError("Não foi possível salvar. Tente novamente.");
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (id: string) => {
+    if (!window.confirm("Excluir este modelo de escala? Isso falha se já houver respostas registradas com ele.")) return;
+    try {
+      await deleteTemplate(id);
+      await loadMyTemplates();
+    } catch (error) {
+      reportError(error, { flow: "ehr.deleteTemplate" });
+      window.alert("Não foi possível excluir — provavelmente já existem respostas registradas com este modelo.");
+    }
+  };
 
   const [profileForm, setProfileForm] = useState<PatientProfileFormState>(EMPTY_PATIENT_PROFILE_FORM);
   const [loadingPatientProfile, setLoadingPatientProfile] = useState(false);
@@ -5112,10 +5390,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
           modality: a.modality,
           status: a.status,
           notes: note?.notes ?? "",
-          subjective: note?.subjective ?? "",
-          objective: note?.objective ?? "",
-          assessment: note?.assessment ?? "",
-          plan: note?.plan ?? "",
+          subjective: note?.subjective ?? null,
+          objective: note?.objective ?? null,
+          assessment: note?.assessment ?? null,
+          plan: note?.plan ?? null,
           signedAt: note?.signed_at ?? null,
           typedName: note?.typed_name ?? null,
           aiSummary: note?.ai_summary ?? null,
@@ -5124,10 +5402,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       setSessions(rows);
       const preselected = initialAppointmentId && rows.some(r => r.id === initialAppointmentId) ? rows.find(r => r.id === initialAppointmentId)! : rows[0];
       setSelectedSessionId(preselected?.id ?? null);
-      setSubjectiveDraft(preselected?.subjective ?? "");
-      setObjectiveDraft(preselected?.objective ?? "");
-      setAssessmentDraft(preselected?.assessment ?? "");
-      setPlanDraft(preselected?.plan ?? "");
+      setSubjectiveDraft(preselected?.subjective ?? EMPTY_TIPTAP_DOC);
+      setObjectiveDraft(preselected?.objective ?? EMPTY_TIPTAP_DOC);
+      setAssessmentDraft(preselected?.assessment ?? EMPTY_TIPTAP_DOC);
+      setPlanDraft(preselected?.plan ?? EMPTY_TIPTAP_DOC);
       setLoadingSessions(false);
     })();
 
@@ -5139,10 +5417,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
   const selectSession = (id: string) => {
     const session = sessions.find(s => s.id === id);
     setSelectedSessionId(id);
-    setSubjectiveDraft(session?.subjective ?? "");
-    setObjectiveDraft(session?.objective ?? "");
-    setAssessmentDraft(session?.assessment ?? "");
-    setPlanDraft(session?.plan ?? "");
+    setSubjectiveDraft(session?.subjective ?? EMPTY_TIPTAP_DOC);
+    setObjectiveDraft(session?.objective ?? EMPTY_TIPTAP_DOC);
+    setAssessmentDraft(session?.assessment ?? EMPTY_TIPTAP_DOC);
+    setPlanDraft(session?.plan ?? EMPTY_TIPTAP_DOC);
     setSaveMessage("");
   };
 
@@ -5183,7 +5461,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
     setSigning(true);
     setSaveMessage("");
     try {
-      const documentText = `${subjectiveDraft}\n${objectiveDraft}\n${assessmentDraft}\n${planDraft}`;
+      const documentText = [subjectiveDraft, objectiveDraft, assessmentDraft, planDraft].map(tiptapJsonToPlainText).join("\n");
       const hash = await hashDocumentText(documentText);
       const ok = await signSessionNote(selectedSessionId, signTypedName.trim(), hash);
       if (!ok) {
@@ -5202,6 +5480,109 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
       setSigning(false);
     }
   };
+
+  const ocrFileInputRef = useRef<HTMLInputElement>(null);
+  const [ocrTargetField, setOcrTargetField] = useState<"subjective" | "objective" | "assessment" | "plan" | null>(null);
+
+  const openOcrPicker = (field: "subjective" | "objective" | "assessment" | "plan") => {
+    setOcrTargetField(field);
+    ocrFileInputRef.current?.click();
+  };
+
+  const handleOcrFileChange = (e: any) => {
+    const file = e.target.files?.[0] as File | undefined;
+    e.target.value = "";
+    if (file && ocrTargetField) void handleTranscribeSoapField(ocrTargetField, file);
+  };
+
+  /** Inserted image URLs are 7-day signed URLs (patient-documents is a private bucket, same RLS as
+   *  every other patient attachment) — good enough for a note reviewed soon after it's written, but
+   *  a note re-opened after the URL expires would show a broken image. A proper fix would resolve a
+   *  stored storage path to a fresh signed URL at render time; out of scope for this pass. */
+  const handleEditorImageUpload = async (patientId: string): Promise<string | null> => {
+    return new Promise(resolve => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve(null);
+          return;
+        }
+        try {
+          const path = `${patientId}/session-notes/${Date.now()}-${file.name}`;
+          const { error: uploadError } = await supabase.storage.from("patient-documents").upload(path, file);
+          if (uploadError) throw uploadError;
+          const { data, error: signError } = await supabase.storage.from("patient-documents").createSignedUrl(path, 60 * 60 * 24 * 7);
+          if (signError || !data) throw signError ?? new Error("Sem URL assinada.");
+          resolve(data.signedUrl);
+        } catch (error) {
+          reportError(error, { flow: "ehr.uploadNoteImage" });
+          window.alert("Não foi possível enviar a imagem.");
+          resolve(null);
+        }
+      };
+      input.click();
+    });
+  };
+
+  const [planningSession, setPlanningSession] = useState(false);
+  const [sessionPlan, setSessionPlan] = useState<SessionPlan | null>(null);
+  const [sessionPlanConsent, setSessionPlanConsent] = useState(false);
+  const [sessionPlanError, setSessionPlanError] = useState("");
+
+  useEffect(() => {
+    setSessionPlan(null);
+    setSessionPlanConsent(false);
+    setSessionPlanError("");
+  }, [selectedPatientId]);
+
+  const handlePlanSession = async () => {
+    if (!selectedPatientId) return;
+    setPlanningSession(true);
+    setSessionPlanError("");
+    try {
+      const plan = await planSessionWithAI(selectedPatientId);
+      if (!plan) {
+        setSessionPlanError("Não foi possível gerar sugestões. Tente novamente.");
+        return;
+      }
+      setSessionPlan(plan);
+    } catch (error) {
+      reportError(error, { flow: "ehr.planSession" });
+      setSessionPlanError("Não foi possível gerar sugestões.");
+    } finally {
+      setPlanningSession(false);
+    }
+  };
+
+  const DIARY_LINE_COLORS = ["#1B7A48", "#3B6FA8", "#E8A33D", "#8B5CF6", "#EC4899"];
+  const assessmentTemplateNames = Array.from(new Set(assessments.map(a => a.templateName)));
+  const scoreChartData = Object.values(
+    assessments.reduce<Record<string, any>>((acc, a) => {
+      if (!acc[a.createdAt]) acc[a.createdAt] = { date: new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" }), createdAt: a.createdAt };
+      acc[a.createdAt][a.templateName] = a.totalScore;
+      return acc;
+    }, {})
+  ).sort((a: any, b: any) => a.createdAt.localeCompare(b.createdAt));
+
+  type DiaryEntry =
+    | { type: "session"; date: string; id: string; excerpt: string; signedAt: string | null }
+    | { type: "assessment"; date: string; id: string; templateName: string; totalScore: number; severity: string };
+
+  const diaryEntries: DiaryEntry[] = [
+    ...sessions
+      .filter(s => s.subjective || s.objective || s.assessment || s.plan || s.notes)
+      .map((s): DiaryEntry => ({
+        type: "session",
+        date: s.scheduledAt,
+        id: s.id,
+        excerpt: [s.subjective, s.objective, s.assessment, s.plan].map(tiptapJsonToPlainText).filter(Boolean).join(" · ") || s.notes,
+        signedAt: s.signedAt ?? null,
+      })),
+    ...assessments.map((a): DiaryEntry => ({ type: "assessment", date: a.createdAt, id: a.id, templateName: a.templateName, totalScore: a.totalScore, severity: a.severity })),
+  ].sort((a, b) => b.date.localeCompare(a.date));
 
   const filteredPatients = patients
     .filter(p => p.name.toLowerCase().includes(patientSearch.trim().toLowerCase()))
@@ -5300,10 +5681,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                 </div>
 
                 <div className="flex gap-1 border-t border-border pt-3">
-                  {(["cadastro", "historico", "notas", "escalas", "materiais"] as const).map(t => (
+                  {(["cadastro", "historico", "notas", "escalas", "diario", "materiais"] as const).map(t => (
                     <button key={t} onClick={() => setEhrTab(t)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${ehrTab === t ? "bg-secondary text-primary" : "text-muted-foreground hover:bg-muted"}`}>
-                      {t === "cadastro" ? "Cadastro" : t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : t === "escalas" ? "Escalas" : "Biblioteca"}
+                      {t === "cadastro" ? "Cadastro" : t === "historico" ? "Histórico" : t === "notas" ? "Notas Seguras" : t === "escalas" ? "Escalas" : t === "diario" ? "Diário de Bordo" : "Biblioteca"}
                     </button>
                   ))}
                 </div>
@@ -5609,47 +5990,126 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
               )}
 
               {ehrTab === "escalas" && (
-                <Card className="p-6">
-                  <h3 className="font-semibold text-foreground font-display mb-1">Escalas psicológicas</h3>
-                  <p className="text-xs text-muted-foreground mb-4">Pontuações de PHQ-9/GAD-7 que {selectedPatient?.name ?? "o paciente"} preencheu, na ordem em que foram respondidas.</p>
-                  {loadingAssessmentsForPatient && <p className="text-sm text-muted-foreground">Carregando...</p>}
-                  {!loadingAssessmentsForPatient && assessments.length === 0 && (
-                    <p className="text-sm text-muted-foreground">Este paciente ainda não respondeu nenhuma escala.</p>
-                  )}
-                  {!loadingAssessmentsForPatient && assessments.length > 0 && (
-                    <>
-                      <div className="h-52 mb-4">
+                <div className="space-y-4">
+                  <Card className="p-6">
+                    <h3 className="font-semibold text-foreground font-display mb-1">Escalas psicológicas</h3>
+                    <p className="text-xs text-muted-foreground mb-4">Pontuações que {selectedPatient?.name ?? "o paciente"} preencheu, na ordem em que foram respondidas.</p>
+                    {loadingAssessmentsForPatient && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                    {!loadingAssessmentsForPatient && assessments.length === 0 && (
+                      <p className="text-sm text-muted-foreground">Este paciente ainda não respondeu nenhuma escala.</p>
+                    )}
+                    {!loadingAssessmentsForPatient && assessments.length > 0 && (
+                      <>
+                        <div className="h-52 mb-4">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={assessments.map(a => ({
+                              label: new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }),
+                              score: a.totalScore,
+                              templateName: a.templateName,
+                            }))}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
+                              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                              <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                              <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} formatter={(value: number, _name, item: any) => [`${value} pontos`, item.payload.templateName]} />
+                              <Bar dataKey="score" fill="#1B7A48" radius={[6, 6, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="divide-y divide-border">
+                          {assessments.slice().reverse().map(a => (
+                            <div key={a.id} className="py-2.5 flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-medium text-foreground">{a.templateName}</p>
+                                <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-sm font-semibold text-foreground">{a.totalScore} pontos</p>
+                                <p className="text-xs text-muted-foreground">{a.severity}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </Card>
+
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-1">
+                      <h3 className="font-semibold text-foreground font-display">Meus modelos de escala</h3>
+                      <Btn variant="outline" size="sm" onClick={openNewTemplateModal}><Plus size={14} />Criar modelo</Btn>
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-4">PHQ-9 e GAD-7 vêm prontos; crie os seus próprios instrumentos com perguntas e faixas de severidade personalizadas.</p>
+                    {loadingTemplates && <p className="text-sm text-muted-foreground">Carregando...</p>}
+                    <div className="divide-y divide-border">
+                      {myTemplates.map(t => (
+                        <div key={t.id} className="py-2.5 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-foreground">{t.name}</p>
+                            <p className="text-xs text-muted-foreground">{t.questions.length} pergunta{t.questions.length !== 1 ? "s" : ""}{t.professionalId === null ? " · modelo padrão" : ""}</p>
+                          </div>
+                          {t.professionalId !== null && (
+                            <div className="flex items-center gap-2">
+                              <Btn variant="ghost" size="sm" onClick={() => openEditTemplateModal(t)}><Edit3 size={13} /></Btn>
+                              <Btn variant="ghost" size="sm" onClick={() => handleDeleteTemplate(t.id)}><Trash2 size={13} /></Btn>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
+              )}
+
+              {ehrTab === "diario" && (
+                <div className="space-y-4">
+                  <Card className="p-6">
+                    <h3 className="font-semibold text-foreground font-display mb-1">Evolução das escalas</h3>
+                    <p className="text-xs text-muted-foreground mb-4">Pontuação de cada instrumento respondido ao longo do tempo.</p>
+                    {scoreChartData.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">Nenhuma escala respondida ainda.</p>
+                    ) : (
+                      <div className="h-56">
                         <ResponsiveContainer width="100%" height="100%">
-                          <BarChart data={assessments.map(a => ({
-                            label: new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }),
-                            score: a.totalScore,
-                            instrument: a.instrument,
-                          }))}>
+                          <LineChart data={scoreChartData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#EEF6F1" />
-                            <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
+                            <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
                             <YAxis tick={{ fontSize: 11, fill: "#547A65" }} axisLine={false} tickLine={false} />
-                            <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} formatter={(value: number, _name, item: any) => [`${value} pontos`, instrumentLabel(item.payload.instrument)]} />
-                            <Bar dataKey="score" fill="#1B7A48" radius={[6, 6, 0, 0]} />
-                          </BarChart>
+                            <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #E8F5EE", fontSize: 12 }} />
+                            <Legend wrapperStyle={{ fontSize: 11 }} />
+                            {assessmentTemplateNames.map((name, i) => (
+                              <Line key={name} type="monotone" dataKey={name} stroke={DIARY_LINE_COLORS[i % DIARY_LINE_COLORS.length]} strokeWidth={2} connectNulls dot={{ r: 3 }} />
+                            ))}
+                          </LineChart>
                         </ResponsiveContainer>
                       </div>
-                      <div className="divide-y divide-border">
-                        {assessments.slice().reverse().map(a => (
-                          <div key={a.id} className="py-2.5 flex items-center justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-medium text-foreground">{instrumentLabel(a.instrument)}</p>
-                              <p className="text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
-                            </div>
-                            <div className="text-right">
-                              <p className="text-sm font-semibold text-foreground">{a.totalScore} pontos</p>
-                              <p className="text-xs text-muted-foreground">{a.severity}</p>
-                            </div>
+                    )}
+                  </Card>
+
+                  <Card className="p-6">
+                    <h3 className="font-semibold text-foreground font-display mb-4">Linha do tempo</h3>
+                    {diaryEntries.length === 0 && <p className="text-sm text-muted-foreground">Nenhum registro ainda.</p>}
+                    <div className="space-y-3">
+                      {diaryEntries.map(entry => (
+                        <div key={`${entry.type}-${entry.id}`} className="flex gap-3">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${entry.type === "session" ? "bg-primary/10 text-primary" : "bg-amber-100 text-amber-700"}`}>
+                            {entry.type === "session" ? <FileText size={14} /> : <BarChart2 size={14} />}
                           </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </Card>
+                          <div className="flex-1 min-w-0 pb-3 border-b border-border/50">
+                            <p className="text-xs text-muted-foreground">{new Date(entry.date).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}</p>
+                            {entry.type === "session" ? (
+                              <p className="text-sm text-foreground">
+                                {entry.excerpt ? (entry.excerpt.length > 160 ? `${entry.excerpt.slice(0, 160)}…` : entry.excerpt) : "Sem conteúdo registrado."}
+                                {entry.signedAt && <span className="text-emerald-600"> (assinada)</span>}
+                              </p>
+                            ) : (
+                              <p className="text-sm text-foreground">{entry.templateName}: <span className="font-medium">{entry.totalScore} pontos</span> — {entry.severity}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
               )}
 
               {ehrTab === "historico" && (
@@ -5676,10 +6136,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       </div>
                       {s.subjective || s.objective || s.assessment || s.plan ? (
                         <div className="space-y-1.5 text-sm text-muted-foreground leading-relaxed">
-                          {s.subjective && <p><span className="font-medium text-foreground">S: </span>{s.subjective}</p>}
-                          {s.objective && <p><span className="font-medium text-foreground">O: </span>{s.objective}</p>}
-                          {s.assessment && <p><span className="font-medium text-foreground">A: </span>{s.assessment}</p>}
-                          {s.plan && <p><span className="font-medium text-foreground">P: </span>{s.plan}</p>}
+                          {s.subjective && <p><span className="font-medium text-foreground">S: </span>{tiptapJsonToPlainText(s.subjective)}</p>}
+                          {s.objective && <p><span className="font-medium text-foreground">O: </span>{tiptapJsonToPlainText(s.objective)}</p>}
+                          {s.assessment && <p><span className="font-medium text-foreground">A: </span>{tiptapJsonToPlainText(s.assessment)}</p>}
+                          {s.plan && <p><span className="font-medium text-foreground">P: </span>{tiptapJsonToPlainText(s.plan)}</p>}
                         </div>
                       ) : (
                         <p className="text-sm text-muted-foreground leading-relaxed">{s.notes || "Nenhuma nota clínica registrada para esta sessão ainda."}</p>
@@ -5727,75 +6187,37 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                         </div>
                       )}
 
+                      <input ref={ocrFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleOcrFileChange} />
+
                       <div className="space-y-3">
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-foreground">Subjetivo</label>
-                            {!selectedSession?.signedAt && (
-                              <Btn variant="ghost" size="sm" disabled={!subjectiveDraft.trim() || improvingField === "subjective"} onClick={() => handleImproveSoapField("subjective", subjectiveDraft)}>
-                                <Brain size={12} />{improvingField === "subjective" ? "Melhorando..." : "Melhorar com IA"}
-                              </Btn>
-                            )}
-                          </div>
-                          <textarea
-                            value={subjectiveDraft}
-                            onChange={e => setSubjectiveDraft(e.target.value)}
-                            disabled={Boolean(selectedSession?.signedAt)}
-                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
-                            placeholder="Relato do paciente, queixas, percepções..."
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-foreground">Objetivo</label>
-                            {!selectedSession?.signedAt && (
-                              <Btn variant="ghost" size="sm" disabled={!objectiveDraft.trim() || improvingField === "objective"} onClick={() => handleImproveSoapField("objective", objectiveDraft)}>
-                                <Brain size={12} />{improvingField === "objective" ? "Melhorando..." : "Melhorar com IA"}
-                              </Btn>
-                            )}
-                          </div>
-                          <textarea
-                            value={objectiveDraft}
-                            onChange={e => setObjectiveDraft(e.target.value)}
-                            disabled={Boolean(selectedSession?.signedAt)}
-                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
-                            placeholder="Observações objetivas do profissional durante a sessão..."
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-foreground">Avaliação</label>
-                            {!selectedSession?.signedAt && (
-                              <Btn variant="ghost" size="sm" disabled={!assessmentDraft.trim() || improvingField === "assessment"} onClick={() => handleImproveSoapField("assessment", assessmentDraft)}>
-                                <Brain size={12} />{improvingField === "assessment" ? "Melhorando..." : "Melhorar com IA"}
-                              </Btn>
-                            )}
-                          </div>
-                          <textarea
-                            value={assessmentDraft}
-                            onChange={e => setAssessmentDraft(e.target.value)}
-                            disabled={Boolean(selectedSession?.signedAt)}
-                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
-                            placeholder="Análise clínica, hipóteses diagnósticas, evolução..."
-                          />
-                        </div>
-                        <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between">
-                            <label className="text-sm font-medium text-foreground">Plano</label>
-                            {!selectedSession?.signedAt && (
-                              <Btn variant="ghost" size="sm" disabled={!planDraft.trim() || improvingField === "plan"} onClick={() => handleImproveSoapField("plan", planDraft)}>
-                                <Brain size={12} />{improvingField === "plan" ? "Melhorando..." : "Melhorar com IA"}
-                              </Btn>
-                            )}
-                          </div>
-                          <textarea
-                            value={planDraft}
-                            onChange={e => setPlanDraft(e.target.value)}
-                            disabled={Boolean(selectedSession?.signedAt)}
-                            className="w-full h-20 p-3 bg-input-background border border-border rounded-xl text-sm text-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground disabled:opacity-60"
-                            placeholder="Conduta, próximos passos, encaminhamentos..."
-                          />
-                        </div>
+                        {(["subjective", "objective", "assessment", "plan"] as const).map(field => {
+                          const labels = { subjective: "Subjetivo", objective: "Objetivo", assessment: "Avaliação", plan: "Plano" } as const;
+                          const drafts = { subjective: subjectiveDraft, objective: objectiveDraft, assessment: assessmentDraft, plan: planDraft } as const;
+                          const isEmpty = !tiptapJsonToPlainText(drafts[field]).trim();
+                          return (
+                            <div key={field} className="flex flex-col gap-1.5">
+                              <div className="flex items-center justify-between">
+                                <label className="text-sm font-medium text-foreground">{labels[field]}</label>
+                                {!selectedSession?.signedAt && (
+                                  <div className="flex items-center gap-1">
+                                    <Btn variant="ghost" size="sm" disabled={transcribingField === field} onClick={() => openOcrPicker(field)}>
+                                      <ScanText size={12} />{transcribingField === field ? "Transcrevendo..." : "Transcrever foto"}
+                                    </Btn>
+                                    <Btn variant="ghost" size="sm" disabled={isEmpty || improvingField === field} onClick={() => handleImproveSoapField(field, drafts[field])}>
+                                      <Brain size={12} />{improvingField === field ? "Melhorando..." : "Melhorar com IA"}
+                                    </Btn>
+                                  </div>
+                                )}
+                              </div>
+                              <RichTextEditor
+                                content={drafts[field]}
+                                onChange={SOAP_FIELD_SETTERS[field]}
+                                disabled={Boolean(selectedSession?.signedAt)}
+                                onImageUpload={selectedPatientId ? () => handleEditorImageUpload(selectedPatientId) : undefined}
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {selectedSession?.aiSummary && (
@@ -5810,7 +6232,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           <Btn
                             variant="primary"
                             size="sm"
-                            disabled={!subjectiveDraft.trim() && !objectiveDraft.trim() && !assessmentDraft.trim() && !planDraft.trim()}
+                            disabled={[subjectiveDraft, objectiveDraft, assessmentDraft, planDraft].every(d => !tiptapJsonToPlainText(d).trim())}
                             onClick={() => setShowSignModal(true)}
                           >
                             <Edit3 size={13} />Assinar digitalmente
@@ -5818,6 +6240,33 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                         </div>
                       )}
                     </>
+                  )}
+                </Card>
+              )}
+
+              {ehrTab === "notas" && selectedPatientId && (
+                <Card className="p-6 mt-4">
+                  <h3 className="font-semibold text-foreground font-display mb-1 flex items-center gap-2"><Sparkles size={16} />Planejar sessão com IA</h3>
+                  <p className="text-xs text-muted-foreground mb-3">Sugestões de pauta pra próxima sessão, a partir do histórico de notas e escalas deste paciente.</p>
+                  {!sessionPlan ? (
+                    <>
+                      <label className="flex items-start gap-2 text-xs text-muted-foreground mb-3">
+                        <input type="checkbox" checked={sessionPlanConsent} onChange={e => setSessionPlanConsent(e.target.checked)} className="mt-0.5" />
+                        Autorizo o envio do histórico de notas e escalas deste paciente (várias sessões, não só uma) para o Google (Gemini, IA) gerar sugestões de pauta.
+                      </label>
+                      <Btn variant="outline" size="sm" disabled={!sessionPlanConsent || planningSession} onClick={handlePlanSession}>
+                        <Sparkles size={14} />{planningSession ? "Gerando..." : "Planejar sessão com IA"}
+                      </Btn>
+                      {sessionPlanError && <p className="text-xs text-amber-700 mt-2">{sessionPlanError}</p>}
+                    </>
+                  ) : (
+                    <div className="space-y-2">
+                      <ul className="list-disc pl-5 text-sm text-foreground space-y-1">
+                        {sessionPlan.topics.map((t, i) => <li key={i}>{t}</li>)}
+                      </ul>
+                      {sessionPlan.notes && <p className="text-xs text-muted-foreground p-3 bg-secondary rounded-xl">{sessionPlan.notes}</p>}
+                      <Btn variant="ghost" size="sm" onClick={() => setSessionPlan(null)}>Gerar novamente</Btn>
+                    </div>
                   )}
                 </Card>
               )}
@@ -5863,6 +6312,73 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
               )}
               <Btn variant="primary" className="w-full justify-center" onClick={handleSendUpdateLink} disabled={sendingUpdateLink}>
                 {sendingUpdateLink ? "Enviando..." : "Enviar link"}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTemplateModal && (
+        <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowTemplateModal(false)}>
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-start justify-between mb-4">
+              <h2 className="text-lg font-bold text-foreground font-display">{editingTemplateId ? "Editar modelo" : "Criar modelo"}</h2>
+              <button type="button" onClick={() => setShowTemplateModal(false)} className="text-muted-foreground hover:text-foreground"><X size={18} /></button>
+            </div>
+            <div className="space-y-4">
+              <Input label="Nome do modelo" placeholder="Ex.: Escala de qualidade do sono" value={templateName} onChange={setTemplateName} />
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-foreground">Perguntas</label>
+                {templateQuestions.map((q, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      value={q}
+                      onChange={e => setTemplateQuestions(prev => prev.map((v, idx) => (idx === i ? e.target.value : v)))}
+                      placeholder={`Pergunta ${i + 1}`}
+                      className="flex-1 px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                    {templateQuestions.length > 1 && (
+                      <button type="button" onClick={() => setTemplateQuestions(prev => prev.filter((_, idx) => idx !== i))} className="text-muted-foreground hover:text-red-600"><X size={16} /></button>
+                    )}
+                  </div>
+                ))}
+                <Btn variant="ghost" size="sm" onClick={() => setTemplateQuestions(prev => [...prev, ""])} className="self-start"><Plus size={13} />Adicionar pergunta</Btn>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-foreground">Faixas de severidade</label>
+                <p className="text-xs text-muted-foreground -mt-1">Cada resposta vale de 0 a 3 pontos. A última faixa não precisa de "até pontuação" — ela cobre tudo acima da faixa anterior.</p>
+                {templateBands.map((b, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    {i < templateBands.length - 1 ? (
+                      <input
+                        type="number"
+                        value={b.max}
+                        onChange={e => setTemplateBands(prev => prev.map((v, idx) => (idx === i ? { ...v, max: e.target.value } : v)))}
+                        placeholder="Até pontuação"
+                        className="w-32 px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      />
+                    ) : (
+                      <span className="w-32 text-xs text-muted-foreground">Acima disso</span>
+                    )}
+                    <input
+                      value={b.label}
+                      onChange={e => setTemplateBands(prev => prev.map((v, idx) => (idx === i ? { ...v, label: e.target.value } : v)))}
+                      placeholder="Rótulo (ex.: Leve)"
+                      className="flex-1 px-3 py-2.5 bg-input-background border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                    {templateBands.length > 1 && (
+                      <button type="button" onClick={() => setTemplateBands(prev => prev.filter((_, idx) => idx !== i))} className="text-muted-foreground hover:text-red-600"><X size={16} /></button>
+                    )}
+                  </div>
+                ))}
+                <Btn variant="ghost" size="sm" onClick={() => setTemplateBands(prev => [...prev, { max: "", label: "" }])} className="self-start"><Plus size={13} />Adicionar faixa</Btn>
+              </div>
+
+              {templateError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{templateError}</div>}
+              <Btn variant="primary" className="w-full justify-center" onClick={handleSaveTemplate} disabled={savingTemplate}>
+                {savingTemplate ? "Salvando..." : "Salvar modelo"}
               </Btn>
             </div>
           </div>
@@ -7859,6 +8375,98 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
 
+  const [locations, setLocations] = useState<ProfessionalLocation[]>([]);
+  const [services, setServices] = useState<ProfessionalService[]>([]);
+  const [loadingLocations, setLoadingLocations] = useState(true);
+  const [newLocationLabel, setNewLocationLabel] = useState("");
+  const [newLocationCity, setNewLocationCity] = useState("");
+  const [newLocationState, setNewLocationState] = useState("");
+  const [savingLocation, setSavingLocation] = useState(false);
+  const [newServiceName, setNewServiceName] = useState("");
+  const [newServiceDuration, setNewServiceDuration] = useState("50");
+  const [newServicePrice, setNewServicePrice] = useState("");
+  const [savingService, setSavingService] = useState(false);
+
+  const loadLocationsAndServices = async () => {
+    setLoadingLocations(true);
+    try {
+      const [locs, svcs] = await Promise.all([listLocations(currentUser.id), listServices(currentUser.id)]);
+      setLocations(locs);
+      setServices(svcs);
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.loadLocationsAndServices" });
+    } finally {
+      setLoadingLocations(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadLocationsAndServices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const handleAddLocation = async () => {
+    if (!newLocationLabel.trim()) return;
+    setSavingLocation(true);
+    try {
+      await createLocation(currentUser.id, {
+        label: newLocationLabel.trim(),
+        addressStreet: null, addressNumber: null, addressComplement: null, addressNeighborhood: null,
+        addressCity: newLocationCity.trim() || null, addressState: newLocationState.trim() || null, addressZip: null,
+        isPrimary: locations.length === 0,
+      });
+      setNewLocationLabel("");
+      setNewLocationCity("");
+      setNewLocationState("");
+      await loadLocationsAndServices();
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.addLocation" });
+    } finally {
+      setSavingLocation(false);
+    }
+  };
+
+  const handleRemoveLocation = async (id: string) => {
+    try {
+      await deleteLocation(id);
+      await loadLocationsAndServices();
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.removeLocation" });
+    }
+  };
+
+  const handleAddService = async () => {
+    const price = Number(newServicePrice);
+    if (!newServiceName.trim() || !newServicePrice || Number.isNaN(price) || price < 0) return;
+    setSavingService(true);
+    try {
+      await createService(currentUser.id, {
+        name: newServiceName.trim(),
+        durationMinutes: Math.max(1, Number(newServiceDuration) || 50),
+        price,
+        modality: null,
+        active: true,
+      });
+      setNewServiceName("");
+      setNewServiceDuration("50");
+      setNewServicePrice("");
+      await loadLocationsAndServices();
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.addService" });
+    } finally {
+      setSavingService(false);
+    }
+  };
+
+  const handleRemoveService = async (id: string) => {
+    try {
+      await deleteService(id);
+      await loadLocationsAndServices();
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.removeService" });
+    }
+  };
+
   const toggleTargetAudience = (value: string) => {
     setTargetAudience(prev => (prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]));
   };
@@ -8259,6 +8867,59 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           )}
 
           <Btn variant="primary" onClick={handleSaveProfile} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Btn>
+        </Card>
+
+        <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Locais e Serviços</h2>
+          <p className="text-xs text-muted-foreground -mt-2">Aparecem no seu perfil público e como opção rápida ao criar uma consulta na Agenda.</p>
+
+          {loadingLocations && <p className="text-sm text-muted-foreground">Carregando...</p>}
+
+          <div>
+            <h3 className="text-sm font-medium text-foreground mb-2">Locais de atendimento</h3>
+            <div className="space-y-2 mb-3">
+              {locations.map(l => (
+                <div key={l.id} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium text-foreground">{l.label}</span>
+                    {(l.addressCity || l.addressState) && <span className="text-muted-foreground"> · {[l.addressCity, l.addressState].filter(Boolean).join(", ")}</span>}
+                  </div>
+                  <button type="button" onClick={() => handleRemoveLocation(l.id)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-4 gap-2">
+              <Input placeholder="Nome (ex.: Consultório Centro)" value={newLocationLabel} onChange={setNewLocationLabel} className="sm:col-span-2" />
+              <Input placeholder="Cidade" value={newLocationCity} onChange={setNewLocationCity} />
+              <Input placeholder="UF" value={newLocationState} onChange={setNewLocationState} />
+            </div>
+            <Btn variant="outline" size="sm" className="mt-2" onClick={handleAddLocation} disabled={savingLocation || !newLocationLabel.trim()}>
+              <Plus size={13} />Adicionar local
+            </Btn>
+          </div>
+
+          <div className="pt-3 border-t border-border">
+            <h3 className="text-sm font-medium text-foreground mb-2">Serviços oferecidos</h3>
+            <div className="space-y-2 mb-3">
+              {services.map(s => (
+                <div key={s.id} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium text-foreground">{s.name}</span>
+                    <span className="text-muted-foreground"> · {s.durationMinutes}min · R${s.price.toFixed(2).replace(".", ",")}</span>
+                  </div>
+                  <button type="button" onClick={() => handleRemoveService(s.id)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+                </div>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-4 gap-2">
+              <Input placeholder="Nome (ex.: Sessão individual)" value={newServiceName} onChange={setNewServiceName} className="sm:col-span-2" />
+              <Input placeholder="Duração (min)" type="number" value={newServiceDuration} onChange={setNewServiceDuration} />
+              <Input placeholder="Valor (R$)" type="number" value={newServicePrice} onChange={setNewServicePrice} />
+            </div>
+            <Btn variant="outline" size="sm" className="mt-2" onClick={handleAddService} disabled={savingService || !newServiceName.trim() || !newServicePrice}>
+              <Plus size={13} />Adicionar serviço
+            </Btn>
+          </div>
         </Card>
 
         <Card className="p-6 space-y-4">
