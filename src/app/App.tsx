@@ -37,10 +37,11 @@ import {
 } from "../lib/professionalLocations";
 import {
   inviteStaffMember, listMyStaff, removeStaffMember, listMyProfessionals,
+  inviteClinicProfessional, listClinicProfessionals,
   type StaffMember, type ClinicProfessional,
 } from "../lib/clinics";
 import {
-  listPlans, getMySubscription, createSubscription,
+  listPlans, getMySubscription, createSubscription, getSubscriptionAccess,
   type SubscriptionPlan, type ProfessionalSubscription,
 } from "../lib/subscriptions";
 import {
@@ -342,6 +343,21 @@ function RichTextEditor({ content, onChange, disabled, onImageUpload }: {
 
 /** Loading placeholder — a plain animated bar. Compose these into shapes (SkeletonProfessionalCard
  *  below) instead of showing "Carregando..." text where the real layout is known ahead of time. */
+/** Shown at the top of Agenda/Pacientes/Prontuário/Financeiro/IA/Biblioteca while the professional
+ *  (or their clinic) hasn't got an active subscription yet — those screens stay fully browsable,
+ *  this is just the explanation for why their action buttons are disabled. Configurações/Meu plano
+ *  is the one screen that's never gated, so the CTA always points there. */
+function SubscriptionLockedBanner({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 mb-4 flex items-center justify-between gap-3 flex-wrap">
+      <p className="text-sm text-amber-800">
+        <span className="font-medium">Assinatura pendente.</span> Você pode conhecer esta área, mas ações como criar, salvar ou enviar ficam liberadas depois do pagamento.
+      </p>
+      <Btn variant="primary" size="sm" onClick={() => onNavigate("professional-settings")}>Ir para Meu plano</Btn>
+    </div>
+  );
+}
+
 function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse bg-muted rounded ${className}`} />;
 }
@@ -3340,9 +3356,10 @@ function needsConfirmation(a: CalendarAppointment): boolean {
 const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–19:00
 const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr, activeProfessionalId, staffProfessionals, onChangeActiveProfessional }: AuthenticatedScreenProps & {
+function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr, activeProfessionalId, staffProfessionals, onChangeActiveProfessional, subscriptionUnlocked }: AuthenticatedScreenProps & {
   onEnterVideo: (appointmentId: string) => void; onOpenEhr: (patientId: string, appointmentId: string) => void;
   activeProfessionalId: string; staffProfessionals: ClinicProfessional[]; onChangeActiveProfessional: (id: string) => void;
+  subscriptionUnlocked: boolean;
 }) {
   const currentTime = useCurrentTime();
   const [view, setView] = useState<"week" | "month" | "day">("week");
@@ -3879,6 +3896,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   return (
     <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-4 h-full">
+        {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
         {isStaff && staffProfessionals.length > 0 && (
           <div className="flex items-center gap-2">
             <label className="text-xs font-medium text-muted-foreground">Atendendo por</label>
@@ -3925,8 +3943,8 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${view === v ? "bg-white text-foreground shadow-sm" : "text-muted-foreground"}`}>{v === "day" ? "Dia" : v === "week" ? "Semana" : "Mês"}</button>
               ))}
             </div>
-            <Btn variant="primary" size="sm" onClick={() => openNewAppointmentModal()}><Plus size={15} />Nova consulta</Btn>
-            <Btn variant="outline" size="sm" onClick={openBlockModal}><Lock size={15} />Bloquear horário</Btn>
+            <Btn variant="primary" size="sm" onClick={() => openNewAppointmentModal()} disabled={!subscriptionUnlocked}><Plus size={15} />Nova consulta</Btn>
+            <Btn variant="outline" size="sm" onClick={openBlockModal} disabled={!subscriptionUnlocked}><Lock size={15} />Bloquear horário</Btn>
             {googleConnected ? (
               <Btn variant="outline" size="sm" onClick={handleSyncGoogle} disabled={googleSyncing}><RefreshCw size={15} />{googleSyncing ? "Sincronizando..." : "Sincronizar Google"}</Btn>
             ) : (
@@ -4033,7 +4051,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                     </p>
                     {b.reason && <p className="text-xs text-muted-foreground truncate">{b.reason}</p>}
                   </div>
-                  <button type="button" onClick={() => handleDeleteTimeBlock(b.id)} className="flex-shrink-0 text-muted-foreground hover:text-red-600"><Trash2 size={15} /></button>
+                  <button type="button" onClick={() => handleDeleteTimeBlock(b.id)} disabled={!subscriptionUnlocked} className="flex-shrink-0 text-muted-foreground hover:text-red-600 disabled:opacity-40 disabled:pointer-events-none"><Trash2 size={15} /></button>
                 </div>
               ))}
             </div>
@@ -4067,9 +4085,9 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
               )}
               {selectedAppointment.status === "scheduled" && (
                 <>
-                  <Btn variant="outline" onClick={openRescheduleModal}><RefreshCw size={14} />Reagendar</Btn>
-                  <Btn variant="outline" disabled={markingNoShow} onClick={handleMarkNoShow}>{markingNoShow ? "Marcando..." : "Marcar falta"}</Btn>
-                  <Btn variant="danger" disabled={cancelling} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
+                  <Btn variant="outline" onClick={openRescheduleModal} disabled={!subscriptionUnlocked}><RefreshCw size={14} />Reagendar</Btn>
+                  <Btn variant="outline" disabled={markingNoShow || !subscriptionUnlocked} onClick={handleMarkNoShow}>{markingNoShow ? "Marcando..." : "Marcar falta"}</Btn>
+                  <Btn variant="danger" disabled={cancelling || !subscriptionUnlocked} onClick={handleCancelAppointment}>{cancelling ? "Cancelando..." : "Cancelar consulta"}</Btn>
                 </>
               )}
             </div>
@@ -4093,7 +4111,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 <Input label="Novo horário" type="time" value={rescheduleTime} onChange={setRescheduleTime} />
               </div>
               {rescheduleError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{rescheduleError}</div>}
-              <Btn variant="primary" className="w-full justify-center" onClick={handleRescheduleAppointment} disabled={rescheduling}>
+              <Btn variant="primary" className="w-full justify-center" onClick={handleRescheduleAppointment} disabled={rescheduling || !subscriptionUnlocked}>
                 {rescheduling ? "Reagendando..." : "Confirmar novo horário"}
               </Btn>
             </div>
@@ -4128,7 +4146,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 {newError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newError}</div>}
                 <div className="flex gap-2">
                   <Btn variant="outline" className="flex-1 justify-center" onClick={() => setRecurringReview(null)} disabled={creating}>Voltar</Btn>
-                  <Btn variant="primary" className="flex-1 justify-center" onClick={handleCreateAppointment} disabled={creating}>{creating ? "Criando..." : "Confirmar"}</Btn>
+                  <Btn variant="primary" className="flex-1 justify-center" onClick={handleCreateAppointment} disabled={creating || !subscriptionUnlocked}>{creating ? "Criando..." : "Confirmar"}</Btn>
                 </div>
               </div>
             ) : (
@@ -4199,7 +4217,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                   </div>
                 )}
                 {newError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newError}</div>}
-                <Btn variant="primary" className="w-full justify-center" onClick={handleCreateAppointment} disabled={creating}>
+                <Btn variant="primary" className="w-full justify-center" onClick={handleCreateAppointment} disabled={creating || !subscriptionUnlocked}>
                   {creating ? "Criando..." : newRecurring ? "Revisar consultas" : "Criar consulta"}
                 </Btn>
               </div>
@@ -4228,7 +4246,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 </div>
                 <Input label="Motivo (opcional)" placeholder="Ex.: Compromisso pessoal" value={blockReason} onChange={setBlockReason} />
                 {blockError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{blockError}</div>}
-                <Btn variant="primary" className="w-full justify-center" onClick={handleSubmitBlock} disabled={blocking}>{blocking ? "Bloqueando..." : "Bloquear horário"}</Btn>
+                <Btn variant="primary" className="w-full justify-center" onClick={handleSubmitBlock} disabled={blocking || !subscriptionUnlocked}>{blocking ? "Bloqueando..." : "Bloquear horário"}</Btn>
               </div>
             ) : (
               <div className="space-y-3">
@@ -4246,7 +4264,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
                 {blockError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{blockError}</div>}
                 <div className="flex gap-2">
                   <Btn variant="outline" className="flex-1 justify-center" onClick={() => setBlockConflicts(null)} disabled={blocking}>Voltar</Btn>
-                  <Btn variant="danger" className="flex-1 justify-center" onClick={handleSubmitBlock} disabled={blocking}>
+                  <Btn variant="danger" className="flex-1 justify-center" onClick={handleSubmitBlock} disabled={blocking || !subscriptionUnlocked}>
                     {blocking ? "Cancelando..." : "Cancelar e bloquear"}
                   </Btn>
                 </div>
@@ -4459,9 +4477,11 @@ function PatientsScreen({
   activeProfessionalId,
   staffProfessionals,
   onChangeActiveProfessional,
+  subscriptionUnlocked,
 }: AuthenticatedScreenProps & {
   onOpenEhr: (patientId: string, appointmentId: string) => void;
   activeProfessionalId: string; staffProfessionals: ClinicProfessional[]; onChangeActiveProfessional: (id: string) => void;
+  subscriptionUnlocked: boolean;
 }) {
   const isStaff = currentUser.role === "staff";
   const navItems = isStaff ? [
@@ -4672,6 +4692,7 @@ function PatientsScreen({
           </select>
         </div>
       )}
+      {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         {allTagLabels.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
@@ -4696,7 +4717,7 @@ function PatientsScreen({
           <Btn variant="ghost" size="sm" onClick={handleExportCsv} disabled={filteredPatients.length === 0}><Download size={14} />Exportar CSV</Btn>
           {!isStaff && (
             <>
-              <label className="cursor-pointer">
+              <label className={`cursor-pointer ${!subscriptionUnlocked ? "opacity-40 pointer-events-none" : ""}`}>
                 <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium border border-border text-foreground hover:bg-muted">
                   <Upload size={14} />Importar CSV
                 </span>
@@ -4704,10 +4725,11 @@ function PatientsScreen({
                   type="file"
                   accept=".csv,text/csv"
                   className="hidden"
+                  disabled={!subscriptionUnlocked}
                   onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void handleImportFileSelected(file); }}
                 />
               </label>
-              <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+              <Btn variant="outline" size="sm" onClick={openNewPatientModal} disabled={!subscriptionUnlocked}><Plus size={14} />Cadastrar paciente</Btn>
             </>
           )}
         </div>
@@ -4759,7 +4781,7 @@ function PatientsScreen({
                   </div>
                   <Input label="Valor da consulta (R$)" type="number" value={newPatientPrice} onChange={setNewPatientPrice} />
                   {newPatientError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{newPatientError}</div>}
-                  <Btn variant="primary" className="w-full justify-center" onClick={handleCreatePatient} disabled={creatingPatient}>
+                  <Btn variant="primary" className="w-full justify-center" onClick={handleCreatePatient} disabled={creatingPatient || !subscriptionUnlocked}>
                     {creatingPatient ? "Cadastrando..." : "Cadastrar e agendar"}
                   </Btn>
                 </div>
@@ -4821,7 +4843,7 @@ function PatientsScreen({
                         </div>
                       ))}
                     </div>
-                    <Btn variant="primary" className="w-full justify-center" onClick={handleConfirmImport} disabled={importing}>
+                    <Btn variant="primary" className="w-full justify-center" onClick={handleConfirmImport} disabled={importing || !subscriptionUnlocked}>
                       {importing ? "Importando..." : `Importar ${importRows.length} paciente${importRows.length > 1 ? "s" : ""}`}
                     </Btn>
                   </>
@@ -4881,7 +4903,7 @@ function patientProfileToFormState(profile: PatientProfile): PatientProfileFormS
   };
 }
 
-function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null }) {
+function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initialAppointmentId, subscriptionUnlocked }: AuthenticatedScreenProps & { initialPatientId?: string | null; initialAppointmentId?: string | null; subscriptionUnlocked: boolean }) {
   const [patientSearch, setPatientSearch] = useState("");
   const [ehrTab, setEhrTab] = useState<"cadastro" | "historico" | "notas" | "escalas" | "diario" | "materiais">("historico");
   const navItems = [
@@ -5747,6 +5769,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
 
   return (
     <AppShell title="Prontuário Eletrônico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
       <div className="flex gap-6 h-full">
         {/* Patient list */}
         <div className="w-64 flex-shrink-0">
@@ -5816,7 +5839,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                   {(tagsByPatient[selectedPatient.id] ?? []).map(t => (
                     <span key={t.id} className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${PATIENT_TAG_COLOR_CLASSES[t.color]}`}>
                       {t.label}
-                      <button type="button" onClick={() => handleDeleteTag(t.id)} className="hover:opacity-70"><X size={10} /></button>
+                      <button type="button" onClick={() => handleDeleteTag(t.id)} disabled={!subscriptionUnlocked} className="hover:opacity-70 disabled:opacity-40 disabled:pointer-events-none"><X size={10} /></button>
                     </span>
                   ))}
                   <Input placeholder="Nova tag" value={newTagLabel} onChange={setNewTagLabel} className="w-28" />
@@ -5830,7 +5853,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       />
                     ))}
                   </div>
-                  <Btn variant="ghost" size="sm" disabled={!newTagLabel.trim() || savingTag} onClick={handleAddTag}>
+                  <Btn variant="ghost" size="sm" disabled={!newTagLabel.trim() || savingTag || !subscriptionUnlocked} onClick={handleAddTag}>
                     <Plus size={12} />Tag
                   </Btn>
                 </div>
@@ -6043,7 +6066,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       <div className="flex flex-col gap-1.5">
                         <div className="flex items-center justify-between">
                           <label className="text-sm font-medium text-foreground">Conteúdo (revise antes de exportar)</label>
-                          <Btn variant="ghost" size="sm" disabled={!generatePreview.trim() || improvingGenerateText} onClick={handleImproveGenerateText}>
+                          <Btn variant="ghost" size="sm" disabled={!generatePreview.trim() || improvingGenerateText || !subscriptionUnlocked} onClick={handleImproveGenerateText}>
                             <Brain size={12} />{improvingGenerateText ? "Melhorando..." : "Melhorar com IA"}
                           </Btn>
                         </div>
@@ -6057,7 +6080,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       {generateError && <p className="text-xs text-red-600">{generateError}</p>}
                       <div className="flex justify-end gap-2">
                         <Btn variant="ghost" size="sm" onClick={() => setShowGenerateModal(false)}>Cancelar</Btn>
-                        <Btn variant="primary" size="sm" disabled={!generateTypedName.trim() || generating} onClick={handleGenerateDocument}>
+                        <Btn variant="primary" size="sm" disabled={!generateTypedName.trim() || generating || !subscriptionUnlocked} onClick={handleGenerateDocument}>
                           {generating ? "Gerando..." : "Assinar e exportar PDF"}
                         </Btn>
                       </div>
@@ -6075,13 +6098,13 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       Compartilhar com todos os meus pacientes (em vez de só {selectedPatient?.name ?? "o paciente selecionado"})
                     </label>
                     <label className="cursor-pointer">
-                      <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingMaterial ? "opacity-50 pointer-events-none" : ""}`}>
+                      <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingMaterial || !subscriptionUnlocked ? "opacity-50 pointer-events-none" : ""}`}>
                         <Upload size={14} />{uploadingMaterial ? "Enviando..." : "Enviar arquivo"}
                       </span>
                       <input
                         type="file"
                         className="hidden"
-                        disabled={uploadingMaterial}
+                        disabled={uploadingMaterial || !subscriptionUnlocked}
                         onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadMaterial(file); e.target.value = ""; }}
                       />
                     </label>
@@ -6100,7 +6123,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                           </button>
                           <div className="flex items-center gap-2">
                             <Badge variant="outline">{m.patientId ? patients.find(p => p.id === m.patientId)?.name ?? "1 paciente" : "Todos os pacientes"}</Badge>
-                            <button type="button" onClick={() => handleDeleteMaterial(m)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+                            <button type="button" onClick={() => handleDeleteMaterial(m)} disabled={!subscriptionUnlocked} className="text-muted-foreground hover:text-red-600 disabled:opacity-40 disabled:pointer-events-none"><Trash2 size={14} /></button>
                           </div>
                         </div>
                       ))}
@@ -6120,7 +6143,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                         />
                       </div>
                       <Input label="Prazo (opcional)" type="date" value={taskDueDate} onChange={setTaskDueDate} />
-                      <Btn variant="primary" disabled={!taskTitle.trim() || assigningTask} onClick={handleAssignTask}>
+                      <Btn variant="primary" disabled={!taskTitle.trim() || assigningTask || !subscriptionUnlocked} onClick={handleAssignTask}>
                         {assigningTask ? "Atribuindo..." : "Atribuir tarefa"}
                       </Btn>
                     </div>
@@ -6355,10 +6378,10 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                                 <label className="text-sm font-medium text-foreground">{labels[field]}</label>
                                 {!selectedSession?.signedAt && (
                                   <div className="flex items-center gap-1">
-                                    <Btn variant="ghost" size="sm" disabled={transcribingField === field} onClick={() => openOcrPicker(field)}>
+                                    <Btn variant="ghost" size="sm" disabled={transcribingField === field || !subscriptionUnlocked} onClick={() => openOcrPicker(field)}>
                                       <ScanText size={12} />{transcribingField === field ? "Transcrevendo..." : "Transcrever foto"}
                                     </Btn>
-                                    <Btn variant="ghost" size="sm" disabled={isEmpty || improvingField === field} onClick={() => handleImproveSoapField(field, drafts[field])}>
+                                    <Btn variant="ghost" size="sm" disabled={isEmpty || improvingField === field || !subscriptionUnlocked} onClick={() => handleImproveSoapField(field, drafts[field])}>
                                       <Brain size={12} />{improvingField === field ? "Melhorando..." : "Melhorar com IA"}
                                     </Btn>
                                   </div>
@@ -6367,7 +6390,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                               <RichTextEditor
                                 content={drafts[field]}
                                 onChange={SOAP_FIELD_SETTERS[field]}
-                                disabled={Boolean(selectedSession?.signedAt)}
+                                disabled={Boolean(selectedSession?.signedAt) || !subscriptionUnlocked}
                                 onImageUpload={selectedPatientId ? () => handleEditorImageUpload(selectedPatientId) : undefined}
                               />
                             </div>
@@ -6383,11 +6406,11 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                       {saveMessage && <p className={`text-xs mt-2 ${saveMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
                       {!selectedSession?.signedAt && (
                         <div className="flex justify-end gap-2 mt-3">
-                          <Btn variant="ghost" size="sm" onClick={handleSaveNotes} disabled={saving}><Lock size={13} />{saving ? "Salvando..." : "Salvar com segurança"}</Btn>
+                          <Btn variant="ghost" size="sm" onClick={handleSaveNotes} disabled={saving || !subscriptionUnlocked}><Lock size={13} />{saving ? "Salvando..." : "Salvar com segurança"}</Btn>
                           <Btn
                             variant="primary"
                             size="sm"
-                            disabled={[subjectiveDraft, objectiveDraft, assessmentDraft, planDraft].every(d => !tiptapJsonToPlainText(d).trim())}
+                            disabled={[subjectiveDraft, objectiveDraft, assessmentDraft, planDraft].every(d => !tiptapJsonToPlainText(d).trim()) || !subscriptionUnlocked}
                             onClick={() => setShowSignModal(true)}
                           >
                             <Edit3 size={13} />Assinar digitalmente
@@ -6409,7 +6432,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                         <input type="checkbox" checked={sessionPlanConsent} onChange={e => setSessionPlanConsent(e.target.checked)} className="mt-0.5" />
                         Autorizo o envio do histórico de notas e escalas deste paciente (várias sessões, não só uma) para o Google (Gemini, IA) gerar sugestões de pauta.
                       </label>
-                      <Btn variant="outline" size="sm" disabled={!sessionPlanConsent || planningSession} onClick={handlePlanSession}>
+                      <Btn variant="outline" size="sm" disabled={!sessionPlanConsent || planningSession || !subscriptionUnlocked} onClick={handlePlanSession}>
                         <Sparkles size={14} />{planningSession ? "Gerando..." : "Planejar sessão com IA"}
                       </Btn>
                       {sessionPlanError && <p className="text-xs text-amber-700 mt-2">{sessionPlanError}</p>}
@@ -6436,7 +6459,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                     <Input label="Nome completo" placeholder={currentUser.fullName} value={signTypedName} onChange={setSignTypedName} />
                     <div className="flex justify-end gap-2">
                       <Btn variant="ghost" size="sm" onClick={() => { setShowSignModal(false); setSignTypedName(""); }}>Cancelar</Btn>
-                      <Btn variant="primary" size="sm" disabled={!signTypedName.trim() || signing} onClick={handleSignNote}>
+                      <Btn variant="primary" size="sm" disabled={!signTypedName.trim() || signing || !subscriptionUnlocked} onClick={handleSignNote}>
                         {signing ? "Assinando..." : "Confirmar assinatura"}
                       </Btn>
                     </div>
@@ -6465,7 +6488,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
                   {updateLinkMessage}
                 </div>
               )}
-              <Btn variant="primary" className="w-full justify-center" onClick={handleSendUpdateLink} disabled={sendingUpdateLink}>
+              <Btn variant="primary" className="w-full justify-center" onClick={handleSendUpdateLink} disabled={sendingUpdateLink || !subscriptionUnlocked}>
                 {sendingUpdateLink ? "Enviando..." : "Enviar link"}
               </Btn>
             </div>
@@ -6532,7 +6555,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
               </div>
 
               {templateError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{templateError}</div>}
-              <Btn variant="primary" className="w-full justify-center" onClick={handleSaveTemplate} disabled={savingTemplate}>
+              <Btn variant="primary" className="w-full justify-center" onClick={handleSaveTemplate} disabled={savingTemplate || !subscriptionUnlocked}>
                 {savingTemplate ? "Salvando..." : "Salvar modelo"}
               </Btn>
             </div>
@@ -6545,7 +6568,7 @@ function EHRScreen({ onNavigate, currentUser, onSignOut, initialPatientId, initi
 
 // ─── SCREEN: AI Assistant ─────────────────────────────────────────────────────
 
-function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+function AIAssistantScreen({ onNavigate, currentUser, onSignOut, subscriptionUnlocked }: AuthenticatedScreenProps & { subscriptionUnlocked: boolean }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -6744,6 +6767,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
 
   return (
     <AppShell title="IA Assistente Clínico" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
       {loadingPatients ? (
         <p className="text-sm text-muted-foreground">Carregando...</p>
       ) : patients.length === 0 ? (
@@ -6817,7 +6841,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
               <Btn
                 variant="primary"
                 className="w-full justify-center mt-3"
-                disabled={!aiConsent || !notesDraft.trim() || aiLoading || !selectedSessionId}
+                disabled={!aiConsent || !notesDraft.trim() || aiLoading || !selectedSessionId || !subscriptionUnlocked}
                 onClick={handleGenerateSummary}
               >
                 <Zap size={15} />{aiLoading ? "Analisando com IA..." : "Gerar resumo com IA"}
@@ -6870,7 +6894,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
                   <div className="bg-muted rounded-xl p-4 mb-3">
                     <p className="text-sm text-muted-foreground leading-relaxed">{aiResult.clinicalNote || "—"}</p>
                   </div>
-                  <Btn variant="outline" size="sm" className="w-full justify-center" onClick={handleUseSuggestedNote}>
+                  <Btn variant="outline" size="sm" className="w-full justify-center" onClick={handleUseSuggestedNote} disabled={!subscriptionUnlocked}>
                     <Edit3 size={13} />Usar nota sugerida (adicionar ao texto)
                   </Btn>
                 </Card>
@@ -6888,7 +6912,7 @@ function AIAssistantScreen({ onNavigate, currentUser, onSignOut }: Authenticated
                 Salva o texto acima na nota desta sessão (a mesma exibida no prontuário) — junto com o resumo de IA, se você gerou um nesta sessão de edição.
               </p>
               <div className="flex gap-2">
-                <Btn variant="primary" className="flex-1 justify-center" disabled={!selectedSessionId || saving} onClick={handleSaveNotes}>
+                <Btn variant="primary" className="flex-1 justify-center" disabled={!selectedSessionId || saving || !subscriptionUnlocked} onClick={handleSaveNotes}>
                   <FileText size={14} />{saving ? "Salvando..." : "Salvar no prontuário"}
                 </Btn>
                 <Btn variant="outline" onClick={() => onNavigate("ehr")}>Ver prontuário</Btn>
@@ -7830,7 +7854,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
 
 // ─── SCREEN: Financial Dashboard ──────────────────────────────────────────────
 
-function FinancialDashboard({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+function FinancialDashboard({ onNavigate, currentUser, onSignOut, subscriptionUnlocked }: AuthenticatedScreenProps & { subscriptionUnlocked: boolean }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -8108,6 +8132,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
   return (
     <AppShell title="Dashboard Financeiro" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-6">
+        {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
         {loading && <p className="text-sm text-muted-foreground">Carregando...</p>}
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -8217,23 +8242,23 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
                     <Badge variant={badge.variant}>{badge.label}</Badge>
                     {(s.paymentStatus === "uncharged" || s.paymentStatus === "pending") && (
                       <>
-                        <Btn variant="outline" size="sm" disabled={busy} onClick={() => handleChargePix(s.appointmentId)}>
+                        <Btn variant="outline" size="sm" disabled={busy || !subscriptionUnlocked} onClick={() => handleChargePix(s.appointmentId)}>
                           <QrCode size={13} />Cobrar via Pix
                         </Btn>
-                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleGenerateLink(s.appointmentId)}>
+                        <Btn variant="ghost" size="sm" disabled={busy || !subscriptionUnlocked} onClick={() => handleGenerateLink(s.appointmentId)}>
                           <Link2 size={13} />Gerar link
                         </Btn>
-                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleMarkPaid(s)}>
+                        <Btn variant="ghost" size="sm" disabled={busy || !subscriptionUnlocked} onClick={() => handleMarkPaid(s)}>
                           <Check size={13} />Marcar como pago
                         </Btn>
                       </>
                     )}
                     {s.paymentStatus === "paid" && (
                       <>
-                        <Btn variant="outline" size="sm" disabled={busy} onClick={() => handleIssueReceipt(s)}>
+                        <Btn variant="outline" size="sm" disabled={busy || !subscriptionUnlocked} onClick={() => handleIssueReceipt(s)}>
                           <Receipt size={13} />Emitir recibo
                         </Btn>
-                        <Btn variant="ghost" size="sm" disabled={busy} onClick={() => handleRequestNotaFiscal(s)}>
+                        <Btn variant="ghost" size="sm" disabled={busy || !subscriptionUnlocked} onClick={() => handleRequestNotaFiscal(s)}>
                           <FileText size={13} />Nota fiscal
                         </Btn>
                       </>
@@ -8255,7 +8280,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
             <Input label="Observações (opcional)" value={newExpenseNotes} onChange={setNewExpenseNotes} />
           </div>
           {expenseError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3">{expenseError}</div>}
-          <Btn variant="outline" size="sm" onClick={handleAddExpense} disabled={savingExpense}><Plus size={14} />{savingExpense ? "Salvando..." : "Lançar despesa"}</Btn>
+          <Btn variant="outline" size="sm" onClick={handleAddExpense} disabled={savingExpense || !subscriptionUnlocked}><Plus size={14} />{savingExpense ? "Salvando..." : "Lançar despesa"}</Btn>
 
           {loadingExpenses && <p className="text-sm text-muted-foreground mt-4">Carregando despesas...</p>}
           {!loadingExpenses && expenses.length === 0 && <p className="text-sm text-muted-foreground mt-4">Nenhuma despesa lançada ainda.</p>}
@@ -8271,7 +8296,7 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut }: Authenticate
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
                   <p className="text-sm font-bold text-foreground font-display">R${e.amount.toFixed(2).replace(".", ",")}</p>
-                  <button type="button" onClick={() => handleDeleteExpense(e.id)} className="text-muted-foreground hover:text-red-600"><Trash2 size={15} /></button>
+                  <button type="button" onClick={() => handleDeleteExpense(e.id)} disabled={!subscriptionUnlocked} className="text-muted-foreground hover:text-red-600 disabled:opacity-40 disabled:pointer-events-none"><Trash2 size={15} /></button>
                 </div>
               </div>
             ))}
@@ -8333,7 +8358,7 @@ const MARKETING_POST_IDEAS: { theme: string; caption: string; canvaUrl: string }
   { theme: "Flyer de divulgação", caption: "Divulgue sua agenda aberta ou um novo grupo terapêutico.", canvaUrl: "https://www.canva.com/flyers/templates/mental-health/" },
 ];
 
-function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
+function LibraryScreen({ onNavigate, currentUser, onSignOut, subscriptionUnlocked }: AuthenticatedScreenProps & { subscriptionUnlocked: boolean }) {
   const navItems = [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
@@ -8395,6 +8420,7 @@ function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScre
 
   return (
     <AppShell title="Biblioteca de Modelos" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      {!subscriptionUnlocked && <SubscriptionLockedBanner onNavigate={onNavigate} />}
       <div className="flex gap-1 mb-4 border-b border-border">
         <button onClick={() => setLibraryTab("modelos")} className={`px-3 py-2 text-sm font-medium transition-all ${libraryTab === "modelos" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"}`}>
           Modelos de documentos
@@ -8451,7 +8477,7 @@ function LibraryScreen({ onNavigate, currentUser, onSignOut }: AuthenticatedScre
                 </div>
                 {saveMessage && <p className={`text-xs ${saveMessage.toLowerCase().includes("não foi") ? "text-red-600" : "text-emerald-600"}`}>{saveMessage}</p>}
                 <div className="flex justify-end">
-                  <Btn variant="primary" onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar modelo"}</Btn>
+                  <Btn variant="primary" onClick={handleSave} disabled={saving || !subscriptionUnlocked}>{saving ? "Salvando..." : "Salvar modelo"}</Btn>
                 </div>
               </Card>
 
@@ -8677,6 +8703,47 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     } catch (error) {
       reportError(error, { flow: "professionalSettings.removeStaff" });
     }
+  };
+
+  const [clinicProfessionals, setClinicProfessionals] = useState<ClinicProfessional[]>([]);
+  const [loadingClinicProfessionals, setLoadingClinicProfessionals] = useState(true);
+  const [newClinicProName, setNewClinicProName] = useState("");
+  const [newClinicProEmail, setNewClinicProEmail] = useState("");
+  const [newClinicProLicense, setNewClinicProLicense] = useState("");
+  const [invitingClinicPro, setInvitingClinicPro] = useState(false);
+  const [clinicProMessage, setClinicProMessage] = useState("");
+
+  const loadClinicProfessionals = async () => {
+    setLoadingClinicProfessionals(true);
+    try {
+      setClinicProfessionals(await listClinicProfessionals(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.loadClinicProfessionals" });
+    } finally {
+      setLoadingClinicProfessionals(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadClinicProfessionals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const handleInviteClinicPro = async () => {
+    setClinicProMessage("");
+    if (!newClinicProName.trim() || !newClinicProEmail.trim() || !newClinicProLicense.trim()) return;
+    setInvitingClinicPro(true);
+    const result = await inviteClinicProfessional(newClinicProName.trim(), newClinicProEmail.trim(), newClinicProLicense, newClinicProLicense.trim());
+    setInvitingClinicPro(false);
+    if (!result.ok) {
+      setClinicProMessage(result.error);
+      return;
+    }
+    setNewClinicProName("");
+    setNewClinicProEmail("");
+    setNewClinicProLicense("");
+    setClinicProMessage("Convite enviado! O psicólogo define a própria senha ao aceitar e já entra coberto pela assinatura da clínica.");
+    await loadClinicProfessionals();
   };
 
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
@@ -9326,6 +9393,39 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           </Btn>
         </Card>
 
+        {personType === "juridica" && (
+          <Card className="p-6 space-y-4">
+            <h2 className="font-semibold text-foreground font-display">Psicólogos da clínica</h2>
+            <p className="text-xs text-muted-foreground -mt-2">
+              Cada psicólogo cadastrado tem sua própria agenda, pacientes e prontuário — só ficam agrupados sob a marca da clínica e cobertos pela mesma assinatura, sem precisar de plano próprio.
+            </p>
+
+            {loadingClinicProfessionals && <p className="text-sm text-muted-foreground">Carregando...</p>}
+            {!loadingClinicProfessionals && clinicProfessionals.length === 0 && <p className="text-sm text-muted-foreground">Nenhum psicólogo cadastrado na clínica ainda.</p>}
+            <div className="space-y-2">
+              {clinicProfessionals.map(p => (
+                <div key={p.id} className="rounded-xl border border-border px-3 py-2 text-sm font-medium text-foreground">
+                  {p.fullName}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-2">
+              <Input placeholder="Nome do psicólogo" value={newClinicProName} onChange={setNewClinicProName} />
+              <Input placeholder="E-mail" type="email" value={newClinicProEmail} onChange={setNewClinicProEmail} />
+              <Input placeholder="CRP/CRM (ex: CRP 06/12345)" value={newClinicProLicense} onChange={setNewClinicProLicense} />
+            </div>
+            {clinicProMessage && (
+              <div className={`rounded-xl border px-3 py-2 text-sm ${clinicProMessage.includes("enviado") ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"}`}>
+                {clinicProMessage}
+              </div>
+            )}
+            <Btn variant="outline" size="sm" onClick={handleInviteClinicPro} disabled={invitingClinicPro || !newClinicProName.trim() || !newClinicProEmail.trim() || !newClinicProLicense.trim()}>
+              <Plus size={13} />{invitingClinicPro ? "Convidando..." : "Cadastrar psicólogo"}
+            </Btn>
+          </Card>
+        )}
+
         <Card className="p-6 space-y-4">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -9778,6 +9878,27 @@ export default function App() {
       return () => { active = false; };
     }
   }, [currentUser?.id, currentUser?.role]);
+
+  // Payment gate: before the professional (or the clinic they belong to) has an active
+  // subscription, Agenda/Pacientes/Prontuário/Financeiro/IA/Biblioteca stay visible (so they can
+  // see what the product does) but every write action in them is disabled — Configurações/Meu
+  // plano is deliberately exempt, since that's how they actually get to paying. Purely a UI gate
+  // (see getSubscriptionAccess); irrelevant for patients/admin, so only computed for
+  // professional/staff roles once activeProfessionalId resolves.
+  const [subscriptionUnlocked, setSubscriptionUnlocked] = useState(true);
+
+  useEffect(() => {
+    if (!activeProfessionalId || !currentUser || (currentUser.role !== "professional" && currentUser.role !== "staff")) {
+      setSubscriptionUnlocked(true);
+      return;
+    }
+    let active = true;
+    getSubscriptionAccess(activeProfessionalId).then(access => {
+      if (active) setSubscriptionUnlocked(access.unlocked);
+    }).catch(error => reportError(error, { flow: "app.loadSubscriptionAccess" }));
+    return () => { active = false; };
+  }, [activeProfessionalId, currentUser?.role]);
+
   const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
   // Separate from activeAppointmentId (used by the video screen) so jumping to EHR from Calendar
   // never overwrites an in-progress video call's id if the user switches between the two screens.
@@ -10064,21 +10185,23 @@ export default function App() {
           onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut}
           onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr}
           activeProfessionalId={activeProfessionalId} staffProfessionals={staffProfessionals} onChangeActiveProfessional={setActiveProfessionalId}
+          subscriptionUnlocked={subscriptionUnlocked}
         />
       )}
       {screen === "patients" && currentUser && activeProfessionalId && (
         <PatientsScreen
           onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onOpenEhr={onOpenEhr}
           activeProfessionalId={activeProfessionalId} staffProfessionals={staffProfessionals} onChangeActiveProfessional={setActiveProfessionalId}
+          subscriptionUnlocked={subscriptionUnlocked}
         />
       )}
-      {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} initialPatientId={ehrPatientId} initialAppointmentId={ehrAppointmentId} />}
-      {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} initialPatientId={ehrPatientId} initialAppointmentId={ehrAppointmentId} subscriptionUnlocked={subscriptionUnlocked} />}
+      {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} subscriptionUnlocked={subscriptionUnlocked} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}
       {screen === "pricing" && <PricingPage onNavigate={navigate} />}
       {screen === "checkout" && currentUser && <CheckoutScreen onNavigate={navigate} currentUser={currentUser} bookingDraft={bookingDraft} />}
-      {screen === "financial" && currentUser && <FinancialDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
-      {screen === "library" && currentUser && <LibraryScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
+      {screen === "financial" && currentUser && <FinancialDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} subscriptionUnlocked={subscriptionUnlocked} />}
+      {screen === "library" && currentUser && <LibraryScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} subscriptionUnlocked={subscriptionUnlocked} />}
       {screen === "professional-settings" && currentUser && <ProfessionalSettingsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "admin" && currentUser && <AdminPanel onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
     </div>

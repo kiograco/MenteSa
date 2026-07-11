@@ -41,3 +41,26 @@ export async function createSubscription(planId: string): Promise<{ ok: true; in
   }
   return { ok: true, initPoint: data.initPoint };
 }
+
+export type SubscriptionAccess = { unlocked: boolean; status: ProfessionalSubscription["status"] | "none"; payingProfessionalId: string };
+
+/** Whether `professionalId` can actively use the platform (Agenda/Pacientes/Prontuário/Financeiro/
+ *  IA/Biblioteca) — cadastro/Configurações is always available regardless, since that's how the
+ *  professional actually gets to the point of paying. One subscription per clinic covers every
+ *  professional registered under it (professional_profiles.clinic_id), so a clinic member's access
+ *  resolves through the clinic OWNER's subscription, not their own — they never need a plan of
+ *  their own (professional_subscriptions_select_clinic_member, migration 20260721000000, is what
+ *  lets them read that row at all). Purely a UI gate: it hides/disables write actions, RLS is the
+ *  actual security boundary for the data underneath. */
+export async function getSubscriptionAccess(professionalId: string): Promise<SubscriptionAccess> {
+  const { data: profRow } = await supabase.from("professional_profiles").select("clinic_id").eq("id", professionalId).maybeSingle();
+
+  let payingProfessionalId = professionalId;
+  if (profRow?.clinic_id) {
+    const { data: clinic } = await supabase.from("clinics").select("owner_professional_id").eq("id", profRow.clinic_id).maybeSingle();
+    if (clinic) payingProfessionalId = clinic.owner_professional_id;
+  }
+
+  const subscription = await getMySubscription(payingProfessionalId);
+  return { unlocked: subscription?.status === "active", status: subscription?.status ?? "none", payingProfessionalId };
+}

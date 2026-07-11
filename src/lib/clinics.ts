@@ -46,3 +46,36 @@ export async function listMyProfessionals(userId: string): Promise<ClinicProfess
   if (error) throw error;
   return ((data ?? []) as any[]).map(d => ({ id: d.id, fullName: d.profiles?.full_name ?? "Profissional" }));
 }
+
+/** Calls create-clinic-professional: invites another licensed psychologist to a Pessoa Jurídica's
+ *  clinic — a full professional account (own agenda/patients/prontuário), not a secretária, only
+ *  grouped under the clinic for branding + shared billing. */
+export async function inviteClinicProfessional(
+  fullName: string,
+  email: string,
+  licenseType: string,
+  licenseNumber: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data, error } = await invokeEdgeFunction<{ ok?: boolean }>("create-clinic-professional", {
+    body: { fullName, email, licenseType, licenseNumber },
+  });
+  if (error || !data?.ok) {
+    return { ok: false, error: (await extractFunctionErrorMessage(error)) ?? "Não foi possível convidar o psicólogo." };
+  }
+  return { ok: true };
+}
+
+/** Other professionals registered under the same clinic (Pessoa Jurídica) as `professionalId` —
+ *  excludes the owner themselves, since this is for the "quem mais atende na clínica" list. */
+export async function listClinicProfessionals(professionalId: string): Promise<ClinicProfessional[]> {
+  const { data: clinic } = await supabase.from("clinics").select("id").eq("owner_professional_id", professionalId).maybeSingle();
+  if (!clinic) return [];
+
+  const { data, error } = await supabase
+    .from("professional_profiles")
+    .select("id, profiles(full_name)")
+    .eq("clinic_id", clinic.id)
+    .neq("id", professionalId);
+  if (error) throw error;
+  return ((data ?? []) as any[]).map(d => ({ id: d.id, fullName: d.profiles?.full_name ?? "Profissional" }));
+}
