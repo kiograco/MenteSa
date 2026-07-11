@@ -3,6 +3,7 @@ import { extractFunctionErrorMessage, invokeEdgeFunction } from "./functionsClie
 
 export type SubscriptionPlan = { id: string; name: string; price: number; billingInterval: string };
 export type ProfessionalSubscription = {
+  planId: string;
   status: "pending" | "active" | "cancelled" | "past_due";
   planName: string;
   currentPeriodEnd: string | null;
@@ -19,7 +20,7 @@ export async function listPlans(): Promise<SubscriptionPlan[]> {
 export async function getMySubscription(professionalId: string): Promise<ProfessionalSubscription | null> {
   const { data, error } = await supabase
     .from("professional_subscriptions")
-    .select("status, current_period_end, subscription_plans(name)")
+    .select("plan_id, status, current_period_end, subscription_plans(name)")
     .eq("professional_id", professionalId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -27,7 +28,7 @@ export async function getMySubscription(professionalId: string): Promise<Profess
   if (error) throw error;
   if (!data) return null;
   const row = data as any;
-  return { status: row.status, planName: row.subscription_plans?.name ?? "Plano", currentPeriodEnd: row.current_period_end };
+  return { planId: row.plan_id, status: row.status, planName: row.subscription_plans?.name ?? "Plano", currentPeriodEnd: row.current_period_end };
 }
 
 /** Calls create-mp-subscription — returns the Mercado Pago hosted checkout URL to redirect the

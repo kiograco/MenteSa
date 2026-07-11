@@ -59,6 +59,9 @@ export interface Database {
           slug: string | null;
           accent_color: string | null;
           cover_url: string | null;
+          person_type: "fisica" | "juridica";
+          cnpj: string | null;
+          razao_social: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;

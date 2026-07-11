@@ -1596,6 +1596,11 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
   const [licenseNumber, setLicenseNumber] = useState("");
   const [epsiDeclared, setEpsiDeclared] = useState(false);
   const isCRP = !licenseNumber.toUpperCase().includes("CRM");
+  const [personType, setPersonType] = useState<"fisica" | "juridica">("fisica");
+  const [cnpj, setCnpj] = useState("");
+  const [razaoSocial, setRazaoSocial] = useState("");
+  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState("");
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState(initialInfo ?? "");
   const [loading, setLoading] = useState(false);
@@ -1606,6 +1611,14 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
   const [forgotSent, setForgotSent] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
   const [forgotError, setForgotError] = useState("");
+
+  useEffect(() => {
+    if (mode !== "register" || userType !== "professional" || plans.length > 0) return;
+    listPlans().then(list => {
+      setPlans(list);
+      setSelectedPlanId(prev => prev || list[0]?.id || "");
+    }).catch(error => reportError(error, { flow: "loginPage.loadPlans" }));
+  }, [mode, userType, plans.length]);
 
   const handleForgotPassword = async () => {
     setForgotError("");
@@ -1662,6 +1675,12 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
       if (userType === "professional" && isCRP && !epsiDeclared) {
         throw new Error("Confirme o registro no e-Psi (Resolução CFP nº 11/2018) para se cadastrar como psicólogo(a).");
       }
+      if (userType === "professional" && personType === "juridica" && (!cnpj.trim() || !razaoSocial.trim())) {
+        throw new Error("Informe o CNPJ e a razão social para cadastro como Pessoa Jurídica.");
+      }
+      if (userType === "professional" && !selectedPlanId) {
+        throw new Error("Escolha um plano de assinatura para concluir o cadastro.");
+      }
 
       const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
@@ -1673,11 +1692,18 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             // Consumed by the handle_new_user() trigger, not inserted client-side: signUp()
             // returns no session until the e-mail is confirmed, so an authenticated insert here
             // would be rejected by RLS. The trigger runs security definer, at account-creation
-            // time, regardless of confirmation status.
+            // time, regardless of confirmation status. plan_id makes the trigger also record a
+            // 'pending' professional_subscriptions row — there's no session yet to call
+            // create-mp-subscription with directly, so the actual Mercado Pago checkout happens
+            // either right below (if a session comes back immediately) or later from "Meu plano"
+            // in Configurações via "Pagar agora", which reuses this same pending row.
             ...(userType === "professional" && {
               license_type: licenseNumber.toUpperCase().includes("CRM") ? "CRM" : "CRP",
               license_number: licenseNumber.trim(),
               ...(isCRP && epsiDeclared ? { epsi_declared_at: new Date().toISOString() } : {}),
+              person_type: personType,
+              ...(personType === "juridica" && { cnpj: cnpj.trim(), razao_social: razaoSocial.trim() }),
+              plan_id: selectedPlanId,
             }),
           },
         },
@@ -1686,12 +1712,21 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
       if (error) throw error;
 
       if (!data.session) {
-        setAuthInfo("Cadastro criado. Confirme seu e-mail antes de entrar.");
+        setAuthInfo("Cadastro criado. Confirme seu e-mail e depois finalize o pagamento da assinatura em Configurações.");
         setMode("login");
         return;
       }
-      // Session exists (email confirmation disabled): redirect happens once currentUser loads,
-      // see the "login" redirect effect near navigate().
+
+      // Session exists (email confirmation disabled): go straight to Mercado Pago checkout for the
+      // plan just chosen instead of leaving a 'pending' subscription to notice later.
+      if (userType === "professional" && selectedPlanId) {
+        const subscriptionResult = await createSubscription(selectedPlanId);
+        if (subscriptionResult.ok) {
+          window.location.href = subscriptionResult.initPoint;
+          return;
+        }
+      }
+      // Redirect happens once currentUser loads, see the "login" redirect effect near navigate().
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Não foi possível autenticar.");
     } finally {
@@ -1774,6 +1809,42 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
                 <span>Declaro que meu atendimento psicológico mediado por tecnologia está registrado no sistema e-Psi do CFP, conforme exige a Resolução CFP nº 11/2018.</span>
               </label>
             )}
+            {mode === "register" && userType === "professional" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-foreground">Tipo de cadastro</label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setPersonType("fisica")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${personType === "fisica" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Pessoa Física</button>
+                  <button type="button" onClick={() => setPersonType("juridica")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${personType === "juridica" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Pessoa Jurídica</button>
+                </div>
+              </div>
+            )}
+            {mode === "register" && userType === "professional" && personType === "juridica" && (
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="CNPJ" placeholder="00.000.000/0001-00" value={cnpj} onChange={setCnpj} />
+                <Input label="Razão social" placeholder="Nome da empresa" value={razaoSocial} onChange={setRazaoSocial} />
+              </div>
+            )}
+            {mode === "register" && userType === "professional" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-foreground">Plano de assinatura</label>
+                {plans.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Carregando planos...</p>
+                ) : (
+                  <div className="space-y-2">
+                    {plans.map(plan => (
+                      <label key={plan.id} className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm cursor-pointer ${selectedPlanId === plan.id ? "border-primary bg-secondary" : "border-border"}`}>
+                        <span className="flex items-center gap-2">
+                          <input type="radio" name="signup-plan" checked={selectedPlanId === plan.id} onChange={() => setSelectedPlanId(plan.id)} className="accent-primary" />
+                          <span className="font-medium text-foreground">{plan.name}</span>
+                        </span>
+                        <span className="text-muted-foreground">R${plan.price.toFixed(2).replace(".", ",")}/mês</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground mt-0.5">O pagamento é feito pelo Mercado Pago logo em seguida (ou você pode concluir depois em Configurações → Meu plano).</p>
+              </div>
+            )}
           </div>
 
           {mode === "register" && (
@@ -1815,7 +1886,12 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             variant="primary"
             className="w-full justify-center mt-6"
             onClick={handleAuth}
-            disabled={loading || (mode === "register" && (!acceptedTerms || (userType === "professional" && isCRP && !epsiDeclared)))}
+            disabled={loading || (mode === "register" && (
+              !acceptedTerms
+              || (userType === "professional" && isCRP && !epsiDeclared)
+              || (userType === "professional" && !selectedPlanId)
+              || (userType === "professional" && personType === "juridica" && (!cnpj.trim() || !razaoSocial.trim()))
+            ))}
           >
             {loading ? "Processando..." : mode === "login" ? "Entrar" : "Criar conta"}
           </Btn>
@@ -8440,6 +8516,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [slug, setSlug] = useState("");
   const [accentColor, setAccentColor] = useState("");
   const [cpf, setCpf] = useState("");
+  const [personType, setPersonType] = useState<"fisica" | "juridica">("fisica");
+  const [cnpj, setCnpj] = useState("");
+  const [razaoSocial, setRazaoSocial] = useState("");
   const [passFeeToPatient, setPassFeeToPatient] = useState(false);
   const [autoChargeEnabled, setAutoChargeEnabled] = useState(false);
   const [autoChargeDaysBefore, setAutoChargeDaysBefore] = useState("1");
@@ -8672,7 +8751,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cover_url, slug, accent_color, cpf, pass_fee_to_patient, auto_charge_enabled, auto_charge_days_before")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cover_url, slug, accent_color, cpf, person_type, cnpj, razao_social, pass_fee_to_patient, auto_charge_enabled, auto_charge_days_before")
         .eq("id", currentUser.id)
         .maybeSingle();
 
@@ -8697,6 +8776,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setSlug(data.slug ?? "");
         setAccentColor(data.accent_color ?? "");
         setCpf(data.cpf ?? "");
+        setPersonType((data.person_type as "fisica" | "juridica") ?? "fisica");
+        setCnpj(data.cnpj ?? "");
+        setRazaoSocial(data.razao_social ?? "");
         setPassFeeToPatient(Boolean(data.pass_fee_to_patient));
         setAutoChargeEnabled(Boolean(data.auto_charge_enabled));
         setAutoChargeDaysBefore(String(data.auto_charge_days_before ?? 1));
@@ -8746,6 +8828,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         years_experience: Number(yearsExperience) || 0,
         target_audience: targetAudience,
         cpf: cpf.trim() || null,
+        person_type: personType,
+        cnpj: personType === "juridica" ? cnpj.trim() || null : null,
+        razao_social: personType === "juridica" ? razaoSocial.trim() || null : null,
         pass_fee_to_patient: passFeeToPatient,
         auto_charge_enabled: autoChargeEnabled,
         auto_charge_days_before: Math.max(1, Number(autoChargeDaysBefore) || 1),
@@ -9056,7 +9141,22 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         <Card className="p-6 space-y-4">
           <h2 className="font-semibold text-foreground font-display">Faturamento e recibos</h2>
 
-          <Input label="CPF" placeholder="000.000.000-00" value={cpf} onChange={setCpf} className="max-w-xs" />
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-foreground">Tipo de cadastro</label>
+            <div className="flex gap-2 max-w-xs">
+              <button type="button" onClick={() => setPersonType("fisica")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${personType === "fisica" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Pessoa Física</button>
+              <button type="button" onClick={() => setPersonType("juridica")} className={`flex-1 py-2 rounded-xl text-sm font-medium border transition-all ${personType === "juridica" ? "border-primary bg-secondary text-primary" : "border-border text-muted-foreground"}`}>Pessoa Jurídica</button>
+            </div>
+          </div>
+
+          {personType === "fisica" ? (
+            <Input label="CPF" placeholder="000.000.000-00" value={cpf} onChange={setCpf} className="max-w-xs" />
+          ) : (
+            <div className="grid grid-cols-2 gap-4 max-w-md">
+              <Input label="CNPJ" placeholder="00.000.000/0001-00" value={cnpj} onChange={setCnpj} />
+              <Input label="Razão social" placeholder="Nome da empresa" value={razaoSocial} onChange={setRazaoSocial} />
+            </div>
+          )}
           <p className="text-xs text-muted-foreground -mt-2">Necessário pro recibo em PDF sair completo pra usar no app Receita Saúde.</p>
 
           <label className="flex items-start gap-2 text-sm text-foreground pt-2 border-t border-border cursor-pointer">
@@ -9109,12 +9209,18 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           {!loadingSubscription && mySubscription?.status === "active" && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
               <span className="font-medium">{mySubscription.planName}</span> — ativo
-              {mySubscription.currentPeriodEnd && ` até ${new Date(mySubscription.currentPeriodEnd).toLocaleDateString("pt-BR")}`}
+              {mySubscription.currentPeriodEnd && (
+                <span className="block text-xs mt-0.5">Próximo pagamento em {new Date(mySubscription.currentPeriodEnd).toLocaleDateString("pt-BR")}</span>
+              )}
             </div>
           )}
           {!loadingSubscription && mySubscription?.status === "pending" && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              Assinatura de <span className="font-medium">{mySubscription.planName}</span> aguardando confirmação do pagamento.
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 space-y-2">
+              <p>Assinatura de <span className="font-medium">{mySubscription.planName}</span> aguardando pagamento.</p>
+              <Btn variant="primary" size="sm" onClick={() => handleSubscribe(mySubscription!.planId)} disabled={subscribing}>
+                {subscribing ? "Redirecionando..." : "Pagar agora"}
+              </Btn>
+              {subscriptionError && <p className="text-red-700">{subscriptionError}</p>}
             </div>
           )}
           {!loadingSubscription && (!mySubscription || mySubscription.status === "cancelled" || mySubscription.status === "past_due") && (

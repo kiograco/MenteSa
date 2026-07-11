@@ -53,16 +53,36 @@ Deno.serve(async req => {
     const payerEmail = payerAuth.user?.email;
     if (!payerEmail) return json({ error: "Não foi possível identificar seu e-mail para a assinatura." }, 422);
 
-    // Insert the row before calling Mercado Pago so external_reference can point at a real,
-    // already-existing subscription id — the webhook (mercadopago-webhook) looks this up to know
-    // which row to update once MP confirms the preapproval.
-    const { data: subscription, error: insertError } = await adminClient
+    // Reuse an existing pending row for this exact plan if one's already there — signup
+    // (handle_new_user trigger) creates one the moment a professional picks a plan, before any
+    // session exists to call this function with, so the first time they click "Pagar agora" this
+    // is very likely already sitting here. Falls back to inserting a fresh one for "Assinar" from
+    // Configurações when there isn't a pending row yet (e.g. changing plans after a cancellation).
+    const { data: existingPending } = await adminClient
       .from("professional_subscriptions")
-      .insert({ professional_id: userData.user.id, plan_id: planId, status: "pending" })
       .select("id")
-      .single();
+      .eq("professional_id", userData.user.id)
+      .eq("plan_id", planId)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (insertError || !subscription) return json({ error: insertError?.message ?? "Não foi possível iniciar a assinatura." }, 500);
+    let subscriptionId: string;
+    let createdNewRow = false;
+
+    if (existingPending) {
+      subscriptionId = existingPending.id;
+    } else {
+      const { data: inserted, error: insertError } = await adminClient
+        .from("professional_subscriptions")
+        .insert({ professional_id: userData.user.id, plan_id: planId, status: "pending" })
+        .select("id")
+        .single();
+      if (insertError || !inserted) return json({ error: insertError?.message ?? "Não foi possível iniciar a assinatura." }, 500);
+      subscriptionId = inserted.id;
+      createdNewRow = true;
+    }
 
     const preapprovalResponse = await fetch("https://api.mercadopago.com/preapproval", {
       method: "POST",
@@ -77,18 +97,20 @@ Deno.serve(async req => {
         },
         back_url: `${appBaseUrl}/profissional/configuracoes`,
         payer_email: payerEmail,
-        external_reference: subscription.id,
+        external_reference: subscriptionId,
         notification_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/mercadopago-webhook`,
       }),
     });
 
     if (!preapprovalResponse.ok) {
-      await adminClient.from("professional_subscriptions").delete().eq("id", subscription.id);
+      // Only clean up a row this call created — a pending row that already existed before this
+      // call (e.g. from signup) stays, so the professional can just retry "Pagar agora".
+      if (createdNewRow) await adminClient.from("professional_subscriptions").delete().eq("id", subscriptionId);
       return json({ error: `Falha ao criar assinatura no Mercado Pago: ${await preapprovalResponse.text()}` }, 502);
     }
 
     const preapproval = await preapprovalResponse.json();
-    await adminClient.from("professional_subscriptions").update({ mp_preapproval_id: preapproval.id }).eq("id", subscription.id);
+    await adminClient.from("professional_subscriptions").update({ mp_preapproval_id: preapproval.id }).eq("id", subscriptionId);
 
     return json({ initPoint: preapproval.init_point });
   } catch (error) {
