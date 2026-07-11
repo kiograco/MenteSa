@@ -1,5 +1,4 @@
-import { supabase } from "./supabase";
-import { extractFunctionErrorMessage } from "./functionsClient";
+import { extractFunctionErrorMessage, invokeEdgeFunction } from "./functionsClient";
 
 export type CreatePatientAccountResult =
   | { ok: true; patientId: string }
@@ -18,7 +17,7 @@ export async function createPatientAccount(params: {
   modality: "online" | "presencial";
   price?: number;
 }): Promise<CreatePatientAccountResult> {
-  const { data, error } = await supabase.functions.invoke<{ ok?: boolean; patientId?: string }>(
+  const { data, error } = await invokeEdgeFunction<{ ok?: boolean; patientId?: string }>(
     "create-patient-account",
     { body: params }
   );

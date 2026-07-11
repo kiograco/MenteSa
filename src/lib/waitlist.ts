@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { invokeEdgeFunction } from "./functionsClient";
 
 export type WaitlistEntry = {
   id: string;
@@ -42,5 +43,5 @@ export async function listMyWaitlistEntries(patientId: string): Promise<Waitlist
 /** Best-effort: called right after a cancellation. Never throws — a failed notification should
  *  never surface as a failed cancellation. */
 export async function notifyWaitlistMatch(professionalId: string, freedSlotIso: string): Promise<void> {
-  await supabase.functions.invoke("notify-waitlist-match", { body: { professionalId, freedSlotIso } }).catch(() => {});
+  await invokeEdgeFunction("notify-waitlist-match", { body: { professionalId, freedSlotIso } }).catch(() => {});
 }

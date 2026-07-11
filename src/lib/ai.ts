@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { invokeEdgeFunction } from "./functionsClient";
 
 export type AISessionSummary = { keyPoints: string[]; actionItems: string[]; clinicalNote: string };
 
@@ -6,7 +6,7 @@ export type AISessionSummary = { keyPoints: string[]; actionItems: string[]; cli
  *  not deployed, GEMINI_API_KEY missing, the Gemini request failed, etc.) so callers can
  *  fall back to manual note-taking — the AI summary is always optional, never blocking. */
 export async function getAISessionSummary(appointmentId: string, notes: string): Promise<AISessionSummary | null> {
-  const { data, error } = await supabase.functions.invoke<{
+  const { data, error } = await invokeEdgeFunction<{
     keyPoints?: string[];
     actionItems?: string[];
     clinicalNote?: string;
@@ -24,7 +24,7 @@ export async function getAISessionSummary(appointmentId: string, notes: string):
  *  already wrote (a SOAP field, a Biblioteca de Modelos preview). Returns null if AI isn't
  *  configured or the call fails, so callers just leave the original text untouched. */
 export async function improveTextWithAI(text: string): Promise<string | null> {
-  const { data, error } = await supabase.functions.invoke<{ improvedText?: string }>("ai-improve-text", { body: { text } });
+  const { data, error } = await invokeEdgeFunction<{ improvedText?: string }>("ai-improve-text", { body: { text } });
   if (error || !data?.improvedText) return null;
   return data.improvedText;
 }
@@ -52,7 +52,7 @@ export async function transcribeHandwriting(file: File): Promise<string | null> 
   if (file.size > MAX_OCR_IMAGE_BYTES) return null;
 
   const imageBase64 = await readFileAsBase64(file);
-  const { data, error } = await supabase.functions.invoke<{ text?: string }>("ocr-handwriting", {
+  const { data, error } = await invokeEdgeFunction<{ text?: string }>("ocr-handwriting", {
     body: { imageBase64, mimeType: file.type || "image/jpeg" },
   });
 
@@ -66,7 +66,7 @@ export type SessionPlan = { topics: string[]; notes: string };
  *  scores and suggests talking points for the next session. Returns null if AI isn't configured,
  *  the call fails, or there's not enough history to work from. */
 export async function planSessionWithAI(patientId: string): Promise<SessionPlan | null> {
-  const { data, error } = await supabase.functions.invoke<{ topics?: string[]; notes?: string }>("ai-plan-session", { body: { patientId } });
+  const { data, error } = await invokeEdgeFunction<{ topics?: string[]; notes?: string }>("ai-plan-session", { body: { patientId } });
   if (error || !data || !Array.isArray(data.topics) || typeof data.notes !== "string") return null;
   return { topics: data.topics, notes: data.notes };
 }

@@ -873,6 +873,51 @@
   `supabase functions deploy ai-plan-session` (ambas reaproveitam `GEMINI_API_KEY`/`GEMINI_MODEL`,
   sem secret novo). Nenhum cron novo nesta fase.
 
+  ### Fase 4 do roadmap de concorrência (Estrutural)
+
+  Os três itens estruturais do roadmap, cada um atrás de uma decisão de produto confirmada com o
+  usuário antes de começar:
+
+  - **Multi-profissional por clínica + Acessos Administrativos (Secretária)**: o item mais
+    estrutural de todo o roadmap. `clinics`/`clinic_staff` (migration `20260719001`) mais
+    `professional_profiles.clinic_id` — uma clínica é criada preguiçosamente na primeira vez que um
+    profissional convida uma secretária (`create-staff-account`, mesmo padrão de convite por e-mail
+    de `create-patient-account`). Em vez de reescrever toda RLS que já assumia `auth.uid() =
+    professional_id` (22 policies diretas + ~14 indiretas via join em `appointments`, mapeadas antes
+    de começar), foi criada uma função central `can_access_professional(target_professional_id)`
+    (mesmo padrão de `is_admin()`) — só as 6 policies por trás de Agenda e Pacientes (o escopo fixo
+    de permissão do staff, decidido com o usuário: nunca Financeiro, nunca o conteúdo clínico do
+    Prontuário) passaram a chamar essa função; todo o resto do schema ficou intocado, staff não tem
+    acesso nenhum. No client, `App.tsx` ganhou o conceito de `activeProfessionalId` — sempre o
+    próprio id pra um profissional comum, ou o profissional escolhido num seletor "Atendendo por"
+    pra staff (`src/lib/clinics.ts`). `CalendarScreen`/`PatientsScreen` são as únicas duas telas que
+    staff acessa (`screenRoles` em `App.tsx`); dentro delas, "Cadastrar paciente"/"Importar CSV" e o
+    painel de mensagens ficam ocultos pro staff (ficaram de fora da rodada — exigiriam repassar
+    `activeProfessionalId` através de `create-patient-account`, que hoje assume `auth.uid()` como o
+    profissional).
+  - **Sistema de Planos/Assinatura por profissional**: `subscription_plans`/`professional_subscriptions`
+    (migration `20260719004`) — uma cobrança recorrente do profissional pra plataforma, separada da
+    comissão de 10% por consulta (`payments.appointment_id` é FK `NOT NULL`, não dava pra reaproveitar
+    essa tabela). Nova Edge Function `create-mp-subscription` usa a API de `/preapproval` do Mercado
+    Pago (diferente de `/checkout/preferences`, já usada por `create-mp-preference`) — `
+    mercadopago-webhook` ganhou um branch novo (`topic === "subscription_preapproval"`) que resolve
+    e atualiza o status da assinatura, sem tocar no branch de pagamento por consulta já existente.
+    **Decisão consciente**: só um plano (`"Assinatura MindCare"`) em vez de inventar camadas
+    Basic/Pro sem diferença funcional nenhuma entre elas — nada no app é bloqueado por plano ainda
+    (gate de limites é uma decisão de produto futura). **O preço está com placeholder R$0** — troque
+    via SQL/dashboard antes de divulgar a assinatura pros profissionais.
+  - **Site de Agendamentos com branding**: `professional_profiles.slug`/`accent_color`/`cover_url`
+    (migration `20260719003`). O UUID em `/perfil/{id}` continua funcionando (links antigos não
+    quebram) — `ProfilePage` resolve por slug OU id automaticamente. `src/lib/coverImage.ts` reaproveita
+    o bucket público `logos` já existente (Fase 1) pra capa; cor de destaque é uma paleta fixa de 6
+    opções aplicada via `style` inline no botão "Agendar sessão" (novo prop `style` opcional em `Btn`).
+
+  Para ativar: `supabase functions deploy create-staff-account`,
+  `supabase functions deploy create-mp-subscription`, e reaplicar
+  `supabase functions deploy mercadopago-webhook --no-verify-jwt` (mudou de comportamento, mesmo
+  flag de antes). Nenhum secret novo — tudo reaproveita `APP_BASE_URL`/`MERCADOPAGO_ACCESS_TOKEN`
+  já configurados.
+
   ### Projeto Supabase real + deploy automático
 
   `supabase/config.toml` é o config do Supabase CLI (criado por este projeto, ainda sem estar

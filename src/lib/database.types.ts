@@ -4,7 +4,7 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
-export type UserRole = "patient" | "professional" | "admin";
+export type UserRole = "patient" | "professional" | "admin" | "staff";
 export type VerificationStatus = "pending" | "verified" | "rejected";
 export type Modality = "online" | "presencial";
 export type AppointmentStatus = "scheduled" | "completed" | "cancelled" | "no_show";
@@ -55,12 +55,78 @@ export interface Database {
           pass_fee_to_patient: boolean;
           auto_charge_enabled: boolean;
           auto_charge_days_before: number;
+          clinic_id: string | null;
+          slug: string | null;
+          accent_color: string | null;
+          cover_url: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
           license_number: string;
         };
         Update: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]>;
+        Relationships: [];
+      };
+      subscription_plans: {
+        Row: {
+          id: string;
+          name: string;
+          price: number;
+          billing_interval: string;
+          active: boolean;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["subscription_plans"]["Row"]> & {
+          name: string;
+          price: number;
+        };
+        Update: Partial<Database["public"]["Tables"]["subscription_plans"]["Row"]>;
+        Relationships: [];
+      };
+      professional_subscriptions: {
+        Row: {
+          id: string;
+          professional_id: string;
+          plan_id: string;
+          status: "pending" | "active" | "cancelled" | "past_due";
+          mp_preapproval_id: string | null;
+          current_period_end: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["professional_subscriptions"]["Row"]> & {
+          professional_id: string;
+          plan_id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["professional_subscriptions"]["Row"]>;
+        Relationships: [];
+      };
+      clinics: {
+        Row: {
+          id: string;
+          name: string;
+          owner_professional_id: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["clinics"]["Row"]> & {
+          name: string;
+          owner_professional_id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["clinics"]["Row"]>;
+        Relationships: [];
+      };
+      clinic_staff: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          user_id: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["clinic_staff"]["Row"]> & {
+          clinic_id: string;
+          user_id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["clinic_staff"]["Row"]>;
         Relationships: [];
       };
       professional_availability: {

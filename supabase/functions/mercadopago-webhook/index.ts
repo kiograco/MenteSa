@@ -10,19 +10,62 @@ import { sendBookingConfirmationEmail } from "../_shared/email.ts";
 
 const PLATFORM_FEE_RATE = 0.1;
 
+/** Professional-subscription branch (create-mp-subscription): a distinct notification shape from
+ *  the appointment-payment flow below — MP calls back with a preapproval id, not a payment id, and
+ *  the resource lives at a different endpoint. Handled first so the generic
+ *  "topic !== payment -> ignored" check further down never sees these. Only the base
+ *  authorized/cancelled/pending states are tracked; individual recurring charges
+ *  (subscription_authorized_payment) aren't recorded per-cycle in this pass — out of scope for now,
+ *  same "ship the real mechanism, flag what's deferred" posture as the placeholder plan price. */
+async function handleSubscriptionNotification(preapprovalId: string, accessToken: string, supabaseUrl: string, serviceRoleKey: string): Promise<Response> {
+  const preapprovalResponse = await fetch(`https://api.mercadopago.com/preapproval/${preapprovalId}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!preapprovalResponse.ok) return new Response(JSON.stringify({ error: "Preapproval not found upstream." }), { status: 200 });
+
+  const preapproval = await preapprovalResponse.json();
+  const subscriptionId: string | undefined = preapproval.external_reference;
+  if (!subscriptionId) return new Response(JSON.stringify({ ignored: true }), { status: 200 });
+
+  let status: "active" | "cancelled" | "pending" | null = null;
+  if (preapproval.status === "authorized") status = "active";
+  else if (preapproval.status === "cancelled") status = "cancelled";
+  else if (preapproval.status === "pending") status = "pending";
+  if (!status) return new Response(JSON.stringify({ ignored: true, mpStatus: preapproval.status }), { status: 200 });
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey);
+  // Approximated as "one month from now" (matches the monthly billing_interval seeded for every
+  // plan today) rather than trusting an MP field for the next charge date — safer than guessing at
+  // an API response shape that isn't verified here.
+  const currentPeriodEnd = status === "active" ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() : null;
+
+  const { error } = await supabase
+    .from("professional_subscriptions")
+    .update({ status, mp_preapproval_id: preapproval.id, current_period_end: currentPeriodEnd, updated_at: new Date().toISOString() })
+    .eq("id", subscriptionId);
+
+  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+  return new Response(JSON.stringify({ ok: true }), { status: 200 });
+}
+
 Deno.serve(async req => {
   try {
     const url = new URL(req.url);
     const paymentId = url.searchParams.get("data.id") ?? url.searchParams.get("id");
     const topic = url.searchParams.get("type") ?? url.searchParams.get("topic");
 
+    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
+    if (!accessToken) return new Response(JSON.stringify({ error: "MERCADOPAGO_ACCESS_TOKEN não configurado." }), { status: 500 });
+
+    if (topic === "subscription_preapproval" || topic === "preapproval") {
+      if (!paymentId) return new Response(JSON.stringify({ ignored: true }), { status: 200 });
+      return handleSubscriptionNotification(paymentId, accessToken, Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    }
+
     // Mercado Pago also pings this endpoint for non-payment topics (merchant_order, etc.) — ignore those.
     if (!paymentId || (topic && topic !== "payment")) {
       return new Response(JSON.stringify({ ignored: true }), { status: 200 });
     }
-
-    const accessToken = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN");
-    if (!accessToken) return new Response(JSON.stringify({ error: "MERCADOPAGO_ACCESS_TOKEN não configurado." }), { status: 500 });
 
     const paymentResponse = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },

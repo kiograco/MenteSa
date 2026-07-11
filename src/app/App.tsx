@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+import { invokeEdgeFunction, onSessionExpired } from "../lib/functionsClient";
 import { mockPaymentProvider, createMercadoPagoCheckout } from "../lib/payment-provider";
 import type { UserRole, PaymentStatus } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay, type TimeBlock } from "../lib/scheduling";
@@ -16,6 +17,7 @@ import { signSessionNote } from "../lib/sessionSignature";
 import { uploadProfessionalDocument, listProfessionalDocuments, getDocumentSignedUrl, type ProfessionalDocument } from "../lib/documents";
 import { uploadAvatar } from "../lib/avatar";
 import { uploadLogo } from "../lib/logo";
+import { uploadCoverImage } from "../lib/coverImage";
 import {
   listTagsForProfessional, createPatientTag, deletePatientTag,
   PATIENT_TAG_COLORS, PATIENT_TAG_COLOR_CLASSES,
@@ -33,6 +35,14 @@ import {
   listLocations, createLocation, deleteLocation, listServices, createService, deleteService,
   type ProfessionalLocation, type ProfessionalService,
 } from "../lib/professionalLocations";
+import {
+  inviteStaffMember, listMyStaff, removeStaffMember, listMyProfessionals,
+  type StaffMember, type ClinicProfessional,
+} from "../lib/clinics";
+import {
+  listPlans, getMySubscription, createSubscription,
+  type SubscriptionPlan, type ProfessionalSubscription,
+} from "../lib/subscriptions";
 import {
   uploadPatientMaterial, listMaterialsForProfessional, deletePatientMaterial, getMaterialSignedUrl,
   listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
@@ -118,6 +128,7 @@ type BookingDraft = {
 
 type DirectoryProfessional = {
   id?: string;
+  slug?: string | null;
   name: string;
   role: string;
   crp?: string;
@@ -164,9 +175,9 @@ function Badge({ children, variant = "default", className = "" }: { children: Re
   );
 }
 
-function Btn({ children, variant = "primary", size = "md", className = "", onClick, disabled }: {
+function Btn({ children, variant = "primary", size = "md", className = "", onClick, disabled, style }: {
   children: React.ReactNode; variant?: "primary" | "secondary" | "outline" | "ghost" | "danger";
-  size?: "sm" | "md" | "lg"; className?: string; onClick?: () => void; disabled?: boolean;
+  size?: "sm" | "md" | "lg"; className?: string; onClick?: () => void; disabled?: boolean; style?: React.CSSProperties;
 }) {
   const base = "inline-flex items-center gap-2 font-medium rounded-xl transition-all duration-150 cursor-pointer select-none";
   const sizes = { sm: "px-3 py-1.5 text-sm", md: "px-4 py-2 text-sm", lg: "px-6 py-3 text-base" };
@@ -183,6 +194,7 @@ function Btn({ children, variant = "primary", size = "md", className = "", onCli
       disabled={disabled}
       className={`${base} ${sizes[size]} ${variants[variant]} ${disabled ? "opacity-50 cursor-not-allowed" : ""} ${className}`}
       onClick={onClick}
+      style={style}
     >
       {children}
     </button>
@@ -897,7 +909,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
 
       const { data, error } = await supabase
         .from("professional_profiles")
-        .select("id, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, profiles!inner(full_name, avatar_url)")
+        .select("id, slug, bio, license_type, license_number, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, profiles!inner(full_name, avatar_url)")
         .eq("verification_status", "verified")
         .is("profiles.suspended_at", null)
         .order("created_at", { ascending: false });
@@ -915,6 +927,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
 
           return {
             id: item.id,
+            slug: item.slug ?? null,
             name: item.profiles?.full_name ?? "Profissional verificado",
             role: item.license_type === "CRM" ? "Psiquiatra" : "Psicólogo(a)",
             crp: item.license_type === "CRP" ? license : undefined,
@@ -1041,7 +1054,7 @@ function DirectoryPage({ onNavigate, onSelectProfessional }: { onNavigate: (s: S
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-5">
           {loadingProfessionals && Array.from({ length: 6 }).map((_, i) => <SkeletonProfessionalCard key={`skeleton-${i}`} />)}
           {!loadingProfessionals && filtered.map((p, i) => (
-            <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => { if (p.id) { onSelectProfessional(p.id); onNavigate("profile"); } }}>
+            <Card key={p.id ?? i} className="p-5 hover:border-primary/30 transition-all cursor-pointer" onClick={() => { if (p.id) { onSelectProfessional(p.slug || p.id); onNavigate("profile"); } }}>
               <div className="flex gap-4 mb-4">
                 <PhotoOrInitials src={p.img || undefined} name={p.name} className="w-16 h-16 rounded-2xl object-cover bg-secondary flex-shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -1104,6 +1117,8 @@ type ProfileData = {
   price: number;
   modalities: string[];
   img: string;
+  coverUrl: string | null;
+  accentColor: string | null;
 };
 
 const WEEKDAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -1164,30 +1179,15 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
     setLoadError("");
 
     (async () => {
-      const [{ data: proData, error: proError }, { data: availData }, { data: reviewData }, { data: blockData }, locData, svcData] = await Promise.all([
-        supabase
-          .from("professional_profiles")
-          .select("id, bio, specialties, approaches, license_type, license_number, session_price, modalities, city, state, insurances, years_experience, profiles(full_name, avatar_url)")
-          .eq("id", professionalId)
-          .maybeSingle(),
-        supabase
-          .from("professional_availability")
-          .select("weekday, start_time, end_time")
-          .eq("professional_id", professionalId)
-          .not("weekday", "is", null),
-        supabase
-          .from("reviews")
-          .select("rating, comment, profiles(full_name)")
-          .eq("professional_id", professionalId)
-          .order("created_at", { ascending: false })
-          .limit(10),
-        supabase
-          .from("professional_time_blocks")
-          .select("start_at, end_at")
-          .eq("professional_id", professionalId),
-        listLocations(professionalId).catch(() => []),
-        listServices(professionalId).catch(() => []),
-      ]);
+      // professionalId can be either the raw UUID (old links, /perfil/{uuid}) or a friendly slug
+      // (/perfil/{slug}) — resolve to the real row (and its real id) first, since every other
+      // query below filters on professional_id and needs the UUID, not whatever string was in the URL.
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(professionalId);
+      const { data: proData, error: proError } = await supabase
+        .from("professional_profiles")
+        .select("id, bio, specialties, approaches, license_type, license_number, session_price, modalities, city, state, insurances, years_experience, cover_url, accent_color, profiles(full_name, avatar_url)")
+        .eq(isUuid ? "id" : "slug", professionalId)
+        .maybeSingle();
 
       if (!active) return;
 
@@ -1196,6 +1196,30 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
         setLoading(false);
         return;
       }
+
+      const resolvedId = (proData as any).id as string;
+
+      const [{ data: availData }, { data: reviewData }, { data: blockData }, locData, svcData] = await Promise.all([
+        supabase
+          .from("professional_availability")
+          .select("weekday, start_time, end_time")
+          .eq("professional_id", resolvedId)
+          .not("weekday", "is", null),
+        supabase
+          .from("reviews")
+          .select("rating, comment, profiles(full_name)")
+          .eq("professional_id", resolvedId)
+          .order("created_at", { ascending: false })
+          .limit(10),
+        supabase
+          .from("professional_time_blocks")
+          .select("start_at, end_at")
+          .eq("professional_id", resolvedId),
+        listLocations(resolvedId).catch(() => []),
+        listServices(resolvedId).catch(() => []),
+      ]);
+
+      if (!active) return;
 
       const item: any = proData;
       setPro({
@@ -1212,6 +1236,8 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
         price: Number(item.session_price ?? 0),
         modalities: (item.modalities ?? []).map((v: string) => (v === "online" ? "Online" : "Presencial")),
         img: item.profiles?.avatar_url ?? "",
+        coverUrl: item.cover_url ?? null,
+        accentColor: item.accent_color ?? null,
       });
       setAvailability((availData ?? []) as any);
       setReviews(((reviewData ?? []) as any[]).map(r => ({ name: r.profiles?.full_name ?? "Paciente", rating: r.rating, comment: r.comment })));
@@ -1225,7 +1251,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
       const { data: existing } = await supabase
         .from("appointments")
         .select("scheduled_at")
-        .eq("professional_id", professionalId)
+        .eq("professional_id", resolvedId)
         .eq("status", "scheduled")
         .gte("scheduled_at", now.toISOString())
         .lte("scheduled_at", in14Days.toISOString());
@@ -1319,6 +1345,9 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
     <div className="min-h-screen bg-background">
       {/* Hero */}
       <div className="bg-white border-b border-border">
+        {pro.coverUrl && (
+          <div className="h-40 w-full bg-cover bg-center" style={{ backgroundImage: `url(${pro.coverUrl})` }} />
+        )}
         <div className="max-w-5xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row gap-8">
             <div className="flex-shrink-0">
@@ -1344,7 +1373,7 @@ function ProfilePage({ onNavigate, professionalId, onBook, currentUser }: {
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <Btn variant="primary" size="lg" onClick={goToAvailability}><Calendar size={16} />Agendar sessão</Btn>
+              <Btn variant="primary" size="lg" onClick={goToAvailability} style={pro.accentColor ? { backgroundColor: pro.accentColor } : undefined}><Calendar size={16} />Agendar sessão</Btn>
               <Btn variant="outline"><MessageSquare size={16} />Enviar mensagem</Btn>
             </div>
           </div>
@@ -3235,11 +3264,21 @@ function needsConfirmation(a: CalendarAppointment): boolean {
 const CALENDAR_HOURS = Array.from({ length: 13 }, (_, i) => i + 7); // 07:00–19:00
 const CALENDAR_DAY_LABELS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr }: AuthenticatedScreenProps & { onEnterVideo: (appointmentId: string) => void; onOpenEhr: (patientId: string, appointmentId: string) => void }) {
+function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOpenEhr, activeProfessionalId, staffProfessionals, onChangeActiveProfessional }: AuthenticatedScreenProps & {
+  onEnterVideo: (appointmentId: string) => void; onOpenEhr: (patientId: string, appointmentId: string) => void;
+  activeProfessionalId: string; staffProfessionals: ClinicProfessional[]; onChangeActiveProfessional: (id: string) => void;
+}) {
   const currentTime = useCurrentTime();
   const [view, setView] = useState<"week" | "month" | "day">("week");
   const [anchorDate, setAnchorDate] = useState(() => new Date());
-  const navItems = [
+  // Staff (secretária) only ever gets Agenda + Pacientes — the other nav items lead to screens
+  // they're not allowed into (screenRoles in App() would bounce them back anyway, but there's no
+  // reason to show dead-end links).
+  const isStaff = currentUser.role === "staff";
+  const navItems = isStaff ? [
+    { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
+  ] : [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", active: true, onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", onClick: () => onNavigate("patients") },
@@ -3292,7 +3331,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     const { data } = await supabase
       .from("professional_time_blocks")
       .select("id, start_at, end_at, reason")
-      .eq("professional_id", currentUser.id)
+      .eq("professional_id", activeProfessionalId)
       .gte("end_at", new Date().toISOString())
       .order("start_at", { ascending: true });
     setTimeBlocks(((data ?? []) as any[]).map(b => ({ id: b.id, startAt: b.start_at, endAt: b.end_at, reason: b.reason })));
@@ -3345,11 +3384,11 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
 
     for (const conflict of blockConflicts ?? []) {
       const { error } = await supabase.from("appointments").update({ status: "cancelled" }).eq("id", conflict.id);
-      if (!error) void notifyWaitlistMatch(currentUser.id, conflict.scheduledAt);
+      if (!error) void notifyWaitlistMatch(activeProfessionalId, conflict.scheduledAt);
     }
 
     const { error } = await supabase.from("professional_time_blocks").insert({
-      professional_id: currentUser.id,
+      professional_id: activeProfessionalId,
       start_at: startAt.toISOString(),
       end_at: endAt.toISOString(),
       reason: blockReason || null,
@@ -3392,7 +3431,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     }
     setAppointments(prev => prev.map(a => (a.id === selectedAppointment.id ? { ...a, status: "cancelled" } : a)));
     setSelectedAppointment(prev => (prev ? { ...prev, status: "cancelled" } : prev));
-    void notifyWaitlistMatch(currentUser.id, selectedAppointment.scheduledAt);
+    void notifyWaitlistMatch(activeProfessionalId, selectedAppointment.scheduledAt);
   };
 
   const [markingNoShow, setMarkingNoShow] = useState(false);
@@ -3432,7 +3471,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     const { data: conflict } = await supabase
       .from("appointments")
       .select("id")
-      .eq("professional_id", currentUser.id)
+      .eq("professional_id", activeProfessionalId)
       .eq("scheduled_at", newScheduledAt.toISOString())
       .eq("status", "scheduled")
       .neq("id", selectedAppointment.id)
@@ -3487,7 +3526,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     const { data } = await supabase
       .from("appointments")
       .select("id, scheduled_at, duration_minutes, modality, status, patient_id, google_event_id, confirmed_at, profiles(full_name)")
-      .eq("professional_id", currentUser.id)
+      .eq("professional_id", activeProfessionalId)
       .gte("scheduled_at", monthStart.toISOString())
       .lt("scheduled_at", monthEnd.toISOString())
       .order("scheduled_at", { ascending: true });
@@ -3509,7 +3548,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   useEffect(() => {
     void reloadAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id, anchorDate.getFullYear(), anchorDate.getMonth()]);
+  }, [activeProfessionalId, anchorDate.getFullYear(), anchorDate.getMonth()]);
 
   useEffect(() => {
     let active = true;
@@ -3518,7 +3557,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       const { data } = await supabase
         .from("professional_availability")
         .select("weekday, start_time, end_time")
-        .eq("professional_id", currentUser.id)
+        .eq("professional_id", activeProfessionalId)
         .not("weekday", "is", null)
         .order("weekday", { ascending: true });
 
@@ -3534,7 +3573,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     })();
 
     (async () => {
-      const { data } = await supabase.from("appointments").select("patient_id, profiles(full_name)").eq("professional_id", currentUser.id);
+      const { data } = await supabase.from("appointments").select("patient_id, profiles(full_name)").eq("professional_id", activeProfessionalId);
       if (!active) return;
       const map = new Map<string, string>();
       ((data ?? []) as any[]).forEach(a => {
@@ -3549,18 +3588,18 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     })();
 
     (async () => {
-      const { data } = await supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle();
+      const { data } = await supabase.from("professional_profiles").select("session_price").eq("id", activeProfessionalId).maybeSingle();
       if (active) setSessionPrice(Number(data?.session_price ?? 0));
     })();
 
-    listServices(currentUser.id).then(list => { if (active) setServices(list.filter(s => s.active)); }).catch(() => {});
+    listServices(activeProfessionalId).then(list => { if (active) setServices(list.filter(s => s.active)); }).catch(() => {});
 
     void reloadTimeBlocks();
 
     return () => {
       active = false;
     };
-  }, [currentUser.id]);
+  }, [activeProfessionalId]);
 
   const appointmentsFor = (day: Date, hour: number) =>
     appointments.filter(a => {
@@ -3633,7 +3672,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       const { data: existing } = await supabase
         .from("appointments")
         .select("scheduled_at")
-        .eq("professional_id", currentUser.id)
+        .eq("professional_id", activeProfessionalId)
         .eq("status", "scheduled")
         .in("scheduled_at", isoList);
       setCreating(false);
@@ -3648,7 +3687,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
       const { data: conflict } = await supabase
         .from("appointments")
         .select("id")
-        .eq("professional_id", currentUser.id)
+        .eq("professional_id", activeProfessionalId)
         .eq("scheduled_at", firstScheduledAt.toISOString())
         .eq("status", "scheduled")
         .maybeSingle();
@@ -3673,7 +3712,7 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
     const { error } = await supabase.from("appointments").insert(
       datesToCreate.map(d => ({
         patient_id: newPatientId,
-        professional_id: currentUser.id,
+        professional_id: activeProfessionalId,
         scheduled_at: d.toISOString(),
         modality: newModality,
         price: priceValue,
@@ -3764,6 +3803,18 @@ function CalendarScreen({ onNavigate, currentUser, onSignOut, onEnterVideo, onOp
   return (
     <AppShell title="Agenda & Calendário" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
       <div className="space-y-4 h-full">
+        {isStaff && staffProfessionals.length > 0 && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-medium text-muted-foreground">Atendendo por</label>
+            <select
+              value={activeProfessionalId}
+              onChange={e => onChangeActiveProfessional(e.target.value)}
+              className="px-3 py-1.5 bg-input-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              {staffProfessionals.map(p => <option key={p.id} value={p.id}>{p.fullName}</option>)}
+            </select>
+          </div>
+        )}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
             <button
@@ -4329,8 +4380,18 @@ function PatientsScreen({
   currentUser,
   onSignOut,
   onOpenEhr,
-}: AuthenticatedScreenProps & { onOpenEhr: (patientId: string, appointmentId: string) => void }) {
-  const navItems = [
+  activeProfessionalId,
+  staffProfessionals,
+  onChangeActiveProfessional,
+}: AuthenticatedScreenProps & {
+  onOpenEhr: (patientId: string, appointmentId: string) => void;
+  activeProfessionalId: string; staffProfessionals: ClinicProfessional[]; onChangeActiveProfessional: (id: string) => void;
+}) {
+  const isStaff = currentUser.role === "staff";
+  const navItems = isStaff ? [
+    { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
+    { icon: <Users size={18} />, label: "Pacientes", active: true, onClick: () => onNavigate("patients") },
+  ] : [
     { icon: <Home size={18} />, label: "Início", onClick: () => onNavigate("pro-dashboard") },
     { icon: <Calendar size={18} />, label: "Agenda", onClick: () => onNavigate("calendar") },
     { icon: <Users size={18} />, label: "Pacientes", active: true, onClick: () => onNavigate("patients") },
@@ -4351,7 +4412,7 @@ function PatientsScreen({
     const { data } = await supabase
       .from("appointments")
       .select("patient_id, profiles(full_name, avatar_url)")
-      .eq("professional_id", currentUser.id);
+      .eq("professional_id", activeProfessionalId);
 
     const map = new Map<string, EhrPatient>();
     ((data ?? []) as any[]).forEach(a => {
@@ -4365,9 +4426,9 @@ function PatientsScreen({
 
   useEffect(() => {
     void loadPatients();
-    listTagsForProfessional(currentUser.id).then(setTags).catch(error => reportError(error, { flow: "patients.loadTags" }));
+    listTagsForProfessional(activeProfessionalId).then(setTags).catch(error => reportError(error, { flow: "patients.loadTags" }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser.id]);
+  }, [activeProfessionalId]);
 
   const tagsByPatient = tags.reduce<Record<string, PatientTag[]>>((acc, tag) => {
     (acc[tag.patientId] ??= []).push(tag);
@@ -4485,7 +4546,7 @@ function PatientsScreen({
     setNewPatientPrice("");
     setPatientInvited(false);
     setShowNewPatientModal(true);
-    void supabase.from("professional_profiles").select("session_price").eq("id", currentUser.id).maybeSingle()
+    void supabase.from("professional_profiles").select("session_price").eq("id", activeProfessionalId).maybeSingle()
       .then(({ data }) => setNewPatientPrice(data?.session_price != null ? String(data.session_price) : ""));
   };
 
@@ -4523,6 +4584,18 @@ function PatientsScreen({
 
   return (
     <AppShell title="Pacientes" navItems={navItems} userName={currentUser.fullName} onSignOut={onSignOut} currentUser={currentUser} onNotificationClick={() => onNavigate("patients")}>
+      {isStaff && staffProfessionals.length > 0 && (
+        <div className="flex items-center gap-2 mb-3">
+          <label className="text-xs font-medium text-muted-foreground">Atendendo por</label>
+          <select
+            value={activeProfessionalId}
+            onChange={e => onChangeActiveProfessional(e.target.value)}
+            className="px-3 py-1.5 bg-input-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            {staffProfessionals.map(p => <option key={p.id} value={p.id}>{p.fullName}</option>)}
+          </select>
+        </div>
+      )}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         {allTagLabels.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
@@ -4545,27 +4618,33 @@ function PatientsScreen({
         ) : <div />}
         <div className="flex gap-2">
           <Btn variant="ghost" size="sm" onClick={handleExportCsv} disabled={filteredPatients.length === 0}><Download size={14} />Exportar CSV</Btn>
-          <label className="cursor-pointer">
-            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium border border-border text-foreground hover:bg-muted">
-              <Upload size={14} />Importar CSV
-            </span>
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              className="hidden"
-              onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void handleImportFileSelected(file); }}
-            />
-          </label>
-          <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+          {!isStaff && (
+            <>
+              <label className="cursor-pointer">
+                <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-medium border border-border text-foreground hover:bg-muted">
+                  <Upload size={14} />Importar CSV
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) void handleImportFileSelected(file); }}
+                />
+              </label>
+              <Btn variant="outline" size="sm" onClick={openNewPatientModal}><Plus size={14} />Cadastrar paciente</Btn>
+            </>
+          )}
         </div>
       </div>
-      <MessagingPanel
-        currentUser={currentUser}
-        role="professional"
-        counterparts={filteredPatients}
-        loadingCounterparts={loadingPatients}
-        onOpenRecord={(patientId) => { onOpenEhr(patientId, ""); onNavigate("ehr"); }}
-      />
+      {!isStaff && (
+        <MessagingPanel
+          currentUser={currentUser}
+          role="professional"
+          counterparts={filteredPatients}
+          loadingCounterparts={loadingPatients}
+          onOpenRecord={(patientId) => { onOpenEhr(patientId, ""); onNavigate("ehr"); }}
+        />
+      )}
 
       {showNewPatientModal && (
         <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4" onClick={() => setShowNewPatientModal(false)}>
@@ -7467,7 +7546,7 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
         room_url: `https://meet.mindcare.test/${roomId}`,
         provider_room_id: roomId,
       });
-      void supabase.functions.invoke("send-booking-confirmation", { body: { appointmentId: appointment.id } });
+      void invokeEdgeFunction("send-booking-confirmation", { body: { appointmentId: appointment.id } });
 
       setStep(4);
     } catch (error) {
@@ -8355,6 +8434,11 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const [logoUrl, setLogoUrl] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [logoError, setLogoError] = useState("");
+  const [coverUrl, setCoverUrl] = useState("");
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [coverError, setCoverError] = useState("");
+  const [slug, setSlug] = useState("");
+  const [accentColor, setAccentColor] = useState("");
   const [cpf, setCpf] = useState("");
   const [passFeeToPatient, setPassFeeToPatient] = useState(false);
   const [autoChargeEnabled, setAutoChargeEnabled] = useState(false);
@@ -8467,6 +8551,88 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     }
   };
 
+  const [staff, setStaff] = useState<StaffMember[]>([]);
+  const [loadingStaff, setLoadingStaff] = useState(true);
+  const [newStaffName, setNewStaffName] = useState("");
+  const [newStaffEmail, setNewStaffEmail] = useState("");
+  const [invitingStaff, setInvitingStaff] = useState(false);
+  const [staffMessage, setStaffMessage] = useState("");
+
+  const loadStaff = async () => {
+    setLoadingStaff(true);
+    try {
+      setStaff(await listMyStaff(currentUser.id));
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.loadStaff" });
+    } finally {
+      setLoadingStaff(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadStaff();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser.id]);
+
+  const handleInviteStaff = async () => {
+    setStaffMessage("");
+    if (!newStaffName.trim() || !newStaffEmail.trim()) return;
+    setInvitingStaff(true);
+    const result = await inviteStaffMember(newStaffName.trim(), newStaffEmail.trim());
+    setInvitingStaff(false);
+    if (!result.ok) {
+      setStaffMessage(result.error);
+      return;
+    }
+    setNewStaffName("");
+    setNewStaffEmail("");
+    setStaffMessage("Convite enviado! A secretária define a própria senha ao aceitar.");
+    await loadStaff();
+  };
+
+  const handleRemoveStaff = async (id: string) => {
+    if (!window.confirm("Remover o acesso desta secretária?")) return;
+    try {
+      await removeStaffMember(id);
+      await loadStaff();
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.removeStaff" });
+    }
+  };
+
+  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [mySubscription, setMySubscription] = useState<ProfessionalSubscription | null>(null);
+  const [loadingSubscription, setLoadingSubscription] = useState(true);
+  const [subscribing, setSubscribing] = useState(false);
+  const [subscriptionError, setSubscriptionError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      setLoadingSubscription(true);
+      try {
+        const [planList, subscription] = await Promise.all([listPlans(), getMySubscription(currentUser.id)]);
+        setPlans(planList);
+        setMySubscription(subscription);
+      } catch (error) {
+        reportError(error, { flow: "professionalSettings.loadSubscription" });
+      } finally {
+        setLoadingSubscription(false);
+      }
+    })();
+  }, [currentUser.id]);
+
+  const handleSubscribe = async (planId: string) => {
+    setSubscriptionError("");
+    setSubscribing(true);
+    const result = await createSubscription(planId);
+    setSubscribing(false);
+    if (!result.ok) {
+      setSubscriptionError(result.error);
+      return;
+    }
+    window.location.href = result.initPoint;
+  };
+
   const toggleTargetAudience = (value: string) => {
     setTargetAudience(prev => (prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]));
   };
@@ -8506,7 +8672,7 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLoading(true);
       const { data } = await supabase
         .from("professional_profiles")
-        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cpf, pass_fee_to_patient, auto_charge_enabled, auto_charge_days_before")
+        .select("license_type, license_number, bio, specialties, approaches, session_price, modalities, city, state, insurances, years_experience, target_audience, logo_url, cover_url, slug, accent_color, cpf, pass_fee_to_patient, auto_charge_enabled, auto_charge_days_before")
         .eq("id", currentUser.id)
         .maybeSingle();
 
@@ -8527,6 +8693,9 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         setModalityPresencial((data.modalities ?? []).includes("presencial"));
         setTargetAudience(data.target_audience ?? []);
         setLogoUrl(data.logo_url ?? "");
+        setCoverUrl(data.cover_url ?? "");
+        setSlug(data.slug ?? "");
+        setAccentColor(data.accent_color ?? "");
         setCpf(data.cpf ?? "");
         setPassFeeToPatient(Boolean(data.pass_fee_to_patient));
         setAutoChargeEnabled(Boolean(data.auto_charge_enabled));
@@ -8559,6 +8728,8 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
     if (modalityOnline) modalities.push("online");
     if (modalityPresencial) modalities.push("presencial");
 
+    const normalizedSlug = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+
     const { error } = await supabase
       .from("professional_profiles")
       .update({
@@ -8578,14 +8749,17 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         pass_fee_to_patient: passFeeToPatient,
         auto_charge_enabled: autoChargeEnabled,
         auto_charge_days_before: Math.max(1, Number(autoChargeDaysBefore) || 1),
+        slug: normalizedSlug || null,
+        accent_color: accentColor || null,
       })
       .eq("id", currentUser.id);
 
     setSaving(false);
+    setSlug(normalizedSlug);
 
     if (error) {
       reportError(error, { flow: "professionalSettings.saveProfile" });
-      setSaveMessage("Não foi possível salvar. Tente novamente.");
+      setSaveMessage(error.message.includes("professional_profiles_slug_key") ? "Esse endereço já está em uso por outro profissional." : "Não foi possível salvar. Tente novamente.");
       return;
     }
 
@@ -8617,6 +8791,20 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setLogoError(error instanceof Error ? error.message : "Não foi possível enviar o logo.");
     } finally {
       setUploadingLogo(false);
+    }
+  };
+
+  const handleUploadCover = async (file: File) => {
+    setCoverError("");
+    setUploadingCover(true);
+    try {
+      const url = await uploadCoverImage(currentUser.id, file);
+      setCoverUrl(url);
+    } catch (error) {
+      reportError(error, { flow: "professionalSettings.uploadCover" });
+      setCoverError(error instanceof Error ? error.message : "Não foi possível enviar a capa.");
+    } finally {
+      setUploadingCover(false);
     }
   };
 
@@ -8751,6 +8939,50 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
             </div>
           </div>
 
+          <div className="flex items-center gap-4">
+            {coverUrl ? (
+              <img src={coverUrl} alt="Capa" className="w-32 h-16 rounded-xl object-cover bg-secondary" />
+            ) : (
+              <div className="w-32 h-16 rounded-xl bg-secondary flex items-center justify-center text-muted-foreground text-xs text-center px-2">Sem capa</div>
+            )}
+            <div>
+              <label className="cursor-pointer">
+                <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-white border border-border hover:bg-muted ${uploadingCover ? "opacity-50 pointer-events-none" : ""}`}>
+                  <Upload size={14} />{uploadingCover ? "Enviando..." : coverUrl ? "Trocar capa" : "Enviar capa"}
+                </span>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  disabled={uploadingCover}
+                  onChange={e => { const file = e.target.files?.[0]; if (file) void handleUploadCover(file); e.target.value = ""; }}
+                />
+              </label>
+              <p className="text-xs text-muted-foreground mt-1.5">Imagem de fundo do seu perfil público (opcional).</p>
+              {coverError && <p className="text-xs text-red-600 mt-1">{coverError}</p>}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Endereço personalizado (opcional)" placeholder="seu-nome" value={slug} onChange={setSlug} />
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-foreground">Cor de destaque</label>
+              <div className="flex gap-2 items-center">
+                {["", "#1B7A48", "#3B6FA8", "#E8A33D", "#8B5CF6", "#EC4899"].map(color => (
+                  <button
+                    key={color || "default"}
+                    type="button"
+                    onClick={() => setAccentColor(color)}
+                    className={`w-7 h-7 rounded-full border-2 ${accentColor === color ? "border-foreground" : "border-transparent"}`}
+                    style={{ background: color || "linear-gradient(135deg, #1B7A48, #3B6FA8)" }}
+                    title={color || "Padrão"}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+          {slug && <p className="text-xs text-muted-foreground -mt-2">Seu perfil: {window.location.origin}/perfil/{slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-")}</p>}
+
           <div className="grid grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-foreground">Tipo de registro</label>
@@ -8870,6 +9102,41 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
         </Card>
 
         <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Meu plano</h2>
+
+          {loadingSubscription && <p className="text-sm text-muted-foreground">Carregando...</p>}
+
+          {!loadingSubscription && mySubscription?.status === "active" && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              <span className="font-medium">{mySubscription.planName}</span> — ativo
+              {mySubscription.currentPeriodEnd && ` até ${new Date(mySubscription.currentPeriodEnd).toLocaleDateString("pt-BR")}`}
+            </div>
+          )}
+          {!loadingSubscription && mySubscription?.status === "pending" && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Assinatura de <span className="font-medium">{mySubscription.planName}</span> aguardando confirmação do pagamento.
+            </div>
+          )}
+          {!loadingSubscription && (!mySubscription || mySubscription.status === "cancelled" || mySubscription.status === "past_due") && (
+            <>
+              <p className="text-xs text-muted-foreground">Assine pra apoiar a plataforma além da comissão por consulta.</p>
+              {plans.map(plan => (
+                <div key={plan.id} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium text-foreground">{plan.name}</span>
+                    <span className="text-muted-foreground"> — R${plan.price.toFixed(2).replace(".", ",")}/mês</span>
+                  </div>
+                  <Btn variant="primary" size="sm" onClick={() => handleSubscribe(plan.id)} disabled={subscribing}>
+                    {subscribing ? "Redirecionando..." : "Assinar"}
+                  </Btn>
+                </div>
+              ))}
+              {subscriptionError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{subscriptionError}</div>}
+            </>
+          )}
+        </Card>
+
+        <Card className="p-6 space-y-4">
           <h2 className="font-semibold text-foreground font-display">Locais e Serviços</h2>
           <p className="text-xs text-muted-foreground -mt-2">Aparecem no seu perfil público e como opção rápida ao criar uma consulta na Agenda.</p>
 
@@ -8920,6 +9187,37 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
               <Plus size={13} />Adicionar serviço
             </Btn>
           </div>
+        </Card>
+
+        <Card className="p-6 space-y-4">
+          <h2 className="font-semibold text-foreground font-display">Equipe</h2>
+          <p className="text-xs text-muted-foreground -mt-2">
+            Secretárias têm acesso só à Agenda e à lista de Pacientes — nunca ao Financeiro nem ao conteúdo clínico do Prontuário.
+          </p>
+
+          {loadingStaff && <p className="text-sm text-muted-foreground">Carregando...</p>}
+          {!loadingStaff && staff.length === 0 && <p className="text-sm text-muted-foreground">Nenhuma secretária com acesso ainda.</p>}
+          <div className="space-y-2">
+            {staff.map(s => (
+              <div key={s.id} className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
+                <span className="font-medium text-foreground">{s.fullName}</span>
+                <button type="button" onClick={() => handleRemoveStaff(s.id)} className="text-muted-foreground hover:text-red-600"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-2">
+            <Input placeholder="Nome da secretária" value={newStaffName} onChange={setNewStaffName} />
+            <Input placeholder="E-mail" type="email" value={newStaffEmail} onChange={setNewStaffEmail} />
+          </div>
+          {staffMessage && (
+            <div className={`rounded-xl border px-3 py-2 text-sm ${staffMessage.includes("enviado") ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"}`}>
+              {staffMessage}
+            </div>
+          )}
+          <Btn variant="outline" size="sm" onClick={handleInviteStaff} disabled={invitingStaff || !newStaffName.trim() || !newStaffEmail.trim()}>
+            <Plus size={13} />{invitingStaff ? "Convidando..." : "Convidar secretária"}
+          </Btn>
         </Card>
 
         <Card className="p-6 space-y-4">
@@ -9078,7 +9376,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
     if (action === "delete" && !window.confirm("Excluir esta conta permanentemente? Essa ação não pode ser desfeita.")) return;
 
     setUserActionId(id);
-    const { data, error } = await supabase.functions.invoke("admin-manage-user", { body: { action, userId: id } });
+    const { data, error } = await invokeEdgeFunction("admin-manage-user", { body: { action, userId: id } });
     setUserActionId(null);
 
     if (error || (data as any)?.error) {
@@ -9346,6 +9644,34 @@ export default function App() {
   const [activeAppointmentId, setActiveAppointmentIdState] = useState<string | null>(() => pathToScreen(window.location.pathname)?.appointmentId ?? null);
   const [confirmationToken, setConfirmationToken] = useState<string | null>(() => pathToScreen(window.location.pathname)?.confirmationToken ?? null);
   const [openPatientSettingsOnLoad, setOpenPatientSettingsOnLoad] = useState(false);
+
+  // "Which professional's data am I acting on" — always the professional themselves for a plain
+  // professional account; for staff (secretária), whichever clinic-mate they've picked from the
+  // switcher (defaults to the first one loaded). RLS (can_access_professional, migration
+  // 20260719000001) is the real enforcement point — this is just which id the UI queries with.
+  const [activeProfessionalId, setActiveProfessionalId] = useState<string | null>(null);
+  const [staffProfessionals, setStaffProfessionals] = useState<ClinicProfessional[]>([]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setActiveProfessionalId(null);
+      setStaffProfessionals([]);
+      return;
+    }
+    if (currentUser.role === "professional") {
+      setActiveProfessionalId(currentUser.id);
+      return;
+    }
+    if (currentUser.role === "staff") {
+      let active = true;
+      listMyProfessionals(currentUser.id).then(list => {
+        if (!active) return;
+        setStaffProfessionals(list);
+        setActiveProfessionalId(prev => prev ?? list[0]?.id ?? null);
+      }).catch(error => reportError(error, { flow: "app.loadStaffProfessionals" }));
+      return () => { active = false; };
+    }
+  }, [currentUser?.id, currentUser?.role]);
   const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
   // Separate from activeAppointmentId (used by the video screen) so jumping to EHR from Calendar
   // never overwrites an in-progress video call's id if the user switches between the two screens.
@@ -9408,8 +9734,8 @@ export default function App() {
   const screenRoles: Partial<Record<Screen, UserRole[]>> = {
     "patient-dashboard": ["patient"],
     "pro-dashboard": ["professional"],
-    calendar: ["professional"],
-    patients: ["professional"],
+    calendar: ["professional", "staff"],
+    patients: ["professional", "staff"],
     ehr: ["professional"],
     "ai-assistant": ["professional"],
     financial: ["professional"],
@@ -9418,8 +9744,10 @@ export default function App() {
     admin: ["admin"],
     checkout: ["patient"],
   };
+  // Staff (secretária) never lands on pro-dashboard — it shows financial figures that are outside
+  // their fixed Agenda+Pacientes scope, so their home is the Agenda directly.
   const homeScreenForRole = (role: UserRole): Screen =>
-    role === "professional" ? "pro-dashboard" : role === "admin" ? "admin" : "patient-dashboard";
+    role === "professional" ? "pro-dashboard" : role === "staff" ? "calendar" : role === "admin" ? "admin" : "patient-dashboard";
   const showTopNav = !noTopNavScreens.includes(screen);
 
   const loadAppUser = async (nextSession: Session | null) => {
@@ -9537,6 +9865,22 @@ export default function App() {
     navigate("landing");
   };
 
+  // Any Edge Function call (mark-appointment-paid, create-pix-charge, livekit-room-access, etc.)
+  // can come back with "Sessão inválida." when the JWT this tab is holding no longer checks out
+  // server-side (refresh token invalidated by another tab/device, session actually expired). Left
+  // alone, every screen just showed that raw string next to a UI that still looked logged in.
+  // invokeEdgeFunction (src/lib/functionsClient.ts) recognizes that exact message centrally and
+  // reports it here, so any such failure — from any screen — signs the user out and shows a clear
+  // notice on the login screen, same mechanism as the suspended-account check below.
+  const [sessionExpiredNotice, setSessionExpiredNotice] = useState("");
+
+  useEffect(() => {
+    return onSessionExpired(() => {
+      setSessionExpiredNotice("Sua sessão expirou. Entre novamente.");
+      void handleSignOut();
+    });
+  }, []);
+
   // A banned account (admin-manage-user's suspend action) can no longer log in or refresh its
   // token, but an access token issued before the ban stays valid — and accepted everywhere — until
   // it naturally expires (jwt_expiry = 3600s). This closes most of that window by re-checking the
@@ -9596,7 +9940,7 @@ export default function App() {
       {screen === "landing" && <LandingPage onNavigate={navigate} />}
       {screen === "directory" && <DirectoryPage onNavigate={navigate} onSelectProfessional={setSelectedProfessionalId} />}
       {screen === "profile" && <ProfilePage onNavigate={navigate} professionalId={selectedProfessionalId} onBook={setBookingDraft} currentUser={currentUser} />}
-      {screen === "login" && <LoginPage onNavigate={navigate} initialInfo={suspendedNotice} />}
+      {screen === "login" && <LoginPage onNavigate={navigate} initialInfo={suspendedNotice || sessionExpiredNotice} />}
       {screen === "reset-password" && <ResetPasswordScreen onNavigate={navigate} />}
       {screen === "confirm-attendance" && <ConfirmAttendanceScreen token={confirmationToken} onNavigate={navigate} />}
       {screen === "patient-dashboard" && currentUser && (
@@ -9609,8 +9953,19 @@ export default function App() {
         />
       )}
       {screen === "pro-dashboard" && currentUser && <ProfessionalDashboard onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} />}
-      {screen === "calendar" && currentUser && <CalendarScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr} />}
-      {screen === "patients" && currentUser && <PatientsScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onOpenEhr={onOpenEhr} />}
+      {screen === "calendar" && currentUser && activeProfessionalId && (
+        <CalendarScreen
+          onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut}
+          onEnterVideo={setActiveAppointmentId} onOpenEhr={onOpenEhr}
+          activeProfessionalId={activeProfessionalId} staffProfessionals={staffProfessionals} onChangeActiveProfessional={setActiveProfessionalId}
+        />
+      )}
+      {screen === "patients" && currentUser && activeProfessionalId && (
+        <PatientsScreen
+          onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} onOpenEhr={onOpenEhr}
+          activeProfessionalId={activeProfessionalId} staffProfessionals={staffProfessionals} onChangeActiveProfessional={setActiveProfessionalId}
+        />
+      )}
       {screen === "ehr" && currentUser && <EHRScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} initialPatientId={ehrPatientId} initialAppointmentId={ehrAppointmentId} />}
       {screen === "ai-assistant" && currentUser && <AIAssistantScreen onNavigate={navigate} currentUser={currentUser} onSignOut={handleSignOut} />}
       {screen === "video" && currentUser && <VideoScreen onNavigate={navigate} currentUser={currentUser} appointmentId={activeAppointmentId} />}

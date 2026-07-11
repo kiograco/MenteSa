@@ -1,5 +1,4 @@
-import { supabase } from "./supabase";
-import { extractFunctionErrorMessage } from "./functionsClient";
+import { extractFunctionErrorMessage, invokeEdgeFunction } from "./functionsClient";
 
 export type LiveKitRoomAccess = { serverUrl: string; token: string; roomName: string };
 export type LiveKitRoomAccessResult =
@@ -11,7 +10,7 @@ export type LiveKitRoomAccessResult =
  *  to the mock room — `reason` is surfaced in the UI so "why is this the mock room?" has an answer
  *  instead of silently degrading. */
 export async function getLiveKitRoomAccess(appointmentId: string): Promise<LiveKitRoomAccessResult> {
-  const { data, error } = await supabase.functions.invoke<{ serverUrl?: string; token?: string; roomName?: string; error?: string }>(
+  const { data, error } = await invokeEdgeFunction<{ serverUrl?: string; token?: string; roomName?: string; error?: string }>(
     "livekit-room-access",
     { body: { appointmentId } }
   );

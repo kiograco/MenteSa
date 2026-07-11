@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { invokeEdgeFunction } from "./functionsClient";
 import { hashDocumentText } from "./consent";
 import { pdfToFile, renderTextDocumentToPdf, loadImageAsDataUrl } from "./pdf";
 
@@ -188,7 +189,7 @@ export async function generateAndSignDocument(params: {
   });
 
   const hash = await hashDocumentText(params.filledBody);
-  const { data, error } = await supabase.functions.invoke<{ ok?: boolean }>("sign-generated-document", {
+  const { data, error } = await invokeEdgeFunction<{ ok?: boolean }>("sign-generated-document", {
     body: { documentId, typedName: params.typedName, documentHash: hash },
   });
 

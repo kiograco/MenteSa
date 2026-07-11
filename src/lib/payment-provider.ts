@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { invokeEdgeFunction } from "./functionsClient";
 
 export interface ChargeRequest {
   appointmentId: string;
@@ -50,7 +51,7 @@ export const mockPaymentProvider: PaymentProvider = {
  * flow — same graceful-degradation pattern used for LiveKit video.
  */
 export async function createMercadoPagoCheckout(appointmentId: string): Promise<string | null> {
-  const { data, error } = await supabase.functions.invoke<{ initPoint?: string }>("create-mp-preference", {
+  const { data, error } = await invokeEdgeFunction<{ initPoint?: string }>("create-mp-preference", {
     body: { appointmentId },
   });
 

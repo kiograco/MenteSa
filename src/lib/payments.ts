@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 import { classifyPaymentStatus, type AppointmentPaymentStatus } from "./paymentStatus";
-import { extractFunctionErrorMessage } from "./functionsClient";
+import { extractFunctionErrorMessage, invokeEdgeFunction } from "./functionsClient";
 
 export { classifyPaymentStatus, type AppointmentPaymentStatus } from "./paymentStatus";
 
@@ -80,7 +80,7 @@ export type PixChargeResult =
  *  this surfaces the server's error message — "Cobrar via Pix" is an explicit action the
  *  professional took, so a silent no-op would just look broken. */
 export async function createPixCharge(appointmentId: string): Promise<PixChargeResult> {
-  const { data, error } = await supabase.functions.invoke<{ qrCode?: string; qrCodeBase64?: string | null; expiresAt?: string | null }>(
+  const { data, error } = await invokeEdgeFunction<{ qrCode?: string; qrCodeBase64?: string | null; expiresAt?: string | null }>(
     "create-pix-charge",
     { body: { appointmentId } }
   );
@@ -95,7 +95,7 @@ export async function createPixCharge(appointmentId: string): Promise<PixChargeR
 /** Calls mark-appointment-paid — records a payment that happened outside the platform (cash,
  *  transfer). Same explicit-action-surfaces-errors reasoning as createPixCharge. */
 export async function markAppointmentPaid(appointmentId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { data, error } = await supabase.functions.invoke<{ ok?: boolean }>("mark-appointment-paid", { body: { appointmentId } });
+  const { data, error } = await invokeEdgeFunction<{ ok?: boolean }>("mark-appointment-paid", { body: { appointmentId } });
 
   if (error || !data?.ok) {
     return { ok: false, error: (await extractFunctionErrorMessage(error)) ?? "Não foi possível marcar como pago." };
@@ -107,7 +107,7 @@ export async function markAppointmentPaid(appointmentId: string): Promise<{ ok: 
 export type NotaFiscalResult = { status: "unavailable" | "pending" | "issued" | "failed"; message: string; pdfUrl?: string | null };
 
 export async function requestNotaFiscal(paymentId: string): Promise<NotaFiscalResult> {
-  const { data, error } = await supabase.functions.invoke<{ status?: string; message?: string; pdfUrl?: string }>(
+  const { data, error } = await invokeEdgeFunction<{ status?: string; message?: string; pdfUrl?: string }>(
     "request-nota-fiscal",
     { body: { paymentId } }
   );

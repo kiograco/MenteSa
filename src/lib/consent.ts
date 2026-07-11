@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { invokeEdgeFunction } from "./functionsClient";
 
 export async function hashDocumentText(text: string): Promise<string> {
   const data = new TextEncoder().encode(text);
@@ -21,7 +22,7 @@ export async function hasSignedConsent(patientId: string, professionalId: string
 /** Calls the sign-consent Edge Function, which captures IP/user-agent server-side (a client can't
  *  reliably self-report its own public IP) and writes the immutable signature record. */
 export async function signConsent(professionalId: string, typedName: string, documentHash: string, documentVersion: string): Promise<boolean> {
-  const { data, error } = await supabase.functions.invoke<{ ok?: boolean; error?: string }>("sign-consent", {
+  const { data, error } = await invokeEdgeFunction<{ ok?: boolean; error?: string }>("sign-consent", {
     body: { professionalId, typedName, documentHash, documentVersion },
   });
   return !error && Boolean(data?.ok);
