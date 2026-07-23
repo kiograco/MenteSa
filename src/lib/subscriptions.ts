@@ -32,19 +32,22 @@ export async function getMySubscription(professionalId: string): Promise<Profess
 }
 
 /** Calls create-asaas-subscription — returns the Asaas hosted invoice URL to redirect the
- *  professional to for paying the first cycle of the recurring charge. Surfaces the server's error
- *  message since this is an explicit action the professional took. */
+ *  professional to for paying the first cycle of the recurring charge. `checkoutUrl` comes back
+ *  `null` (not an error) when a coupon discounted the plan down to R$0 — there's nothing to charge,
+ *  so the function activates the subscription directly instead of routing a zero-value charge
+ *  through Asaas, and there's no invoice page to redirect to. Surfaces the server's error message
+ *  since this is an explicit action the professional took. */
 export async function createSubscription(
   planId: string,
   couponCode?: string
-): Promise<{ ok: true; checkoutUrl: string } | { ok: false; error: string }> {
-  const { data, error } = await invokeEdgeFunction<{ checkoutUrl?: string }>("create-asaas-subscription", {
+): Promise<{ ok: true; checkoutUrl: string | null } | { ok: false; error: string }> {
+  const { data, error } = await invokeEdgeFunction<{ checkoutUrl?: string | null }>("create-asaas-subscription", {
     body: { planId, couponCode: couponCode || undefined },
   });
-  if (error || !data?.checkoutUrl) {
+  if (error || !data) {
     return { ok: false, error: (await extractFunctionErrorMessage(error)) ?? "Não foi possível iniciar a assinatura." };
   }
-  return { ok: true, checkoutUrl: data.checkoutUrl };
+  return { ok: true, checkoutUrl: data.checkoutUrl ?? null };
 }
 
 export type SubscriptionAccess = { unlocked: boolean; status: ProfessionalSubscription["status"] | "none"; payingProfessionalId: string };

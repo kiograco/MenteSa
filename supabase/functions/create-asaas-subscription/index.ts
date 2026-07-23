@@ -72,27 +72,6 @@ Deno.serve(async req => {
       appliedDiscountAmount = resolution.discountAmount;
     }
 
-    // Asaas requires a cpfCnpj to create the customer that gets charged — Pessoa Jurídica uses the
-    // CNPJ/razão social instead of the professional's own CPF/name.
-    const { data: profRow } = await adminClient
-      .from("professional_profiles")
-      .select("cpf, cnpj, razao_social, person_type")
-      .eq("id", userData.user.id)
-      .maybeSingle();
-    const cpfCnpj = profRow?.person_type === "juridica" ? profRow?.cnpj : profRow?.cpf;
-    if (!cpfCnpj) return json({ error: "Informe seu CPF/CNPJ em Configurações antes de assinar." }, 422);
-
-    const { data: payerAuth } = await adminClient.auth.admin.getUserById(userData.user.id);
-    const payerEmail = payerAuth.user?.email;
-    if (!payerEmail) return json({ error: "Não foi possível identificar seu e-mail para a assinatura." }, 422);
-
-    const customer = await getOrCreateAsaasCustomer(adminClient, "professional_profiles", userData.user.id, apiKey, {
-      name: (profRow?.person_type === "juridica" ? profRow?.razao_social : callerProfile?.full_name) ?? "Profissional",
-      email: payerEmail,
-      cpfCnpj,
-    });
-    if (!customer.ok) return json({ error: customer.error }, 502);
-
     // Reuse an existing pending row for this exact plan if one's already there — signup
     // (handle_new_user trigger) creates one the moment a professional picks a plan, before any
     // session exists to call this function with, so the first time they click "Pagar agora" this
@@ -114,7 +93,7 @@ Deno.serve(async req => {
     if (existingPending) {
       subscriptionId = existingPending.id;
       // Overwrite whatever coupon fields the row already had (e.g. none, from signup) with this
-      // attempt's — the row isn't considered "redeemed" until the Asaas subscription below succeeds.
+      // attempt's — the row isn't considered "redeemed" until the subscription below actually succeeds.
       await adminClient
         .from("professional_subscriptions")
         .update({ coupon_id: appliedCouponId, discount_amount: appliedDiscountAmount })
@@ -135,6 +114,54 @@ Deno.serve(async req => {
       subscriptionId = inserted.id;
       createdNewRow = true;
     }
+
+    // A 100%-off coupon (or a fixed discount >= the plan price) leaves nothing to charge — Asaas
+    // rejects a subscription/payment created with value 0 ("O parâmetro value deve ser informado"),
+    // so there's no gateway charge to create at all here. Skip Asaas entirely and activate the
+    // subscription directly. current_period_end is approximated as one billing cycle from now (same
+    // posture as the old Mercado Pago webhook) since there's no Asaas subscription to track renewal
+    // through — after that date the professional needs to subscribe again, with or without a coupon.
+    if (subscriptionValue <= 0) {
+      const currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { error: activateError } = await adminClient
+        .from("professional_subscriptions")
+        .update({ status: "active", current_period_end: currentPeriodEnd, updated_at: new Date().toISOString() })
+        .eq("id", subscriptionId);
+      if (activateError) return json({ error: activateError.message }, 500);
+
+      if (appliedCouponId) {
+        await adminClient.from("coupon_redemptions").insert({
+          coupon_id: appliedCouponId,
+          professional_id: userData.user.id,
+          subscription_id: subscriptionId,
+          discount_amount: appliedDiscountAmount,
+        });
+        await adminClient.rpc("increment_coupon_redemption", { p_coupon_id: appliedCouponId });
+      }
+
+      return json({ checkoutUrl: null });
+    }
+
+    // Asaas requires a cpfCnpj to create the customer that gets charged — Pessoa Jurídica uses the
+    // CNPJ/razão social instead of the professional's own CPF/name.
+    const { data: profRow } = await adminClient
+      .from("professional_profiles")
+      .select("cpf, cnpj, razao_social, person_type")
+      .eq("id", userData.user.id)
+      .maybeSingle();
+    const cpfCnpj = profRow?.person_type === "juridica" ? profRow?.cnpj : profRow?.cpf;
+    if (!cpfCnpj) return json({ error: "Informe seu CPF/CNPJ em Configurações antes de assinar." }, 422);
+
+    const { data: payerAuth } = await adminClient.auth.admin.getUserById(userData.user.id);
+    const payerEmail = payerAuth.user?.email;
+    if (!payerEmail) return json({ error: "Não foi possível identificar seu e-mail para a assinatura." }, 422);
+
+    const customer = await getOrCreateAsaasCustomer(adminClient, "professional_profiles", userData.user.id, apiKey, {
+      name: (profRow?.person_type === "juridica" ? profRow?.razao_social : callerProfile?.full_name) ?? "Profissional",
+      email: payerEmail,
+      cpfCnpj,
+    });
+    if (!customer.ok) return json({ error: customer.error }, 502);
 
     const subscriptionResponse = await asaasFetch("/subscriptions", apiKey, {
       method: "POST",

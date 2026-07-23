@@ -1743,15 +1743,21 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
       // plan just chosen instead of leaving a 'pending' subscription to notice later.
       if (userType === "professional" && selectedPlanId) {
         const subscriptionResult = await createSubscription(selectedPlanId, signupCouponCode.trim() || undefined);
-        if (subscriptionResult.ok) {
+        if (subscriptionResult.ok && subscriptionResult.checkoutUrl) {
           window.location.href = subscriptionResult.checkoutUrl;
           return;
         }
-        // Coupon was invalid/expired, CPF/CNPJ missing, or Asaas hiccuped — account already exists
-        // either way, so don't block onboarding: surface the message and let the redirect effect
-        // below take them to the dashboard, where "Configurações → Meu plano" retries the same
-        // pending row.
-        if (signupCouponCode.trim()) setAuthInfo(subscriptionResult.error);
+        // A 100%-off coupon activated the subscription directly (no checkout to redirect to) — let
+        // the redirect effect below take them straight to the dashboard, already unlocked.
+        if (subscriptionResult.ok) {
+          // Redirect happens once currentUser loads, see the "login" redirect effect near navigate().
+        } else if (signupCouponCode.trim()) {
+          // Coupon was invalid/expired, CPF/CNPJ missing, or Asaas hiccuped — account already exists
+          // either way, so don't block onboarding: surface the message and let the redirect effect
+          // below take them to the dashboard, where "Configurações → Meu plano" retries the same
+          // pending row.
+          setAuthInfo(subscriptionResult.error);
+        }
       }
       // Redirect happens once currentUser loads, see the "login" redirect effect near navigate().
     } catch (error) {
@@ -8795,7 +8801,12 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
       setSubscriptionError(result.error);
       return;
     }
-    window.location.href = result.checkoutUrl;
+    if (result.checkoutUrl) {
+      window.location.href = result.checkoutUrl;
+      return;
+    }
+    // A 100%-off coupon activated the subscription directly — no Asaas checkout to redirect to.
+    setMySubscription(await getMySubscription(currentUser.id));
   };
 
   // Coupon preview is validated against the first plan on the list — fine while there's only one
