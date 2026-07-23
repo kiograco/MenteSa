@@ -13,9 +13,8 @@ export interface ChargeResult {
 }
 
 /**
- * Abstraction point for the real payment gateway (Mercado Pago) planned for
- * post-MVP. Swap `mockPaymentProvider` for a Mercado Pago-backed implementation
- * without touching CheckoutScreen or any other call site.
+ * Abstraction point for the real payment gateway (Asaas). Swap `mockPaymentProvider` for an
+ * Asaas-backed implementation without touching CheckoutScreen or any other call site.
  */
 export interface PaymentProvider {
   charge(request: ChargeRequest): Promise<ChargeResult>;
@@ -45,16 +44,16 @@ export const mockPaymentProvider: PaymentProvider = {
 };
 
 /**
- * Real payment path: asks the create-mp-preference Edge Function for a Mercado Pago Checkout Pro
+ * Real payment path: asks the create-asaas-preference Edge Function for an Asaas hosted invoice
  * URL and returns it so the caller can redirect the browser there. Returns null (never throws)
  * when the function isn't deployed/configured yet, so CheckoutScreen can fall back to the mock
  * flow — same graceful-degradation pattern used for LiveKit video.
  */
-export async function createMercadoPagoCheckout(appointmentId: string): Promise<string | null> {
-  const { data, error } = await invokeEdgeFunction<{ initPoint?: string }>("create-mp-preference", {
+export async function createAsaasCheckout(appointmentId: string): Promise<string | null> {
+  const { data, error } = await invokeEdgeFunction<{ checkoutUrl?: string }>("create-asaas-preference", {
     body: { appointmentId },
   });
 
-  if (error || !data?.initPoint) return null;
-  return data.initPoint;
+  if (error || !data?.checkoutUrl) return null;
+  return data.checkoutUrl;
 }

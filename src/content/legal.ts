@@ -8,7 +8,7 @@ export type LegalDocument = { title: string; updatedAt: string; sections: LegalS
 // Bumped whenever a section changes materially (e.g. adding/removing a data processor). Stored
 // alongside terms_accepted_at (profiles.terms_version) so a future re-consent prompt can tell
 // apart who agreed to which revision, instead of only knowing "some version, at some point."
-export const CURRENT_TERMS_VERSION = "2026-07-04";
+export const CURRENT_TERMS_VERSION = "2026-07-23";
 
 export const termsOfService: LegalDocument = {
   title: "Termos de Uso",
@@ -71,7 +71,7 @@ export const privacyPolicy: LegalDocument = {
     },
     {
       heading: "6. Compartilhamento com terceiros",
-      body: "Compartilhamos dados estritamente necessários com: Mercado Pago (processamento de pagamento), LiveKit (conexão da videochamada), Resend (envio de e-mails transacionais) e Google Gemini (quando o profissional opta por gerar um resumo de IA da sessão — nesse caso, o texto da nota clínica digitada é enviado à Google para essa finalidade específica, mediante consentimento explícito do profissional na própria tela de IA). Cada um sob contrato/termos de confidencialidade próprios. Não vendemos dados pessoais a terceiros.",
+      body: "Compartilhamos dados estritamente necessários com: Asaas (processamento de pagamento), LiveKit (conexão da videochamada), Resend (envio de e-mails transacionais) e Google Gemini (quando o profissional opta por gerar um resumo de IA da sessão — nesse caso, o texto da nota clínica digitada é enviado à Google para essa finalidade específica, mediante consentimento explícito do profissional na própria tela de IA). Cada um sob contrato/termos de confidencialidade próprios. Não vendemos dados pessoais a terceiros.",
     },
     {
       heading: "7. Transferência internacional de dados",

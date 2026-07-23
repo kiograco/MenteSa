@@ -76,12 +76,12 @@ export type PixChargeResult =
   | { ok: true; qrCode: string; qrCodeBase64: string | null; expiresAt: string | null }
   | { ok: false; error: string };
 
-/** Calls create-pix-charge. Unlike createMercadoPagoCheckout (which silently falls back to mock),
+/** Calls create-asaas-pix-charge. Unlike createAsaasCheckout (which silently falls back to mock),
  *  this surfaces the server's error message — "Cobrar via Pix" is an explicit action the
  *  professional took, so a silent no-op would just look broken. */
 export async function createPixCharge(appointmentId: string): Promise<PixChargeResult> {
   const { data, error } = await invokeEdgeFunction<{ qrCode?: string; qrCodeBase64?: string | null; expiresAt?: string | null }>(
-    "create-pix-charge",
+    "create-asaas-pix-charge",
     { body: { appointmentId } }
   );
 

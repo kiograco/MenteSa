@@ -15,7 +15,7 @@ export async function listPlans(): Promise<SubscriptionPlan[]> {
   return (data ?? []).map(d => ({ id: d.id, name: d.name, price: Number(d.price), billingInterval: d.billing_interval }));
 }
 
-/** The professional's most recent subscription row, if any — mercadopago-webhook is the only
+/** The professional's most recent subscription row, if any — asaas-webhook is the only
  *  writer of `status`/`current_period_end`, same trust boundary as `payments`. */
 export async function getMySubscription(professionalId: string): Promise<ProfessionalSubscription | null> {
   const { data, error } = await supabase
@@ -31,15 +31,20 @@ export async function getMySubscription(professionalId: string): Promise<Profess
   return { planId: row.plan_id, status: row.status, planName: row.subscription_plans?.name ?? "Plano", currentPeriodEnd: row.current_period_end };
 }
 
-/** Calls create-mp-subscription — returns the Mercado Pago hosted checkout URL to redirect the
- *  professional to for approving the recurring charge. Surfaces the server's error message since
- *  this is an explicit action the professional took. */
-export async function createSubscription(planId: string): Promise<{ ok: true; initPoint: string } | { ok: false; error: string }> {
-  const { data, error } = await invokeEdgeFunction<{ initPoint?: string }>("create-mp-subscription", { body: { planId } });
-  if (error || !data?.initPoint) {
+/** Calls create-asaas-subscription — returns the Asaas hosted invoice URL to redirect the
+ *  professional to for paying the first cycle of the recurring charge. Surfaces the server's error
+ *  message since this is an explicit action the professional took. */
+export async function createSubscription(
+  planId: string,
+  couponCode?: string
+): Promise<{ ok: true; checkoutUrl: string } | { ok: false; error: string }> {
+  const { data, error } = await invokeEdgeFunction<{ checkoutUrl?: string }>("create-asaas-subscription", {
+    body: { planId, couponCode: couponCode || undefined },
+  });
+  if (error || !data?.checkoutUrl) {
     return { ok: false, error: (await extractFunctionErrorMessage(error)) ?? "Não foi possível iniciar a assinatura." };
   }
-  return { ok: true, initPoint: data.initPoint };
+  return { ok: true, checkoutUrl: data.checkoutUrl };
 }
 
 export type SubscriptionAccess = { unlocked: boolean; status: ProfessionalSubscription["status"] | "none"; payingProfessionalId: string };

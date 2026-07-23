@@ -45,7 +45,7 @@ test("patient books a session with a verified professional and pays (mock provid
     await page.getByRole("button", { name: "Assinar e continuar" }).click();
   }
 
-  // Step 3: pagamento — no Mercado Pago key locally, falls back to the mock provider.
+  // Step 3: pagamento — sem chave do Asaas configurada localmente, cai no provedor mock.
   await expect(page.getByText("Forma de pagamento")).toBeVisible();
   await page.getByRole("button", { name: "Pagar com segurança" }).click();
 

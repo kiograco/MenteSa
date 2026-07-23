@@ -1,9 +1,9 @@
 // Lets a professional record a payment that happened outside the platform (cash, bank transfer,
 // something arranged before charging via the app) — without this, an appointment that was never
-// paid through Mercado Pago/Pix can never reach "paid" status, which also silently blocks real
+// paid through Asaas/Pix can never reach "paid" status, which also silently blocks real
 // video (livekit-room-access requires a paid payment before issuing a room token). This writes via
 // service role rather than an RLS insert policy for the professional, same trust boundary as
-// mercadopago-webhook: platform_fee is money owed to the platform, so it's computed here (from the
+// asaas-webhook: platform_fee is money owed to the platform, so it's computed here (from the
 // appointment's base price, same PLATFORM_FEE_RATE as every other payment path) rather than trusting
 // whatever the client sends.
 // Deploy: supabase functions deploy mark-appointment-paid

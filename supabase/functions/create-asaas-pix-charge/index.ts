@@ -1,12 +1,11 @@
-// Creates an on-demand Pix charge for an existing appointment, via Mercado Pago's direct Payments
-// API (not Checkout Pro, which never exposes a QR code/copia-e-cola to the app — only MP's own
-// hosted page shows it to the payer). Lets a professional collect for a session that was created
-// unpaid, decoupled from the booking-time flow in CheckoutScreen. Status transitions (pending ->
-// paid) are still resolved exclusively by the existing mercadopago-webhook, keyed on
-// provider_payment_id — this function only ever writes an initial "pending" row.
+// Creates an on-demand Pix charge for an existing appointment, via Asaas's Payments API — lets a
+// professional collect for a session that was created unpaid, decoupled from the booking-time flow
+// in CheckoutScreen. Status transitions (pending -> paid) are still resolved exclusively by the
+// existing asaas-webhook, keyed on provider_payment_id — this function only ever writes an initial
+// "pending" row.
 //
-// Deploy: supabase functions deploy create-pix-charge
-// Secrets: reuses MERCADOPAGO_ACCESS_TOKEN (already set for create-mp-preference)
+// Deploy: supabase functions deploy create-asaas-pix-charge
+// Secrets: reuses ASAAS_API_KEY (already set for create-asaas-preference)
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { createPixChargeForAppointment } from "../_shared/pixCharge.ts";
 

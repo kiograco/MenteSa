@@ -62,6 +62,7 @@ export interface Database {
           person_type: "fisica" | "juridica";
           cnpj: string | null;
           razao_social: string | null;
+          asaas_customer_id: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["professional_profiles"]["Row"]> & {
           id: string;
@@ -92,8 +93,10 @@ export interface Database {
           professional_id: string;
           plan_id: string;
           status: "pending" | "active" | "cancelled" | "past_due";
-          mp_preapproval_id: string | null;
+          asaas_subscription_id: string | null;
           current_period_end: string | null;
+          coupon_id: string | null;
+          discount_amount: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -102,6 +105,47 @@ export interface Database {
           plan_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["professional_subscriptions"]["Row"]>;
+        Relationships: [];
+      };
+      coupons: {
+        Row: {
+          id: string;
+          code: string;
+          discount_type: "percentage" | "fixed";
+          discount_value: number;
+          max_redemptions: number | null;
+          max_redemptions_per_user: number;
+          redemption_count: number;
+          active: boolean;
+          starts_at: string | null;
+          expires_at: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["coupons"]["Row"]> & {
+          code: string;
+          discount_type: "percentage" | "fixed";
+          discount_value: number;
+        };
+        Update: Partial<Database["public"]["Tables"]["coupons"]["Row"]>;
+        Relationships: [];
+      };
+      coupon_redemptions: {
+        Row: {
+          id: string;
+          coupon_id: string;
+          professional_id: string;
+          subscription_id: string | null;
+          discount_amount: number;
+          redeemed_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["coupon_redemptions"]["Row"]> & {
+          coupon_id: string;
+          professional_id: string;
+          discount_amount: number;
+        };
+        Update: Partial<Database["public"]["Tables"]["coupon_redemptions"]["Row"]>;
         Relationships: [];
       };
       clinics: {
@@ -489,6 +533,7 @@ export interface Database {
           clinical_history: string | null;
           whatsapp_reminders_enabled: boolean;
           last_birthday_greeted_year: number | null;
+          asaas_customer_id: string | null;
           created_at: string;
           updated_at: string;
         };

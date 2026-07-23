@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { invokeEdgeFunction, onSessionExpired } from "../lib/functionsClient";
-import { mockPaymentProvider, createMercadoPagoCheckout } from "../lib/payment-provider";
+import { mockPaymentProvider, createAsaasCheckout } from "../lib/payment-provider";
 import type { UserRole, PaymentStatus } from "../lib/database.types";
 import { getUpcomingAvailableDays, generateSlotsForDay, type TimeBlock } from "../lib/scheduling";
 import { downloadCsv, parseCsv } from "../lib/csv";
@@ -44,6 +44,10 @@ import {
   listPlans, getMySubscription, createSubscription, getSubscriptionAccess,
   type SubscriptionPlan, type ProfessionalSubscription,
 } from "../lib/subscriptions";
+import {
+  listCoupons, createCoupon, setCouponActive, deleteCoupon, validateCoupon,
+  type Coupon, type CouponPreview,
+} from "../lib/coupons";
 import {
   uploadPatientMaterial, listMaterialsForProfessional, deletePatientMaterial, getMaterialSignedUrl,
   listMaterialsForPatient, assignTask, listTasksForPatient, listTasksForProfessional, markTaskCompleted,
@@ -91,6 +95,7 @@ import {
   Camera, Send, Paperclip, MoreHorizontal, Edit3, Trash2, RefreshCw,
   ChevronUp, Eye, EyeOff, Info, HelpCircle, Mail, Phone as PhoneIcon,
   Copy, Link2, QrCode, Receipt, Printer, List, Image as ImageIcon, Bold, Italic, Sparkles, ScanText, MapPinned,
+  Tag, Percent,
 } from "lucide-react";
 import { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
@@ -1617,6 +1622,7 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
   const [razaoSocial, setRazaoSocial] = useState("");
   const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState("");
+  const [signupCouponCode, setSignupCouponCode] = useState("");
   const [authError, setAuthError] = useState("");
   const [authInfo, setAuthInfo] = useState(initialInfo ?? "");
   const [loading, setLoading] = useState(false);
@@ -1710,7 +1716,7 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
             // would be rejected by RLS. The trigger runs security definer, at account-creation
             // time, regardless of confirmation status. plan_id makes the trigger also record a
             // 'pending' professional_subscriptions row — there's no session yet to call
-            // create-mp-subscription with directly, so the actual Mercado Pago checkout happens
+            // create-asaas-subscription with directly, so the actual Asaas checkout happens
             // either right below (if a session comes back immediately) or later from "Meu plano"
             // in Configurações via "Pagar agora", which reuses this same pending row.
             ...(userType === "professional" && {
@@ -1733,14 +1739,19 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
         return;
       }
 
-      // Session exists (email confirmation disabled): go straight to Mercado Pago checkout for the
+      // Session exists (email confirmation disabled): go straight to Asaas checkout for the
       // plan just chosen instead of leaving a 'pending' subscription to notice later.
       if (userType === "professional" && selectedPlanId) {
-        const subscriptionResult = await createSubscription(selectedPlanId);
+        const subscriptionResult = await createSubscription(selectedPlanId, signupCouponCode.trim() || undefined);
         if (subscriptionResult.ok) {
-          window.location.href = subscriptionResult.initPoint;
+          window.location.href = subscriptionResult.checkoutUrl;
           return;
         }
+        // Coupon was invalid/expired, CPF/CNPJ missing, or Asaas hiccuped — account already exists
+        // either way, so don't block onboarding: surface the message and let the redirect effect
+        // below take them to the dashboard, where "Configurações → Meu plano" retries the same
+        // pending row.
+        if (signupCouponCode.trim()) setAuthInfo(subscriptionResult.error);
       }
       // Redirect happens once currentUser loads, see the "login" redirect effect near navigate().
     } catch (error) {
@@ -1858,7 +1869,15 @@ function LoginPage({ onNavigate, initialInfo }: { onNavigate: (s: Screen) => voi
                     ))}
                   </div>
                 )}
-                <p className="text-xs text-muted-foreground mt-0.5">O pagamento é feito pelo Mercado Pago logo em seguida (ou você pode concluir depois em Configurações → Meu plano).</p>
+                <Input
+                  label="Cupom de desconto (opcional)"
+                  placeholder="Ex: BEMVINDO10"
+                  icon={<Tag size={15} />}
+                  value={signupCouponCode}
+                  onChange={v => setSignupCouponCode(v.toUpperCase())}
+                  className="mt-1"
+                />
+                <p className="text-xs text-muted-foreground mt-0.5">O pagamento é feito pelo Asaas logo em seguida (ou você pode concluir depois em Configurações → Meu plano, onde o cupom também pode ser aplicado).</p>
               </div>
             )}
           </div>
@@ -7624,15 +7643,15 @@ function CheckoutScreen({ onNavigate, currentUser, bookingDraft }: {
         .eq("desired_scheduled_at", bookingDraft.scheduledAt)
         .eq("status", "waiting");
 
-      // Real payment path: redirect to Mercado Pago's hosted checkout. The webhook (not this
-      // redirect) is what actually confirms payment — see supabase/functions/mercadopago-webhook.
-      const mpCheckoutUrl = await createMercadoPagoCheckout(appointment.id);
-      if (mpCheckoutUrl) {
-        window.location.href = mpCheckoutUrl;
+      // Real payment path: redirect to Asaas's hosted checkout. The webhook (not this
+      // redirect) is what actually confirms payment — see supabase/functions/asaas-webhook.
+      const asaasCheckoutUrl = await createAsaasCheckout(appointment.id);
+      if (asaasCheckoutUrl) {
+        window.location.href = asaasCheckoutUrl;
         return;
       }
 
-      // Fallback: Mercado Pago isn't configured yet, so simulate an instant successful charge.
+      // Fallback: Asaas isn't configured yet, so simulate an instant successful charge.
       await mockPaymentProvider.charge({
         appointmentId: appointment.id,
         amount: bookingDraft.price,
@@ -8038,10 +8057,10 @@ function FinancialDashboard({ onNavigate, currentUser, onSignOut, subscriptionUn
   const handleGenerateLink = async (appointmentId: string) => {
     setSessionsError("");
     setBusyAppointmentId(appointmentId);
-    const url = await createMercadoPagoCheckout(appointmentId);
+    const url = await createAsaasCheckout(appointmentId);
     setBusyAppointmentId(null);
     if (!url) {
-      setSessionsError("Mercado Pago não está configurado nesta conta.");
+      setSessionsError("Asaas não está configurado nesta conta.");
       return;
     }
     setLinkModal(url);
@@ -8770,13 +8789,28 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
   const handleSubscribe = async (planId: string) => {
     setSubscriptionError("");
     setSubscribing(true);
-    const result = await createSubscription(planId);
+    const result = await createSubscription(planId, couponPreview?.valid ? couponCode : undefined);
     setSubscribing(false);
     if (!result.ok) {
       setSubscriptionError(result.error);
       return;
     }
-    window.location.href = result.initPoint;
+    window.location.href = result.checkoutUrl;
+  };
+
+  // Coupon preview is validated against the first plan on the list — fine while there's only one
+  // plan (see 20260719000004_subscription_plans.sql's note that tiering isn't implemented yet);
+  // create-asaas-subscription re-validates server-side against whichever plan is actually subscribed
+  // to, so this is purely a display simplification, never a source of an incorrect charge.
+  const [couponCode, setCouponCode] = useState("");
+  const [couponPreview, setCouponPreview] = useState<CouponPreview | null>(null);
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
+
+  const handleApplyCoupon = async () => {
+    if (!couponCode.trim() || !plans[0]) return;
+    setValidatingCoupon(true);
+    setCouponPreview(await validateCoupon(couponCode, plans[0].id));
+    setValidatingCoupon(false);
   };
 
   const toggleTargetAudience = (value: string) => {
@@ -9293,17 +9327,51 @@ function ProfessionalSettingsScreen({ onNavigate, currentUser, onSignOut }: Auth
           {!loadingSubscription && (!mySubscription || mySubscription.status === "cancelled" || mySubscription.status === "past_due") && (
             <>
               <p className="text-xs text-muted-foreground">Assine pra apoiar a plataforma além da comissão por consulta.</p>
-              {plans.map(plan => (
-                <div key={plan.id} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm">
-                  <div>
-                    <span className="font-medium text-foreground">{plan.name}</span>
-                    <span className="text-muted-foreground"> — R${plan.price.toFixed(2).replace(".", ",")}/mês</span>
-                  </div>
-                  <Btn variant="primary" size="sm" onClick={() => handleSubscribe(plan.id)} disabled={subscribing}>
-                    {subscribing ? "Redirecionando..." : "Assinar"}
-                  </Btn>
+
+              <div className="flex items-end gap-2">
+                <Input
+                  label="Cupom de desconto"
+                  placeholder="Ex: BEMVINDO10"
+                  icon={<Tag size={15} />}
+                  value={couponCode}
+                  onChange={v => { setCouponCode(v.toUpperCase()); setCouponPreview(null); }}
+                  className="max-w-xs"
+                />
+                <Btn variant="outline" size="sm" disabled={validatingCoupon || !couponCode.trim()} onClick={handleApplyCoupon}>
+                  {validatingCoupon ? "Aplicando..." : "Aplicar"}
+                </Btn>
+              </div>
+              {couponPreview && !couponPreview.valid && <p className="text-xs text-red-600">{couponPreview.error}</p>}
+              {couponPreview && couponPreview.valid && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 flex items-center gap-1.5">
+                  <Percent size={13} />
+                  Cupom aplicado: de R${couponPreview.originalPrice.toFixed(2).replace(".", ",")} por{" "}
+                  <span className="font-semibold">R${couponPreview.discountedPrice.toFixed(2).replace(".", ",")}/mês</span>
                 </div>
-              ))}
+              )}
+
+              {plans.map(plan => {
+                const discounted = couponPreview?.valid && plan.id === plans[0]?.id ? couponPreview.discountedPrice : null;
+                return (
+                  <div key={plan.id} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm">
+                    <div>
+                      <span className="font-medium text-foreground">{plan.name}</span>
+                      {discounted !== null ? (
+                        <span className="text-muted-foreground">
+                          {" — "}
+                          <span className="line-through">R${plan.price.toFixed(2).replace(".", ",")}</span>{" "}
+                          <span className="text-emerald-700 font-medium">R${discounted.toFixed(2).replace(".", ",")}/mês</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground"> — R${plan.price.toFixed(2).replace(".", ",")}/mês</span>
+                      )}
+                    </div>
+                    <Btn variant="primary" size="sm" onClick={() => handleSubscribe(plan.id)} disabled={subscribing}>
+                      {subscribing ? "Redirecionando..." : "Assinar"}
+                    </Btn>
+                  </div>
+                );
+              })}
               {subscriptionError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{subscriptionError}</div>}
             </>
           )}
@@ -9511,12 +9579,13 @@ type AdminPayment = {
 };
 
 function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenProps) {
-  const [adminTab, setAdminTab] = useState<"validations" | "users" | "payments">("validations");
+  const [adminTab, setAdminTab] = useState<"validations" | "users" | "payments" | "coupons">("validations");
   const navItems = [
     { icon: <Home size={18} />, label: "Visão geral", active: true, onClick: () => setAdminTab("validations") },
     { icon: <Shield size={18} />, label: "Validações", onClick: () => setAdminTab("validations") },
     { icon: <Users size={18} />, label: "Usuários", onClick: () => setAdminTab("users") },
     { icon: <CreditCard size={18} />, label: "Pagamentos", onClick: () => setAdminTab("payments") },
+    { icon: <Tag size={18} />, label: "Cupons", onClick: () => setAdminTab("coupons") },
     { icon: <Settings size={18} />, label: "Configurações" },
   ];
 
@@ -9531,6 +9600,81 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
 
   const [payments, setPayments] = useState<AdminPayment[]>([]);
   const [loadingPayments, setLoadingPayments] = useState(true);
+
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [loadingCoupons, setLoadingCoupons] = useState(true);
+  const [couponActionId, setCouponActionId] = useState<string | null>(null);
+  const [newCoupon, setNewCoupon] = useState({
+    code: "",
+    discountType: "percentage" as "percentage" | "fixed",
+    discountValue: "",
+    maxRedemptions: "",
+    maxRedemptionsPerUser: "1",
+    expiresAt: "",
+  });
+  const [creatingCoupon, setCreatingCoupon] = useState(false);
+  const [couponFormError, setCouponFormError] = useState<string | null>(null);
+
+  const loadCoupons = async () => {
+    setLoadingCoupons(true);
+    try {
+      setCoupons(await listCoupons());
+    } catch (error) {
+      reportError(error, { flow: "adminPanel.loadCoupons" });
+    }
+    setLoadingCoupons(false);
+  };
+
+  const handleCreateCoupon = async () => {
+    setCouponFormError(null);
+    const discountValue = Number(newCoupon.discountValue.replace(",", "."));
+    if (!newCoupon.code.trim()) { setCouponFormError("Informe um código."); return; }
+    if (!discountValue || discountValue <= 0) { setCouponFormError("Informe um valor de desconto válido."); return; }
+    if (newCoupon.discountType === "percentage" && discountValue > 100) { setCouponFormError("Desconto percentual não pode passar de 100%."); return; }
+
+    setCreatingCoupon(true);
+    try {
+      await createCoupon({
+        code: newCoupon.code,
+        discountType: newCoupon.discountType,
+        discountValue,
+        maxRedemptions: newCoupon.maxRedemptions ? Number(newCoupon.maxRedemptions) : null,
+        maxRedemptionsPerUser: Number(newCoupon.maxRedemptionsPerUser) || 1,
+        startsAt: null,
+        expiresAt: newCoupon.expiresAt ? new Date(newCoupon.expiresAt).toISOString() : null,
+      });
+      setNewCoupon({ code: "", discountType: "percentage", discountValue: "", maxRedemptions: "", maxRedemptionsPerUser: "1", expiresAt: "" });
+      await loadCoupons();
+    } catch (error) {
+      reportError(error, { flow: "adminPanel.createCoupon" });
+      setCouponFormError(error instanceof Error && error.message.includes("duplicate") ? "Já existe um cupom com esse código." : "Não foi possível criar o cupom.");
+    }
+    setCreatingCoupon(false);
+  };
+
+  const handleToggleCouponActive = async (coupon: Coupon) => {
+    setCouponActionId(coupon.id);
+    try {
+      await setCouponActive(coupon.id, !coupon.active);
+      await loadCoupons();
+    } catch (error) {
+      reportError(error, { flow: "adminPanel.toggleCoupon" });
+    }
+    setCouponActionId(null);
+  };
+
+  const handleDeleteCoupon = async (coupon: Coupon) => {
+    if (!window.confirm(`Excluir o cupom "${coupon.code}"? Essa ação não pode ser desfeita.`)) return;
+    setCouponActionId(coupon.id);
+    try {
+      await deleteCoupon(coupon.id);
+      setCoupons(prev => prev.filter(c => c.id !== coupon.id));
+    } catch (error) {
+      reportError(error, { flow: "adminPanel.deleteCoupon" });
+      window.alert("Não foi possível excluir o cupom.");
+    }
+    setCouponActionId(null);
+  };
 
   const [verifiedCount, setVerifiedCount] = useState(0);
   const [sessionNotesCount, setSessionNotesCount] = useState<number | null>(null);
@@ -9618,6 +9762,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
     })();
 
     void loadUsers();
+    void loadCoupons();
 
     (async () => {
       setLoadingPayments(true);
@@ -9667,7 +9812,7 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
         </div>
 
         <div className="flex gap-2 border-b border-border">
-          {[{ id: "validations" as const, label: "Validações pendentes" }, { id: "users" as const, label: "Usuários" }, { id: "payments" as const, label: "Pagamentos" }].map(t => (
+          {[{ id: "validations" as const, label: "Validações pendentes" }, { id: "users" as const, label: "Usuários" }, { id: "payments" as const, label: "Pagamentos" }, { id: "coupons" as const, label: "Cupons" }].map(t => (
             <button key={t.id} onClick={() => setAdminTab(t.id)}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-all ${adminTab === t.id ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
               {t.label}
@@ -9833,6 +9978,77 @@ function AdminPanel({ onNavigate, currentUser, onSignOut }: AuthenticatedScreenP
             </Card>
           </div>
         )}
+
+        {adminTab === "coupons" && (
+          <div className="space-y-6">
+            <Card className="p-6">
+              <h3 className="font-semibold text-foreground font-display mb-4">Novo cupom</h3>
+              <p className="text-xs text-muted-foreground mb-4">Cupons valem apenas para a assinatura da plataforma do profissional (psicólogo), não para o pagamento de sessões dos pacientes.</p>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <Input placeholder="Código (ex: BEMVINDO10)" value={newCoupon.code} onChange={v => setNewCoupon(prev => ({ ...prev, code: v.toUpperCase() }))} />
+                <select
+                  value={newCoupon.discountType}
+                  onChange={e => setNewCoupon(prev => ({ ...prev, discountType: e.target.value as "percentage" | "fixed" }))}
+                  className="px-3 py-2 bg-muted border border-border rounded-xl text-sm text-foreground focus:outline-none"
+                >
+                  <option value="percentage">Percentual (%)</option>
+                  <option value="fixed">Valor fixo (R$)</option>
+                </select>
+                <Input placeholder={newCoupon.discountType === "percentage" ? "Desconto (ex: 10)" : "Desconto (ex: 20,00)"} value={newCoupon.discountValue} onChange={v => setNewCoupon(prev => ({ ...prev, discountValue: v }))} />
+                <Input placeholder="Limite total de usos (opcional)" value={newCoupon.maxRedemptions} onChange={v => setNewCoupon(prev => ({ ...prev, maxRedemptions: v.replace(/\D/g, "") }))} />
+                <Input placeholder="Usos por profissional" value={newCoupon.maxRedemptionsPerUser} onChange={v => setNewCoupon(prev => ({ ...prev, maxRedemptionsPerUser: v.replace(/\D/g, "") }))} />
+                <input
+                  type="date"
+                  value={newCoupon.expiresAt}
+                  onChange={e => setNewCoupon(prev => ({ ...prev, expiresAt: e.target.value }))}
+                  className="px-3 py-2 bg-muted border border-border rounded-xl text-sm text-foreground focus:outline-none"
+                />
+              </div>
+              {couponFormError && <p className="text-xs text-red-600 mt-2">{couponFormError}</p>}
+              <Btn variant="primary" size="sm" className="mt-4" disabled={creatingCoupon} onClick={handleCreateCoupon}>
+                <Plus size={14} />{creatingCoupon ? "Criando..." : "Criar cupom"}
+              </Btn>
+            </Card>
+
+            <Card className="overflow-hidden">
+              <div className="p-4 border-b border-border">
+                <h3 className="font-semibold text-foreground font-display">Cupons cadastrados</h3>
+              </div>
+              {loadingCoupons && <p className="text-sm text-muted-foreground p-4">Carregando cupons...</p>}
+              {!loadingCoupons && coupons.length === 0 && <p className="text-sm text-muted-foreground p-4">Nenhum cupom criado ainda.</p>}
+              {!loadingCoupons && coupons.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[720px] text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>{["Código", "Desconto", "Usos", "Validade", "Status", "Ações"].map(h => <th key={h} className="text-left py-3 px-4 text-xs font-medium text-muted-foreground">{h}</th>)}</tr>
+                    </thead>
+                    <tbody>
+                      {coupons.map(c => (
+                        <tr key={c.id} className="border-t border-border hover:bg-muted/30 transition-colors">
+                          <td className="py-3 px-4 font-medium text-foreground flex items-center gap-1.5"><Tag size={13} className="text-muted-foreground" />{c.code}</td>
+                          <td className="py-3 px-4 text-muted-foreground">
+                            {c.discountType === "percentage" ? `${c.discountValue}%` : `R$${c.discountValue.toFixed(2).replace(".", ",")}`}
+                          </td>
+                          <td className="py-3 px-4 text-muted-foreground">{c.redemptionCount}{c.maxRedemptions !== null ? ` / ${c.maxRedemptions}` : ""}</td>
+                          <td className="py-3 px-4 text-muted-foreground text-xs">{c.expiresAt ? new Date(c.expiresAt).toLocaleDateString("pt-BR") : "Sem validade"}</td>
+                          <td className="py-3 px-4">{c.active ? <Badge variant="success">Ativo</Badge> : <Badge variant="outline">Inativo</Badge>}</td>
+                          <td className="py-3 px-4">
+                            <div className="flex gap-2">
+                              <Btn variant="outline" size="sm" disabled={couponActionId === c.id} onClick={() => handleToggleCouponActive(c)}>
+                                {c.active ? "Desativar" : "Ativar"}
+                              </Btn>
+                              <Btn variant="danger" size="sm" disabled={couponActionId === c.id} onClick={() => handleDeleteCoupon(c)}>Excluir</Btn>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          </div>
+        )}
       </div>
     </AppShell>
   );
@@ -9899,7 +10115,11 @@ export default function App() {
     return () => { active = false; };
   }, [activeProfessionalId, currentUser?.role]);
 
-  const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | "pending" | "failure" | null>(null);
+  // Asaas's callback only has a single successUrl (no separate pending/failure redirect like
+  // Mercado Pago's back_urls) — a payment that's still pending or failed just leaves the patient on
+  // Asaas's own invoice page, it never bounces them back here, so there's nothing to represent but
+  // "success" ever landing in this query param.
+  const [paymentReturnStatus, setPaymentReturnStatus] = useState<"success" | null>(null);
   // Separate from activeAppointmentId (used by the video screen) so jumping to EHR from Calendar
   // never overwrites an in-progress video call's id if the user switches between the two screens.
   const [ehrPatientId, setEhrPatientId] = useState<string | null>(null);
@@ -9948,9 +10168,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const mpStatus = new URLSearchParams(window.location.search).get("mp");
-    if (mpStatus === "success" || mpStatus === "pending" || mpStatus === "failure") {
-      setPaymentReturnStatus(mpStatus);
+    const asaasStatus = new URLSearchParams(window.location.search).get("asaas");
+    if (asaasStatus === "success") {
+      setPaymentReturnStatus("success");
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
@@ -10077,8 +10297,8 @@ export default function App() {
     }
   }, [authLoading, currentUser, screen]);
 
-  // Mercado Pago's back_urls land the browser back on "/" with no session context of what
-  // happened; once the user's session has loaded, send them to their dashboard to see the result.
+  // Asaas's successUrl lands the browser back on "/" with no session context of what happened;
+  // once the user's session has loaded, send them to their dashboard to see the result.
   useEffect(() => {
     if (!authLoading && currentUser && paymentReturnStatus) {
       navigate(homeScreenForRole(currentUser.role));
@@ -10147,20 +10367,8 @@ export default function App() {
         </div>
       )}
       {paymentReturnStatus && (
-        <div
-          className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[calc(100%-2rem)] rounded-xl border px-4 py-3 text-sm shadow-lg flex items-start justify-between gap-3 ${
-            paymentReturnStatus === "success"
-              ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-              : paymentReturnStatus === "pending"
-                ? "bg-amber-50 border-amber-200 text-amber-800"
-                : "bg-red-50 border-red-200 text-red-800"
-          }`}
-        >
-          <span>
-            {paymentReturnStatus === "success" && "Pagamento aprovado! Sua consulta está confirmada."}
-            {paymentReturnStatus === "pending" && "Pagamento em processamento. A confirmação chega em instantes."}
-            {paymentReturnStatus === "failure" && "Não foi possível concluir o pagamento. Tente novamente."}
-          </span>
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 max-w-md w-[calc(100%-2rem)] rounded-xl border px-4 py-3 text-sm shadow-lg flex items-start justify-between gap-3 bg-emerald-50 border-emerald-200 text-emerald-800">
+          <span>Pagamento aprovado! Sua consulta está confirmada.</span>
           <button type="button" onClick={() => setPaymentReturnStatus(null)} className="flex-shrink-0"><X size={16} /></button>
         </div>
       )}

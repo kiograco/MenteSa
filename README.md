@@ -337,47 +337,62 @@
   3. `supabase secrets set GEMINI_API_KEY=...` (opcional: `GEMINI_MODEL=gemini-...` pra trocar o
      modelo — o padrão é `gemini-2.5-flash`)
 
-  ### Pagamento real (Mercado Pago)
+  ### Pagamento real (Asaas)
 
-  Fluxo: `create-mp-preference` cria uma preferência do **Checkout Pro** (o checkout hospedado
-  pelo próprio Mercado Pago) para a consulta e devolve o link; o cliente redireciona o navegador
-  para lá — nenhum dado de cartão passa pelo nosso app. `mercadopago-webhook` é chamado pelo
-  Mercado Pago quando o status do pagamento muda; ele busca o pagamento direto na API deles (nunca
-  confia só na notificação recebida) e grava em `payments` com `provider_payment_id` (upsert
-  idempotente — o Mercado Pago reenvia notificações). **O redirecionamento de volta (`back_urls`)
-  é só cosmético** (mostra o banner "pagamento aprovado/pendente/falhou" no topo da tela) — quem
-  decide de verdade se a consulta foi paga é sempre o webhook.
+  Fluxo: `create-asaas-preference` cria uma cobrança com `billingType: "UNDEFINED"` (o checkout
+  hospedado pelo próprio Asaas, deixando o paciente escolher Pix/boleto/cartão) para a consulta e
+  devolve o `invoiceUrl`; o cliente redireciona o navegador para lá — nenhum dado de cartão passa
+  pelo nosso app. `asaas-webhook` é chamado pelo Asaas quando o status do pagamento muda — ele já
+  envia o objeto completo do pagamento no corpo do POST (autenticado pelo header
+  `asaas-access-token`, um segredo à parte da API key, configurado ao criar o webhook no painel do
+  Asaas) e grava em `payments` com `provider_payment_id` (upsert idempotente — o Asaas reenvia
+  notificações). **O redirecionamento de volta (`callback.successUrl`) é só cosmético** (mostra o
+  banner "pagamento aprovado" no topo da tela) — quem decide de verdade se a consulta foi paga é
+  sempre o webhook. Diferente do Mercado Pago, o Asaas só tem uma URL de retorno (sem pending/failure
+  separados) — um pagamento pendente ou recusado simplesmente não redireciona, o pagador fica na
+  própria página do Asaas.
 
-  Como este app não tem router (navegação é só estado em memória), o retorno do Mercado Pago cai
-  em `/` com `?mp=success|pending|failure` na URL; `App()` lê esse parâmetro, limpa a URL e manda
-  o usuário pro dashboard dele.
+  Como este app não tem router (navegação é só estado em memória), o retorno do Asaas cai em `/`
+  com `?asaas=success` na URL; `App()` lê esse parâmetro, limpa a URL e manda o usuário pro
+  dashboard dele.
 
-  Se `MERCADOPAGO_ACCESS_TOKEN` não estiver configurado (ou a função não estiver implantada), o
-  checkout cai automaticamente no fluxo mock anterior — nada quebra.
+  Se `ASAAS_API_KEY` não estiver configurado (ou a função não estiver implantada), o checkout cai
+  automaticamente no fluxo mock anterior — nada quebra.
+
+  Asaas exige um `cpfCnpj` pra criar o "cliente" que é cobrado — sem CPF preenchido em
+  `patient_profiles`/`professional_profiles` (CNPJ pra Pessoa Jurídica), a função retorna um erro
+  claro pedindo pra completar o cadastro, em vez de falhar silenciosamente.
 
   Para ativar:
-  1. Crie uma conta em https://www.mercadopago.com.br/developers e pegue o Access Token (produção
-     ou teste).
-  2. `supabase functions deploy create-mp-preference`
-  3. `supabase functions deploy mercadopago-webhook --no-verify-jwt` (sem isso, o Supabase exige
-     um JWT que o Mercado Pago nunca vai enviar, e o webhook sempre falharia com 401)
-  4. `supabase secrets set MERCADOPAGO_ACCESS_TOKEN=... APP_BASE_URL=https://seu-app.exemplo`
+  1. Crie uma conta em https://www.asaas.com/ (ou o sandbox em https://sandbox.asaas.com/) e pegue
+     a API Key em Integrações → Chaves de API.
+  2. `supabase functions deploy create-asaas-preference`
+  3. `supabase functions deploy create-asaas-subscription`
+  4. `supabase functions deploy create-asaas-pix-charge`
+  5. `supabase functions deploy asaas-webhook --no-verify-jwt` (sem isso, o Supabase exige um JWT
+     que o Asaas nunca vai enviar, e o webhook sempre falharia com 401)
+  6. No painel do Asaas, crie o Webhook apontando pra
+     `https://<seu-projeto>.supabase.co/functions/v1/asaas-webhook`, com um token forte (não a API
+     Key) — esse mesmo token vai no secret abaixo.
+  7. `supabase secrets set ASAAS_API_KEY=... ASAAS_WEBHOOK_TOKEN=... APP_BASE_URL=https://seu-app.exemplo`
+     (opcional: `ASAAS_API_URL=https://api-sandbox.asaas.com/v3` pra testar no sandbox antes de ir
+     pra produção)
 
   ### E-mail transacional de confirmação
 
   `supabase/functions/_shared/email.ts` monta e envia o e-mail de confirmação via
   [Resend](https://resend.com) (busca o e-mail do paciente com `auth.admin.getUserById`, já que
   `profiles` não guarda e-mail). É chamado em dois lugares: `send-booking-confirmation` (invocado
-  pelo cliente logo após o pagamento mock) e `mercadopago-webhook` (direto no servidor, assim que
-  um pagamento é confirmado como pago de verdade — só uma vez por pagamento, mesmo se o Mercado
-  Pago reenviar a notificação). Sem `RESEND_API_KEY`, a função simplesmente não envia nada — não
+  pelo cliente logo após o pagamento mock) e `asaas-webhook` (direto no servidor, assim que
+  um pagamento é confirmado como pago de verdade — só uma vez por pagamento, mesmo se o Asaas
+  reenviar a notificação). Sem `RESEND_API_KEY`, a função simplesmente não envia nada — não
   quebra o agendamento nem o pagamento.
 
   Para ativar:
   1. Crie uma conta em https://resend.com, verifique um domínio (ou use o domínio de teste deles
      pra começar).
   2. `supabase functions deploy send-booking-confirmation`
-  3. Redeploy do `mercadopago-webhook` (ele agora importa o mesmo módulo de e-mail).
+  3. Redeploy do `asaas-webhook` (ele agora importa o mesmo módulo de e-mail).
   4. `supabase secrets set RESEND_API_KEY=... EMAIL_FROM="MindCare <no-reply@seudominio.com>"`
 
   ### Upload de documentos de verificação
@@ -665,12 +680,12 @@
   não existe uma coluna "pago/pendente" em `appointments`, isso é sempre calculado a partir de
   `payments`, já que uma consulta pode ter mais de uma linha de pagamento):
 
-  - **Cobrar via Pix**: `supabase/functions/create-pix-charge` chama a API de Pagamentos direta do
-    Mercado Pago (não a Checkout Pro usada no agendamento — só a API direta devolve o QR
-    code/copia-e-cola pro app mostrar). Reutiliza uma cobrança pendente ainda não expirada em vez
+  - **Cobrar via Pix**: `supabase/functions/create-asaas-pix-charge` cria uma cobrança
+    `billingType: "PIX"` na API do Asaas e busca o QR code/copia-e-cola em
+    `GET /payments/{id}/pixQrCode`. Reutiliza uma cobrança pendente ainda não expirada em vez
     de gerar uma nova a cada clique. O status final (pago/estornado) continua resolvido só pelo
-    `mercadopago-webhook` já existente — nada mudou lá.
-  - **Gerar link de pagamento**: reaproveita a mesma `create-mp-preference`/`createMercadoPagoCheckout`
+    `asaas-webhook` já existente — nada mudou lá.
+  - **Gerar link de pagamento**: reaproveita a mesma `create-asaas-preference`/`createAsaasCheckout`
     já usada no checkout, sem nenhuma mudança nela — só passou a ser chamável fora do fluxo de
     agendamento.
   - **Emitir recibo**: gera um PDF client-side (`jspdf`, `src/lib/pdf.ts`/`src/lib/receipt.ts`) com
@@ -681,8 +696,8 @@
     "indisponível" com uma mensagem clara e grava isso em `nota_fiscal_requests`. Plugar um provedor
     real no futuro só muda essa função; o schema e a UI já estão prontos.
 
-  Para ativar Pix: nenhuma chave nova, reaproveita `MERCADOPAGO_ACCESS_TOKEN` (já configurado pro
-  checkout) — só `supabase functions deploy create-pix-charge`.
+  Para ativar Pix: nenhuma chave nova, reaproveita `ASAAS_API_KEY` (já configurado pro
+  checkout) — só `supabase functions deploy create-asaas-pix-charge`.
 
   ### Biblioteca de Modelos (declarações, relatórios, pareceres, laudos, encaminhamentos)
 
@@ -951,20 +966,22 @@
   | `VITE_SENTRY_DSN` | `.env` (frontend) | Monitoramento de erros (opcional — sem ela, o app roda normalmente e só não reporta erros) |
   | `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_URL` | Secrets da função Edge (`supabase secrets set`) | Sala de vídeo real (LiveKit). Sem eles, cai no mock. |
   | `GEMINI_API_KEY` / `GEMINI_MODEL` (opcional) | Secret da função Edge (`supabase secrets set`) | Resumo de IA da sessão (Google Gemini, gratuito). Sem ela, o botão "Gerar resumo com IA" fica indisponível e o profissional segue escrevendo notas manualmente. |
-  | `MERCADOPAGO_ACCESS_TOKEN` | Secret das funções Edge | Pagamento real. Sem ela, cai no checkout mock. |
-  | `APP_BASE_URL` | Secret da função `create-mp-preference` | URL do app pra onde o Mercado Pago redireciona de volta |
+  | `ASAAS_API_KEY` | Secret das funções Edge | Pagamento real (Asaas). Sem ela, cai no checkout mock. |
+  | `ASAAS_WEBHOOK_TOKEN` | Secret da função `asaas-webhook` (mesmo valor configurado no painel do Asaas ao criar o webhook) | Autentica as notificações do Asaas — nunca use a API Key aqui |
+  | `ASAAS_API_URL` (opcional) | Secret das funções Edge | Aponta pro sandbox (`https://api-sandbox.asaas.com/v3`) em vez de produção; sem ela, usa produção |
+  | `APP_BASE_URL` | Secret da função `create-asaas-preference`/`create-asaas-subscription` | URL do app pra onde o Asaas redireciona de volta |
   | `RESEND_API_KEY` / `EMAIL_FROM` | Secret das funções Edge | E-mail de confirmação de agendamento. Sem ela, simplesmente não envia. |
   | *(nenhuma chave nova)* | `notify-admin-document` / `admin-manage-user` reaproveitam `RESEND_API_KEY`/`EMAIL_FROM` e a service role key (injetada automaticamente pelo runtime das Edge Functions) | Notificação de documento novo e suspensão/exclusão de contas |
   | `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_TEMPLATE_NAME` | Secrets da função `send-appointment-reminder` | Lembrete de consulta por WhatsApp (Meta Cloud API). Sem elas, o job de cron roda mas não envia nada. |
   | `CRON_SECRET` | Secret da função `send-appointment-reminder` + segredo `reminder_cron_secret` no Vault | Autentica a chamada do `pg_cron` (o endpoint não usa sessão de usuário) |
-  | *(nenhuma chave nova)* | `create-pix-charge` reaproveita `MERCADOPAGO_ACCESS_TOKEN` | Cobrança avulsa via Pix no Financeiro |
+  | *(nenhuma chave nova)* | `create-asaas-pix-charge` reaproveita `ASAAS_API_KEY` | Cobrança avulsa via Pix no Financeiro |
   | `NOTA_FISCAL_PROVIDER` / `NOTA_FISCAL_API_KEY` (ainda sem provedor real) | Secrets da função `request-nota-fiscal` | Emissão de nota fiscal. Sem elas (hoje sempre), a função responde "indisponível" — é o estado esperado até um provedor (eNotas/Focus NFe/etc.) ser escolhido e integrado. |
   | *(nenhuma chave nova)* | `ai-improve-text` reaproveita `GEMINI_API_KEY`/`GEMINI_MODEL` | Botão "Melhorar com IA" nos campos SOAP e no gerador de documentos |
   | `WHATSAPP_BIRTHDAY_TEMPLATE_NAME` | Secret da função `send-birthday-greeting` (reaproveita `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN`) | Template aprovado no Meta Business Manager pro parabéns de aniversário — precisa ser diferente do template de lembrete de consulta |
   | `CRON_SECRET` (já existente) + segredos `birthday_function_url`/`birthday_cron_secret` no Vault | Mesmo secret da função, mais Vault | Autentica o cron diário de aniversário, mesmo esquema do lembrete de consulta |
   | `WHATSAPP_CONFIRMATION_TEMPLATE_NAME` | Secret da função `send-appointment-reminder` (reaproveita `WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_ACCESS_TOKEN`) | Template aprovado no Meta Business Manager pro pedido de confirmação de presença — precisa ser diferente dos templates de lembrete e aniversário |
   | `APP_BASE_URL` (já existente) | Secret de `send-appointment-reminder` e `create-patient-account` | Monta o link de confirmação de presença (`/confirmar/:token`) e o redirect do convite de paciente (`/definir-senha`) |
-  | *(nenhuma chave nova)* | `create-pix-charge` e `auto-charge-sessions` reaproveitam `MERCADOPAGO_ACCESS_TOKEN` via `_shared/pixCharge.ts` | Cobrança avulsa e cobrança automática via Pix |
+  | *(nenhuma chave nova)* | `create-asaas-pix-charge` e `auto-charge-sessions` reaproveitam `ASAAS_API_KEY` via `_shared/pixCharge.ts` | Cobrança avulsa e cobrança automática via Pix |
   | `CRON_SECRET` (já existente) + segredos `auto_charge_function_url`/`auto_charge_cron_secret` no Vault | Mesmo secret das funções, mais Vault | Autentica o cron diário de cobrança automática, mesmo esquema dos jobs anteriores |
 
   ## Monitoramento de erros

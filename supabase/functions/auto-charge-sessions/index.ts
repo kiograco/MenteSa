@@ -2,12 +2,12 @@
 // charge automatically for professionals who opted in (professional_profiles.auto_charge_enabled),
 // N days before each scheduled session (auto_charge_days_before). Reuses the exact same
 // fee/QR-reuse/payments-insert logic as the on-demand "Cobrar via Pix" button
-// (create-pix-charge) via _shared/pixCharge.ts. No retry: an appointment that already has a
+// (create-asaas-pix-charge) via _shared/pixCharge.ts. No retry: an appointment that already has a
 // pending or paid payment is skipped outright, so this only ever fires once per appointment.
 // Deploy: supabase functions deploy auto-charge-sessions --no-verify-jwt
 // (--no-verify-jwt is required: pg_cron/pg_net calls this without a Supabase auth token, only the
 // x-cron-secret header checked below)
-// Secrets: supabase secrets set CRON_SECRET=... MERCADOPAGO_ACCESS_TOKEN=...
+// Secrets: supabase secrets set CRON_SECRET=... ASAAS_API_KEY=...
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { createPixChargeForAppointment } from "../_shared/pixCharge.ts";
 

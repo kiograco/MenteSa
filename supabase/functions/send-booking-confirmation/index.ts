@@ -1,5 +1,5 @@
-// Called by the client right after a successful mock-flow payment (the Mercado Pago path sends
-// its own confirmation from mercadopago-webhook instead, since that's the authoritative moment).
+// Called by the client right after a successful mock-flow payment (the Asaas path sends
+// its own confirmation from asaas-webhook instead, since that's the authoritative moment).
 // Deploy: supabase functions deploy send-booking-confirmation
 // Secrets: supabase secrets set RESEND_API_KEY=... EMAIL_FROM="MindCare <no-reply@yourdomain.com>"
 import { createClient } from "npm:@supabase/supabase-js@2";

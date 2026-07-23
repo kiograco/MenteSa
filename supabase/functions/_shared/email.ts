@@ -1,5 +1,5 @@
 // Shared by send-booking-confirmation (client-invoked, best-effort after the mock charge) and
-// mercadopago-webhook (server-invoked, right after a real payment is confirmed). Both call this
+// asaas-webhook (server-invoked, right after a real payment is confirmed). Both call this
 // with a service-role client since it needs auth.admin.getUserById to read the patient's e-mail
 // (profiles has no email column — that lives on auth.users).
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
